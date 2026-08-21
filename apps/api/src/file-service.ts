@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { mediaValidationRequestSchema, type FileUploadRequest, type MediaMetadata } from "@astra/contracts";
-import type { FileRecord, FileRepository } from "@astra/database";
+import type { FileAdmissionContext, FileRecord, FileRepository } from "@astra/database";
 import { MediaValidatorError, type MediaValidator } from "./media-validator-client.ts";
 
 export type FileServiceOptions = Readonly<{
@@ -55,8 +55,8 @@ export class FileService {
     this.signer = new S3Client({ ...base, endpoint: options.publicEndpoint ?? options.endpoint });
   }
 
-  async reserve(projectId: string, input: FileUploadRequest): Promise<Record<string, unknown>> {
-    const file = await this.repository.createPending(projectId, input, this.now());
+  async reserve(context: FileAdmissionContext, input: FileUploadRequest): Promise<Record<string, unknown>> {
+    const file = await this.repository.createPendingAuthorized(context, input, this.now());
     const checksum = Buffer.from(input.sha256, "hex").toString("base64");
     const command = new PutObjectCommand({
       Bucket: this.options.bucket,
@@ -66,7 +66,13 @@ export class FileService {
       ChecksumSHA256: checksum,
       Metadata: { sha256: input.sha256 },
     });
-    const url = await getSignedUrl(this.signer, command, { expiresIn: 15 * 60 });
+    let url: string;
+    try {
+      url = await getSignedUrl(this.signer, command, { expiresIn: 15 * 60 });
+    } catch (error) {
+      await this.repository.abortPending(context.projectId, file.id, this.now());
+      throw error;
+    }
     return {
       id: file.id,
       object: "file.upload",

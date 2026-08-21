@@ -18,7 +18,7 @@ type TaskRequest = VideoGenerationRequest | VideoEditRequest | ImageGenerationRe
 type TaskExecutionRequest = TaskRequest | ResolvedVideoGenerationRequest;
 type TaskSnapshot = Readonly<{ request: TaskRequest; execution: TaskExecutionRequest }>;
 
-export type TaskServiceContext = Readonly<{ projectId: string; organizationId: string }>;
+export type TaskServiceContext = Readonly<{ projectId: string; organizationId: string; apiKeyId?: string }>;
 export type CreatedTask = Readonly<{
   id: string;
   object: "generation.task";
@@ -64,6 +64,7 @@ export type PublicModel = Readonly<{
 
 export type TaskServiceOptions = Readonly<{
   requestEncryptionKey: string;
+  enforceAdmission: boolean;
   now?: () => Date;
   createId?: (prefix: string) => string;
   createSeed?: () => number;
@@ -146,6 +147,7 @@ export class TaskService {
   private readonly now: () => Date;
   private readonly createId: (prefix: string) => string;
   private readonly createSeed: () => number;
+  private readonly enforceAdmission: boolean;
 
   constructor(
     private readonly sql: SqlClient,
@@ -155,6 +157,7 @@ export class TaskService {
     this.now = options.now ?? systemNow;
     this.createId = options.createId ?? systemId;
     this.createSeed = options.createSeed ?? secureRandomSeed;
+    this.enforceAdmission = options.enforceAdmission;
   }
 
   private seal(value: unknown): string {
@@ -323,6 +326,82 @@ export class TaskService {
               this.createSeed,
             )
           : input;
+      let estimatedGpuSeconds = 0;
+      let estimatedCostMinor = 0;
+      if (this.enforceAdmission) {
+        if (!context.apiKeyId) throw new Error("invalid_api_key_context");
+        const quotas = await transaction`SELECT q.* FROM project_quotas q
+          JOIN projects p ON p.id=q.project_id
+          JOIN organizations o ON o.id=p.organization_id
+          JOIN api_keys k ON k.id=${context.apiKeyId} AND k.organization_id=p.organization_id
+          JOIN api_key_project_grants g ON g.api_key_id=k.id AND g.project_id=p.id
+          WHERE q.project_id=${context.projectId} AND p.organization_id=${context.organizationId}
+            AND p.status='active' AND o.status='active' AND k.status='active'
+            AND (k.expires_at IS NULL OR k.expires_at > ${timestamp.toISOString()})
+          FOR UPDATE OF q`;
+        const quota = quotas[0] as Record<string, unknown> | undefined;
+        if (!quota) throw new Error("project_access_denied");
+        const queueRows = await transaction`SELECT count(*)::integer AS count FROM tasks
+          WHERE project_id=${context.projectId} AND status IN ('queued', 'scheduling', 'provisioning')`;
+        if (Number(queueRows[0]?.count ?? 0) >= Number(quota.queued_task_limit)) {
+          throw new Error("queued_task_quota_exceeded");
+        }
+        const lane = input.priority ?? "online";
+        const reservationRows = await transaction`SELECT count(*)::integer AS count FROM admission_reservations
+          WHERE project_id=${context.projectId} AND resource_type='task' AND lane=${lane} AND status='held'`;
+        const reservationLimit = Number(
+          lane === "online" ? quota.online_reservation_limit : quota.batch_reservation_limit,
+        );
+        if (Number(reservationRows[0]?.count ?? 0) >= reservationLimit) {
+          throw new Error("project_concurrency_exceeded");
+        }
+        const estimates = (
+          release.manifest as {
+            admission_estimates?: {
+              video?: { base_gpu_seconds?: number; per_output_second_gpu_seconds?: number };
+              image?: { per_output_gpu_seconds?: number };
+              cost_minor_per_gpu_second?: number;
+            };
+          }
+        ).admission_estimates;
+        if (type === "video") {
+          const video = input as VideoGenerationRequest;
+          estimatedGpuSeconds = Math.ceil(
+            Number(estimates?.video?.base_gpu_seconds ?? 0) +
+              video.duration * Number(estimates?.video?.per_output_second_gpu_seconds ?? 0),
+          );
+        } else {
+          const image = input as ImageGenerationRequest | ImageEditRequest;
+          estimatedGpuSeconds = Math.ceil(image.n * Number(estimates?.image?.per_output_gpu_seconds ?? 0));
+        }
+        estimatedCostMinor = Math.ceil(estimatedGpuSeconds * Number(estimates?.cost_minor_per_gpu_second ?? 0));
+        const dayStart = new Date(timestamp);
+        dayStart.setUTCHours(0, 0, 0, 0);
+        const daily = await transaction`SELECT
+          COALESCE((SELECT sum(quantity) FROM usage_ledger
+            WHERE project_id=${context.projectId} AND metric='gpu_seconds' AND occurred_at >= ${dayStart.toISOString()}), 0)::bigint AS actual_gpu_seconds,
+          COALESCE((SELECT sum(estimated_gpu_seconds) FROM admission_reservations
+            WHERE project_id=${context.projectId} AND resource_type='task' AND status='held' AND created_at >= ${dayStart.toISOString()}), 0)::bigint AS reserved_gpu_seconds,
+          COALESCE((SELECT sum(quantity) FROM usage_ledger
+            WHERE project_id=${context.projectId} AND metric='cost_minor' AND occurred_at >= ${dayStart.toISOString()}), 0)::bigint AS actual_cost_minor,
+          COALESCE((SELECT sum(estimated_cost_minor) FROM admission_reservations
+            WHERE project_id=${context.projectId} AND resource_type='task' AND status='held' AND created_at >= ${dayStart.toISOString()}), 0)::bigint AS reserved_cost_minor`;
+        const totals = daily[0] as Record<string, unknown>;
+        if (
+          quota.daily_gpu_seconds_limit !== null &&
+          Number(totals.actual_gpu_seconds) + Number(totals.reserved_gpu_seconds) + estimatedGpuSeconds >
+            Number(quota.daily_gpu_seconds_limit)
+        ) {
+          throw new Error("daily_gpu_quota_exceeded");
+        }
+        if (
+          quota.daily_cost_limit_minor !== null &&
+          Number(totals.actual_cost_minor) + Number(totals.reserved_cost_minor) + estimatedCostMinor >
+            Number(quota.daily_cost_limit_minor)
+        ) {
+          throw new Error("daily_cost_quota_exceeded");
+        }
+      }
       const sealed = this.seal({ request: input, execution: resolved });
       const rows =
         await transaction`INSERT INTO tasks (id, project_id, type, operation, status, priority, model_release_id, request_ciphertext, request_hash, version, created_at, updated_at)
@@ -334,6 +413,15 @@ export class TaskService {
       }
       await transaction`INSERT INTO task_state_events (id, task_id, from_status, to_status, reason, version, created_at) VALUES (${this.createId("evt")}, ${taskId}, NULL, 'queued', 'created', 0, ${timestamp.toISOString()})`;
       await transaction`INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at) VALUES (${this.createId("evt")}, 'generation_task', ${taskId}, 'task.queued', ${JSON.stringify({ task_id: taskId, project_id: context.projectId, type })}, ${timestamp.toISOString()})`;
+      if (this.enforceAdmission && context.apiKeyId) {
+        await transaction`INSERT INTO admission_reservations (
+          id, project_id, api_key_id, resource_type, resource_id, lane, status,
+          estimated_gpu_seconds, estimated_cost_minor, reserved_bytes, created_at
+        ) VALUES (
+          ${this.createId("reservation")}, ${context.projectId}, ${context.apiKeyId}, 'task', ${taskId},
+          ${input.priority ?? "online"}, 'held', ${estimatedGpuSeconds}, ${estimatedCostMinor}, 0, ${timestamp.toISOString()}
+        )`;
+      }
       if (idempotencyKey)
         await transaction`INSERT INTO idempotency_records (id, project_id, endpoint, key, request_hash, task_id, created_at) VALUES (${this.createId("idem")}, ${context.projectId}, ${endpoint}, ${idempotencyKey}, ${requestHash}, ${taskId}, ${timestamp.toISOString()})`;
       return { row, replayed: false };
@@ -431,6 +519,11 @@ export class TaskService {
         await transaction`UPDATE tasks SET status=${next}, version=${version}, updated_at=${changedAt} WHERE id=${taskId} AND version=${Number(row.version)}`;
         await transaction`INSERT INTO task_state_events (id, task_id, from_status, to_status, reason, version, created_at) VALUES (${this.createId("evt")}, ${taskId}, ${current}, ${next}, 'client_cancel', ${version}, ${changedAt})`;
         await transaction`INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at) VALUES (${this.createId("evt")}, 'generation_task', ${taskId}, 'task.' || ${next}, ${JSON.stringify({ task_id: taskId })}, ${changedAt})`;
+        if (next === "canceled") {
+          await transaction`UPDATE admission_reservations
+            SET status='released', release_reason='task_canceled', released_at=${changedAt}
+            WHERE resource_type='task' AND resource_id=${taskId} AND status='held'`;
+        }
         row.status = next;
         row.version = version;
       }

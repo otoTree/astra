@@ -24,6 +24,7 @@ describe("TaskService PostgreSQL integration", () => {
     if (!database) throw new Error("test database unavailable");
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
     });
     const suffix = randomUUID();
     const context = { organizationId: "org_integration", projectId: `project_${suffix}` };
@@ -78,6 +79,7 @@ describe("TaskService PostgreSQL integration", () => {
     if (!database) throw new Error("test database unavailable");
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
     });
     const suffix = randomUUID();
     const context = { organizationId: "org_integration", projectId: `project_${suffix}` };
@@ -101,6 +103,7 @@ describe("TaskService PostgreSQL integration", () => {
     if (!database) throw new Error("test database unavailable");
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
     });
     const context = { organizationId: "org_integration", projectId: `project_${randomUUID()}` };
     const models = await service.listModels(context);
@@ -115,6 +118,7 @@ describe("TaskService PostgreSQL integration", () => {
     const now = () => new Date("2026-08-21T01:00:00.000Z");
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
       now,
     });
     const files = new FileRepository(database.client);
@@ -211,6 +215,7 @@ describe("TaskService PostgreSQL integration", () => {
     const now = () => new Date(clock);
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
       now,
     });
     const files = new FileRepository(database.client);
@@ -264,6 +269,7 @@ describe("TaskService PostgreSQL integration", () => {
     const now = () => new Date(clock);
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
       now,
     });
     const context = { organizationId: "org_integration", projectId: `project_${randomUUID()}` };
@@ -304,6 +310,7 @@ describe("TaskService PostgreSQL integration", () => {
     if (!database) throw new Error("test database unavailable");
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
     });
     const context = { organizationId: "org_integration", projectId: `project_${randomUUID()}` };
     for (let index = 0; index < 2; index += 1) {
@@ -335,6 +342,7 @@ describe("TaskService PostgreSQL integration", () => {
     const now = () => new Date(clock);
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
       now,
     });
     const files = new FileRepository(database.client);
@@ -432,6 +440,7 @@ describe("TaskService PostgreSQL integration", () => {
     const files = new FileRepository(database.client);
     const service = new TaskService(database.client, {
       requestEncryptionKey: "integration-encryption-key-at-least-32-bytes",
+      enforceAdmission: false,
       now,
     });
     const context = { organizationId: "org_integration", projectId: `project_${randomUUID()}` };

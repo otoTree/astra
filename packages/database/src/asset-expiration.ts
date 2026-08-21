@@ -59,6 +59,9 @@ export class AssetExpirationRepository {
       const files = await transaction`SELECT id FROM files WHERE id=${fileId} AND status='expiring' FOR UPDATE`;
       if (!files[0]) return;
       await transaction`UPDATE files SET status='expired', updated_at=${timestamp.toISOString()} WHERE id=${fileId}`;
+      await transaction`UPDATE admission_reservations
+        SET status='released', release_reason='file_expired', released_at=${timestamp.toISOString()}
+        WHERE resource_type='file_upload' AND resource_id=${fileId} AND status='held'`;
       const tasks = await transaction`SELECT t.id, t.status, t.version
         FROM tasks t
         WHERE t.status IN ('queued', 'scheduling', 'provisioning')
@@ -84,6 +87,9 @@ export class AssetExpirationRepository {
           VALUES (${this.createId("evt")}, ${taskId}, ${fromStatus}, 'failed', 'input_asset_expired', ${version}, ${timestamp.toISOString()})`;
         await transaction`INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
           VALUES (${this.createId("evt")}, 'generation_task', ${taskId}, 'task.failed', ${JSON.stringify({ task_id: taskId, error_code: "input_asset_expired" })}, ${timestamp.toISOString()})`;
+        await transaction`UPDATE admission_reservations
+          SET status='released', release_reason='input_asset_expired', released_at=${timestamp.toISOString()}
+          WHERE resource_type='task' AND resource_id=${taskId} AND status='held'`;
       }
     });
   }

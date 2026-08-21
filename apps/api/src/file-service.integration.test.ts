@@ -28,6 +28,11 @@ const storage =
       })
     : undefined;
 const createdFiles: Array<{ id: string; objectKey: string }> = [];
+const admissionContext = {
+  organizationId: "org_s3_contract",
+  projectId: "project_s3_contract",
+  apiKeyId: "key_s3_contract",
+};
 const pngBytes = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
@@ -69,7 +74,7 @@ async function reserve(
   bytes: Uint8Array,
   sha256 = createHash("sha256").update(bytes).digest("hex"),
 ) {
-  const reservation = await service.reserve("project_s3_contract", {
+  const reservation = await service.reserve(admissionContext, {
     filename,
     content_type: contentType,
     size_bytes: bytes.byteLength,
@@ -94,6 +99,29 @@ async function expectObjectMissing(storageClient: S3Client, storageBucket: strin
 
 beforeAll(async () => {
   if (!database) return;
+  await database.client`INSERT INTO organizations (id, name, status)
+    VALUES (${admissionContext.organizationId}, 'S3 Contract', 'active') ON CONFLICT (id) DO NOTHING`;
+  await database.client`INSERT INTO projects (id, organization_id, name, status)
+    VALUES (${admissionContext.projectId}, ${admissionContext.organizationId}, 'S3 Contract', 'active')
+    ON CONFLICT (id) DO NOTHING`;
+  await database.client`INSERT INTO project_quotas (
+    project_id, request_rate_per_minute, request_burst, task_rate_per_minute, task_burst,
+    queued_task_limit, online_reservation_limit, batch_reservation_limit,
+    max_file_size_bytes, daily_upload_bytes_limit, active_file_bytes_limit
+  ) VALUES (${admissionContext.projectId}, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 5368709120, 53687091200, 107374182400)
+    ON CONFLICT (project_id) DO NOTHING`;
+  await database.client`INSERT INTO api_keys (
+    id, organization_id, default_project_id, name, key_prefix, key_last_four,
+    secret_hash, scopes, status, created_at, updated_at
+  ) VALUES (
+    ${admissionContext.apiKeyId}, ${admissionContext.organizationId}, ${admissionContext.projectId},
+    'S3 Contract', '000000000001', '0001', 'contract-only-hash', ARRAY['files:write'], 'active', now(), now()
+  ) ON CONFLICT (id) DO NOTHING`;
+  await database.client`INSERT INTO api_key_project_grants (api_key_id, project_id)
+    VALUES (${admissionContext.apiKeyId}, ${admissionContext.projectId}) ON CONFLICT DO NOTHING`;
+  await database.client`UPDATE admission_reservations
+    SET status='released', release_reason='contract_setup', released_at=now()
+    WHERE project_id=${admissionContext.projectId} AND status='held'`;
   await database.client`DELETE FROM files WHERE project_id='project_s3_contract'`;
 });
 

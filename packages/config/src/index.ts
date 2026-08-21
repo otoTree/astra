@@ -12,6 +12,8 @@ export const publicApiConfigSchema = environmentSchema.extend({
   PUBLIC_API_PORT: port(4100),
   DATABASE_URL: requiredUrl,
   ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
+  ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
+  REDIS_URL: requiredUrl,
   S3_ENDPOINT: requiredUrl,
   S3_PUBLIC_ENDPOINT: requiredUrl.optional(),
   S3_BUCKET: z.string().min(3),

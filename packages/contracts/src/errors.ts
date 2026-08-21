@@ -21,6 +21,7 @@ export function errorResponse(
   message: string,
   retryable = false,
   param?: string,
+  headers?: HeadersInit,
 ): Response {
   const type =
     status === 401
@@ -46,5 +47,8 @@ export function errorResponse(
       ...(param === undefined ? {} : { param }),
     },
   };
-  return Response.json(body, { status, headers: { "X-Request-Id": requestId } });
+  return Response.json(body, {
+    status,
+    headers: { "X-Request-Id": requestId, ...Object.fromEntries(new Headers(headers)) },
+  });
 }

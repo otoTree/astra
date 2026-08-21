@@ -14,12 +14,15 @@ const common = {
 const configuration =
   suite === "postgres"
     ? {
-        file: "packages/database/src/task-service.integration.test.ts",
+        files: [
+          "packages/database/src/task-service.integration.test.ts",
+          "packages/database/src/identity-admission.integration.test.ts",
+        ],
         env: common,
       }
     : suite === "s3"
       ? {
-          file: "apps/api/src/file-service.integration.test.ts",
+          files: ["apps/api/src/file-service.integration.test.ts"],
           env: {
             ...common,
             ASTRA_TEST_S3_ENDPOINT: required("S3_ENDPOINT"),
@@ -31,10 +34,18 @@ const configuration =
             ASTRA_TEST_MEDIA_VALIDATOR_TOKEN: required("MEDIA_VALIDATOR_TOKEN"),
           },
         }
-      : undefined;
+      : suite === "http"
+        ? {
+            files: ["apps/api/src/public-security.integration.test.ts"],
+            env: {
+              ...common,
+              ASTRA_TEST_PUBLIC_API_URL: required("PUBLIC_API_URL"),
+            },
+          }
+        : undefined;
 
-if (!configuration) throw new Error("integration_suite_must_be_postgres_or_s3");
-const processResult = Bun.spawn(["bun", "test", configuration.file, "--timeout", "30000"], {
+if (!configuration) throw new Error("integration_suite_must_be_postgres_s3_or_http");
+const processResult = Bun.spawn(["bun", "test", ...configuration.files, "--timeout", "30000"], {
   env: configuration.env,
   stdin: "inherit",
   stdout: "inherit",

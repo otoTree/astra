@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  AuthenticationError,
+  type ProjectContext,
+  type PublicApiScope,
+  type PublicRequestAuthenticator,
+} from "@astra/auth";
+import {
   errorResponse,
   fileUploadRequestSchema,
   imageEditSchema,
@@ -13,6 +19,7 @@ import {
 } from "@astra/contracts";
 import type { TaskService } from "@astra/database";
 import { Counter, Histogram, createMetricRegistry, metricResponse } from "@astra/observability";
+import { RateLimiterUnavailableError, type PublicApiRateLimiter, type RateLimitCategory } from "@astra/queue";
 import { matchedRoutes } from "hono/route";
 import type { FileService } from "./file-service.ts";
 import { MediaValidatorError } from "./media-validator-client.ts";
@@ -21,6 +28,10 @@ export type ApiTrustDomain = "public" | "admin" | "worker-control";
 export type PublicTaskUseCases = Pick<TaskService, "ready" | "create" | "list" | "get" | "cancel" | "listModels">;
 export type PublicFileUseCases = Pick<FileService, "reserve" | "complete" | "get" | "contentUrl">;
 export type ReadinessProbe = Readonly<{ ready(): Promise<boolean> }>;
+export type PublicApiSecurity = Readonly<{
+  authenticator: PublicRequestAuthenticator;
+  rateLimiter: PublicApiRateLimiter;
+}>;
 
 const generatedRequestIds = new WeakMap<Request, string>();
 const requestId = (request: Request): string => {
@@ -47,14 +58,27 @@ const idempotencyKeySchema = z
   .regex(/^[\x20-\x7e]+$/);
 const emptyObjectSchema = z.object({}).strict();
 
-function context(request: Request): { organizationId: string; projectId: string } {
-  return {
-    organizationId: request.headers.get("x-organization-id") ?? "org_local",
-    projectId: request.headers.get("x-project-id") ?? "project_local",
-  };
-}
-
 function serviceError(request: Request, error: unknown): Response {
+  if (error instanceof AuthenticationError) {
+    return errorResponse(
+      requestId(request),
+      error.status,
+      error.code,
+      error.code.replaceAll("_", " "),
+      false,
+      undefined,
+      error.status === 401 ? { "WWW-Authenticate": 'Bearer realm="astra"' } : undefined,
+    );
+  }
+  if (error instanceof RateLimiterUnavailableError) {
+    return errorResponse(
+      requestId(request),
+      503,
+      "rate_limiter_unavailable",
+      "Rate limiting is temporarily unavailable",
+      true,
+    );
+  }
   if (error instanceof MediaValidatorError) {
     const rejected = error.kind === "rejected";
     return errorResponse(
@@ -83,6 +107,15 @@ function serviceError(request: Request, error: unknown): Response {
     upload_not_found: 422,
     media_validation_failed: 422,
     media_validator_unavailable: 503,
+    project_access_denied: 403,
+    invalid_api_key_context: 500,
+    queued_task_quota_exceeded: 429,
+    project_concurrency_exceeded: 429,
+    daily_gpu_quota_exceeded: 429,
+    daily_cost_quota_exceeded: 429,
+    daily_upload_quota_exceeded: 429,
+    active_file_storage_quota_exceeded: 429,
+    file_too_large: 413,
   };
   const code = statuses[candidate] === undefined ? "internal_error" : candidate;
   const retryable = code === "internal_error" || code === "media_validator_unavailable";
@@ -95,12 +128,15 @@ function serviceError(request: Request, error: unknown): Response {
         request_id: requestId(request),
       }),
     );
+  const status = statuses[code] ?? 500;
   return errorResponse(
     requestId(request),
-    statuses[code] ?? 500,
+    status,
     code,
     code === "internal_error" ? "An internal error occurred" : code.replaceAll("_", " "),
     retryable,
+    undefined,
+    status === 429 ? { "Retry-After": "60" } : undefined,
   );
 }
 
@@ -147,8 +183,13 @@ function parseJson<S extends z.ZodTypeAny>(
     }));
 }
 
-export function createPublicApi(taskService: PublicTaskUseCases, fileService: PublicFileUseCases): Hono {
+export function createPublicApi(
+  taskService: PublicTaskUseCases,
+  fileService: PublicFileUseCases,
+  security: PublicApiSecurity,
+): Hono {
   const app = new Hono();
+  const authenticatedContexts = new WeakMap<Request, ProjectContext>();
   const metrics = createMetricRegistry("public-api");
   const requests = new Counter({
     name: "astra_public_api_requests_total",
@@ -163,25 +204,115 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
     buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
     registers: [metrics],
   });
+  const accessRejections = new Counter({
+    name: "astra_public_api_access_rejections_total",
+    help: "Public API authentication, authorization, rate, and admission rejections",
+    labelNames: ["route", "status"] as const,
+    registers: [metrics],
+  });
   attachRequestId(app);
   app.use("/v1/*", async (c, next) => {
     const started = performance.now();
     await next();
     const labels = { method: c.req.method, route: matchedRoutes(c).at(-1)?.path ?? "unmatched" };
     requests.inc({ ...labels, status: String(c.res.status) });
+    if ([401, 403, 429].includes(c.res.status)) {
+      accessRejections.inc({ route: labels.route, status: String(c.res.status) });
+    }
     requestDuration.observe(labels, (performance.now() - started) / 1000);
   });
+  app.use("/v1/*", async (c, next) => {
+    try {
+      const selected = await security.authenticator.authenticate(c.req.raw, requestId(c.req.raw));
+      const decision = await security.rateLimiter.consume(selected, "request", requestId(c.req.raw));
+      if (!decision.allowed) {
+        await security.authenticator.recordOutcome(selected, c.req.raw, requestId(c.req.raw), {
+          action: "public_api.admission",
+          status: 429,
+          reasonCode: "request_rate_exceeded",
+        });
+        return errorResponse(
+          requestId(c.req.raw),
+          429,
+          "request_rate_exceeded",
+          "Request rate limit exceeded",
+          true,
+          undefined,
+          { "Retry-After": String(decision.retryAfterSeconds) },
+        );
+      }
+      authenticatedContexts.set(c.req.raw, selected);
+      await next();
+      if (c.res.status === 429) {
+        let reasonCode = "admission_rejected";
+        try {
+          const body = (await c.res.clone().json()) as { error?: { code?: unknown } };
+          if (typeof body.error?.code === "string") reasonCode = body.error.code;
+        } catch {
+          reasonCode = "admission_rejected";
+        }
+        await security.authenticator.recordOutcome(selected, c.req.raw, requestId(c.req.raw), {
+          action: "public_api.admission",
+          status: c.res.status,
+          reasonCode,
+        });
+      }
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  const authorize = async (request: Request, scope: PublicApiScope): Promise<ProjectContext | Response> => {
+    const selected = authenticatedContexts.get(request);
+    if (!selected) return errorResponse(requestId(request), 401, "invalid_api_key", "Invalid API Key");
+    try {
+      await security.authenticator.authorize(selected, scope, request, requestId(request));
+      return selected;
+    } catch (error) {
+      return serviceError(request, error);
+    }
+  };
+
+  const taskRateLimit = async (
+    request: Request,
+    selected: ProjectContext,
+    category: RateLimitCategory,
+    operationKey: string,
+  ): Promise<Response | undefined> => {
+    try {
+      const decision = await security.rateLimiter.consume(selected, category, operationKey);
+      if (decision.allowed) return undefined;
+      return errorResponse(
+        requestId(request),
+        429,
+        "request_rate_exceeded",
+        "Task creation rate limit exceeded",
+        true,
+        undefined,
+        { "Retry-After": String(decision.retryAfterSeconds) },
+      );
+    } catch (error) {
+      return serviceError(request, error);
+    }
+  };
   app.get("/health/live", (c) => c.json({ status: "ok" }));
   app.get("/health/ready", async (c) => {
-    const ready = await taskService.ready();
+    const [databaseReady, rateLimiterReady] = await Promise.all([taskService.ready(), security.rateLimiter.ready()]);
+    const ready = databaseReady && rateLimiterReady;
     return c.json(
-      { status: ready ? "ready" : "not_ready", database: ready ? "ready" : "unavailable" },
+      {
+        status: ready ? "ready" : "not_ready",
+        database: databaseReady ? "ready" : "unavailable",
+        rate_limiter: rateLimiterReady ? "ready" : "unavailable",
+      },
       ready ? 200 : 503,
     );
   });
   app.get("/metrics", () => metricResponse(metrics));
 
   app.post("/v1/videos/generations", async (c) => {
+    const selected = await authorize(c.req.raw, "generations:create");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(videoGenerationSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     if (!parsed.value)
@@ -196,9 +327,16 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
         false,
         "Idempotency-Key",
       );
+    const limited = await taskRateLimit(
+      c.req.raw,
+      selected,
+      "task",
+      `/v1/videos/generations:${key ?? requestId(c.req.raw)}`,
+    );
+    if (limited) return limited;
     try {
       const result = await taskService.create(
-        context(c.req.raw),
+        selected,
         parsed.value,
         "video",
         "generation",
@@ -212,6 +350,8 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
   });
 
   app.post("/v1/images/generations", async (c) => {
+    const selected = await authorize(c.req.raw, "generations:create");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(imageGenerationSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     if (!parsed.value)
@@ -226,9 +366,16 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
         false,
         "Idempotency-Key",
       );
+    const limited = await taskRateLimit(
+      c.req.raw,
+      selected,
+      "task",
+      `/v1/images/generations:${key ?? requestId(c.req.raw)}`,
+    );
+    if (limited) return limited;
     try {
       const result = await taskService.create(
-        context(c.req.raw),
+        selected,
         parsed.value,
         "image",
         "generation",
@@ -242,6 +389,8 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
   });
 
   app.post("/v1/videos/edits", async (c) => {
+    const selected = await authorize(c.req.raw, "generations:create");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(videoEditSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     if (!parsed.value)
@@ -256,15 +405,10 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
         false,
         "Idempotency-Key",
       );
+    const limited = await taskRateLimit(c.req.raw, selected, "task", `/v1/videos/edits:${key ?? requestId(c.req.raw)}`);
+    if (limited) return limited;
     try {
-      const result = await taskService.create(
-        context(c.req.raw),
-        parsed.value,
-        "video",
-        "edit",
-        "/v1/videos/edits",
-        key,
-      );
+      const result = await taskService.create(selected, parsed.value, "video", "edit", "/v1/videos/edits", key);
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
       return serviceError(c.req.raw, error);
@@ -272,6 +416,8 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
   });
 
   app.post("/v1/images/edits", async (c) => {
+    const selected = await authorize(c.req.raw, "generations:create");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(imageEditSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     if (!parsed.value)
@@ -286,15 +432,10 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
         false,
         "Idempotency-Key",
       );
+    const limited = await taskRateLimit(c.req.raw, selected, "task", `/v1/images/edits:${key ?? requestId(c.req.raw)}`);
+    if (limited) return limited;
     try {
-      const result = await taskService.create(
-        context(c.req.raw),
-        parsed.value,
-        "image",
-        "edit",
-        "/v1/images/edits",
-        key,
-      );
+      const result = await taskService.create(selected, parsed.value, "image", "edit", "/v1/images/edits", key);
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
       return serviceError(c.req.raw, error);
@@ -302,26 +443,32 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
   });
 
   app.post("/v1/files/uploads", async (c) => {
+    const selected = await authorize(c.req.raw, "files:write");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(fileUploadRequestSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     if (!parsed.value)
       return errorResponse(requestId(c.req.raw), 422, "invalid_request", "Request body failed schema validation");
     try {
-      return c.json(await fileService.reserve(context(c.req.raw).projectId, parsed.value), 201);
+      return c.json(await fileService.reserve(selected, parsed.value), 201);
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
   });
   app.post("/v1/files/:id/complete", async (c) => {
+    const selected = await authorize(c.req.raw, "files:write");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(emptyObjectSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     try {
-      return c.json(await fileService.complete(context(c.req.raw).projectId, c.req.param("id")));
+      return c.json(await fileService.complete(selected.projectId, c.req.param("id")));
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
   });
   app.get("/v1/tasks", async (c) => {
+    const selected = await authorize(c.req.raw, "tasks:read");
+    if (selected instanceof Response) return selected;
     const url = new URL(c.req.url);
     const rawStatus = url.searchParams
       .getAll("status")
@@ -345,7 +492,7 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
     }
     try {
       return c.json(
-        await taskService.list(context(c.req.raw), {
+        await taskService.list(selected, {
           limit: parsed.data.limit,
           ...(parsed.data.after ? { after: parsed.data.after } : {}),
           ...(parsed.data.type ? { type: parsed.data.type } : {}),
@@ -365,44 +512,54 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
     }
   });
   app.get("/v1/files/:id", async (c) => {
+    const selected = await authorize(c.req.raw, "files:read");
+    if (selected instanceof Response) return selected;
     try {
-      const file = await fileService.get(context(c.req.raw).projectId, c.req.param("id"));
+      const file = await fileService.get(selected.projectId, c.req.param("id"));
       return file ? c.json(file) : errorResponse(requestId(c.req.raw), 404, "file_not_found", "File not found");
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
   });
   app.get("/v1/models", async (c) => {
+    const selected = await authorize(c.req.raw, "models:read");
+    if (selected instanceof Response) return selected;
     const parsed = modelListQuerySchema.safeParse(c.req.query());
     if (!parsed.success)
       return errorResponse(requestId(c.req.raw), 400, "invalid_request", "Model filters failed schema validation");
     try {
-      return c.json(await taskService.listModels(context(c.req.raw), parsed.data.type));
+      return c.json(await taskService.listModels(selected, parsed.data.type));
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
   });
   app.get("/v1/tasks/:id", async (c) => {
+    const selected = await authorize(c.req.raw, "tasks:read");
+    if (selected instanceof Response) return selected;
     try {
-      const task = await taskService.get(context(c.req.raw), c.req.param("id"));
+      const task = await taskService.get(selected, c.req.param("id"));
       return task ? c.json(task) : errorResponse(requestId(c.req.raw), 404, "task_not_found", "Task not found");
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
   });
   app.post("/v1/tasks/:id/cancel", async (c) => {
+    const selected = await authorize(c.req.raw, "tasks:cancel");
+    if (selected instanceof Response) return selected;
     const parsed = await parseJson(emptyObjectSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     try {
-      const task = await taskService.cancel(context(c.req.raw), c.req.param("id"));
+      const task = await taskService.cancel(selected, c.req.param("id"));
       return task ? c.json(task) : errorResponse(requestId(c.req.raw), 404, "task_not_found", "Task not found");
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
   });
   app.get("/v1/files/:id/content", async (c) => {
+    const selected = await authorize(c.req.raw, "files:read");
+    if (selected instanceof Response) return selected;
     try {
-      return c.redirect(await fileService.contentUrl(context(c.req.raw).projectId, c.req.param("id")), 302);
+      return c.redirect(await fileService.contentUrl(selected.projectId, c.req.param("id")), 302);
     } catch (error) {
       return serviceError(c.req.raw, error);
     }

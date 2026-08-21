@@ -5,10 +5,15 @@ info:
   description: OpenAI-style asynchronous image/video API. SDK binary compatibility is not promised.
 servers:
   - url: http://127.0.0.1:54100
+security:
+  - bearerApiKey: []
 paths:
   /v1/files/uploads:
     post:
       operationId: createFileUpload
+      x-astra-required-scopes: [files:write]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -24,8 +29,10 @@ paths:
   /v1/files/{file_id}/complete:
     post:
       operationId: completeFileUpload
+      x-astra-required-scopes: [files:write]
       parameters:
         - $ref: '#/components/parameters/FileId'
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -41,16 +48,20 @@ paths:
   /v1/files/{file_id}/content:
     get:
       operationId: getFileContent
+      x-astra-required-scopes: [files:read]
       parameters:
         - $ref: '#/components/parameters/FileId'
+        - $ref: '#/components/parameters/ProjectId'
       responses:
         '302': { description: Redirect to a short-lived signed object URL }
         default: { $ref: '#/components/responses/Error' }
   /v1/files/{file_id}:
     get:
       operationId: getFile
+      x-astra-required-scopes: [files:read]
       parameters:
         - $ref: '#/components/parameters/FileId'
+        - $ref: '#/components/parameters/ProjectId'
       responses:
         '200':
           description: File metadata and lifecycle state
@@ -61,8 +72,10 @@ paths:
   /v1/videos/generations:
     post:
       operationId: createVideoGeneration
+      x-astra-required-scopes: [generations:create]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -80,8 +93,10 @@ paths:
   /v1/images/generations:
     post:
       operationId: createImageGeneration
+      x-astra-required-scopes: [generations:create]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -99,8 +114,10 @@ paths:
   /v1/videos/edits:
     post:
       operationId: createVideoEdit
+      x-astra-required-scopes: [generations:create]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -116,8 +133,10 @@ paths:
   /v1/images/edits:
     post:
       operationId: createImageEdit
+      x-astra-required-scopes: [generations:create]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -133,7 +152,9 @@ paths:
   /v1/tasks:
     get:
       operationId: listTasks
+      x-astra-required-scopes: [tasks:read]
       parameters:
+        - $ref: '#/components/parameters/ProjectId'
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
         - { name: after, in: query, schema: { type: string } }
         - { name: type, in: query, schema: { type: string, enum: [video, image] } }
@@ -152,8 +173,10 @@ paths:
   /v1/tasks/{task_id}:
     get:
       operationId: getTask
+      x-astra-required-scopes: [tasks:read]
       parameters:
         - $ref: '#/components/parameters/TaskId'
+        - $ref: '#/components/parameters/ProjectId'
       responses:
         '200':
           description: Task
@@ -165,8 +188,10 @@ paths:
   /v1/tasks/{task_id}/cancel:
     post:
       operationId: cancelTask
+      x-astra-required-scopes: [tasks:cancel]
       parameters:
         - $ref: '#/components/parameters/TaskId'
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
@@ -183,7 +208,9 @@ paths:
   /v1/models:
     get:
       operationId: listModels
+      x-astra-required-scopes: [models:read]
       parameters:
+        - $ref: '#/components/parameters/ProjectId'
         - { name: type, in: query, schema: { type: string, enum: [video, image] } }
       responses:
         '200':
@@ -193,6 +220,12 @@ paths:
               schema: { $ref: '#/components/schemas/ModelList' }
         default: { $ref: '#/components/responses/Error' }
 components:
+  securitySchemes:
+    bearerApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: Astra API Key
+      description: Rotatable Astra API Key. Query-string credentials are rejected.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -209,9 +242,19 @@ components:
       in: path
       required: true
       schema: { type: string, pattern: '^file_[A-Za-z0-9_-]+$' }
+    ProjectId:
+      name: X-Project-Id
+      in: header
+      required: false
+      description: Selects a project explicitly granted to the API Key; otherwise its default project is used.
+      schema: { type: string, pattern: '^project_[A-Za-z0-9_-]+$' }
   responses:
     Error:
       description: Error envelope
+      headers:
+        Retry-After:
+          description: Seconds until retry; present on rate and temporary admission failures.
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema:

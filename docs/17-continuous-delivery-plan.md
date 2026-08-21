@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | 0 | 工程基线与 v1 合同 | 完成 | 无 |
 | 1 | Public API 完整实现 | 完成 | 0 |
-| 2 | API Key、配额、限流、审计 | 未开始 | 1 |
+| 2 | API Key、配额、限流、审计 | 进行中 | 1 |
 | 3 | Admin API 与管理台只读能力 | 未开始 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 未开始 | 3 |
 | 5 | Outbox、Kafka、Redis 重建 | 未开始 | 4 |
@@ -60,6 +60,31 @@
 交付：Argon2id API Key、轮换/吊销/scope、组织项目角色、OIDC、权威用量账本、Redis 限流、并发/预算 Admission Control、敏感读取审计。
 
 退出条件：轮换、吊销、越权、跨项目、限流恢复、重复请求不重复占额和审计不可篡改测试通过。
+
+阶段 2 当前进度（2026-08-21）：
+
+- Public OpenAPI 已要求 Bearer API Key，并按 `generations:create`、`tasks:read`、`tasks:cancel`、
+  `files:write`、`files:read`、`models:read` 执行细粒度 scope；调用方组织头不再参与身份决策。
+- 已实现 Argon2id Key、前缀候选定位、默认/授权项目选择、过期、并行轮换、立即吊销、限频
+  `last_used_at` 和带 HMAC 服务签名的认证拒绝审计。
+- PostgreSQL 已落地组织、项目、Key、项目授权、成员角色、配额、reservation、只追加 usage
+  ledger 和只追加 audit event。Task/File Admission 在配额行锁事务内执行，幂等重放不重复占额，
+  取消、上传拒绝和资产过期幂等释放。
+- Redis Cluster 原子 Token Bucket 已接入请求/Task 创建限流；Redis 不可用时 Public 写路径
+  fail closed，readiness 同时检查 PostgreSQL 与 Redis。
+- 本地使用显式 `identity-bootstrap` Job 从未跟踪 `.env.local` 读取 Key，只保存 Argon2id 哈希，
+  不打印明文；Redis Cluster 初始化已支持重复启动。
+- 当前测试证据：36 项普通单元/合同测试，14 项 PostgreSQL 集成、6 项 MinIO/严格媒体集成、
+  4 项真实 HTTP 安全闭环均通过。HTTP 测试覆盖无凭证、跨项目、幂等 reservation、Redis
+  `Retry-After`、吊销和拒绝审计。
+
+本批回滚采用应用回滚而非数据库降级：`0005_identity_admission_audit.sql` 仅新增表、索引、触发器
+和 Release 估算元数据，旧应用可以忽略这些结构。回滚时保留 Key 哈希、reservation、usage ledger
+与 audit event，禁止删除或改写审计历史；Public API 旧版本只允许在已隔离入口中临时运行，避免恢复
+到信任调用方身份头的旧行为。修复后重新部署本批镜像并运行显式 `identity-bootstrap` 即可恢复。
+
+阶段 2 尚未完成：人员 OIDC 会话、组织/项目 RBAC 交集、CSRF 和敏感请求读取审计仍需接入
+Admin API 并完成权限矩阵测试。在这些退出项通过前，阶段 2 不标记完成，也不启动阶段 3。
 
 ### 阶段 3：Admin 只读面
 

@@ -553,6 +553,31 @@ Alias 在 Task 创建事务中解析为固定 Release ID。Alias 后续灰度或
 
 不带幂等键的重复请求会创建不同 Task。平台不根据 prompt 或文件哈希自动去重生成。
 
+### 10.1 Public API 身份与项目选择
+
+所有 `/v1` 请求使用 `Authorization: Bearer <api_key>`。Key 格式为
+`astra_sk_<12 位十六进制前缀>_<43 位 base64url secret>`；前缀只用于数据库候选定位，完整
+Key 仍必须通过 Argon2id 校验。禁止通过 query string 传递凭证。
+
+Key 固定绑定一个组织、一个默认项目和显式项目授权集合。未提供 `X-Project-Id` 时使用默认项目；
+提供该头时，目标项目必须属于同一组织且位于 Key 的授权集合，否则返回
+`403 project_access_denied`。调用方提供的组织标识永远不作为可信身份来源。
+
+Public API v1 scope 为：
+
+| Scope | 允许操作 |
+| --- | --- |
+| `generations:create` | 创建图片/视频 Task 和编辑 Task |
+| `tasks:read` | 查询和列出 Task |
+| `tasks:cancel` | 取消 Task |
+| `tasks:read_sensitive` | 后续受审计的原始敏感请求读取；不由普通 Task 查询隐式获得 |
+| `files:write` | 创建上传、完成确认 |
+| `files:read` | 文件元数据与内容下载 |
+| `models:read` | 查询项目可用模型 |
+
+认证失败、Key 过期/吊销、scope 拒绝和跨项目访问均写入审计。Key 的
+`last_used_at` 使用限频更新，避免每个请求产生数据库热点。
+
 ## 11. 错误码
 
 | HTTP | `type` | 典型 `code` | 是否可重试 |
@@ -605,6 +630,15 @@ Task 执行失败使用 Task 内部错误：
 - 文件单体、每日上传量和当前未过期字节数。
 
 `429` 返回 `Retry-After`。创建前预算校验只用于防止明显超额；最终账单由实际用量对账。运行中的 Task 不因预算后来降低而中断。
+
+Redis Cluster 使用原子滑动窗口执行请求和创建速率限制；键包含组织、项目和 API Key，TTL
+到期后可自然重建。Redis 不保存权威配额或用量。Redis 不可用时，写请求 fail closed 并返回
+`503 rate_limiter_unavailable`，读请求按策略允许短时降级但必须告警；生产默认所有 Public API
+均 fail closed。
+
+PostgreSQL 在 Task/File 创建事务内执行权威 Admission Control。幂等重放先命中原记录，不重复
+占用配额。Task 进入终态、上传被拒绝或过期时，以同一 reservation ID 幂等释放占额；实际 GPU
+秒和费用通过只追加用量账本对账，不覆盖原始条目。
 
 ## 13. 管理 API 摘要
 

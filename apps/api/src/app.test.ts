@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { taskSchema } from "@astra/contracts";
 import { z } from "zod";
 import { parse } from "yaml";
-import { createPublicApi, type PublicFileUseCases, type PublicTaskUseCases, withErrorHandling } from "./app.ts";
+import {
+  createPublicApi,
+  type PublicApiSecurity,
+  type PublicFileUseCases,
+  type PublicTaskUseCases,
+  withErrorHandling,
+} from "./app.ts";
 import { MediaValidatorError } from "./media-validator-client.ts";
 
 const unavailable = (): never => {
@@ -23,9 +29,29 @@ const fileUseCases: PublicFileUseCases = {
   get: async () => unavailable(),
   contentUrl: async () => unavailable(),
 };
+const testContext = {
+  actorType: "api_key" as const,
+  actorId: "key_test",
+  apiKeyId: "key_test",
+  organizationId: "org_test",
+  projectId: "project_test",
+  scopes: ["generations:create", "tasks:read", "tasks:cancel", "files:write", "files:read", "models:read"],
+  ratePolicy: { requestRatePerMinute: 1000, requestBurst: 1000, taskRatePerMinute: 1000, taskBurst: 1000 },
+};
+const testSecurity: PublicApiSecurity = {
+  authenticator: {
+    authenticate: async () => testContext,
+    authorize: async () => undefined,
+    recordOutcome: async () => undefined,
+  },
+  rateLimiter: {
+    consume: async () => ({ allowed: true, retryAfterSeconds: 1 }),
+    ready: async () => true,
+  },
+};
 
 describe("public API", () => {
-  const app = withErrorHandling(createPublicApi(taskUseCases, fileUseCases));
+  const app = withErrorHandling(createPublicApi(taskUseCases, fileUseCases, testSecurity));
 
   test("exposes liveness", async () => {
     const response = await app.request("http://localhost/health/live");
@@ -125,7 +151,7 @@ describe("public API", () => {
         throw new MediaValidatorError("rejected", false, 422);
       },
     };
-    const rejectingApp = withErrorHandling(createPublicApi(taskUseCases, rejectingFiles));
+    const rejectingApp = withErrorHandling(createPublicApi(taskUseCases, rejectingFiles, testSecurity));
     const response = await rejectingApp.request("http://localhost/v1/files/file_invalid/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -169,7 +195,7 @@ describe("public API", () => {
         };
       },
     };
-    const editApp = withErrorHandling(createPublicApi(tasks, fileUseCases));
+    const editApp = withErrorHandling(createPublicApi(tasks, fileUseCases, testSecurity));
     const response = await editApp.request("http://localhost/v1/videos/edits", {
       method: "POST",
       headers: { "content-type": "application/json" },

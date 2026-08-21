@@ -6,6 +6,7 @@ export * from "./schema.ts";
 export * from "./task-service.ts";
 export * from "./file-repository.ts";
 export * from "./asset-expiration.ts";
+export * from "./identity-repository.ts";
 
 export function createDatabase(databaseUrl: string) {
   const client = postgres(databaseUrl, { prepare: false });

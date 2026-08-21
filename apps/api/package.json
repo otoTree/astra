@@ -12,6 +12,7 @@
     "@astra/contracts": "workspace:*",
     "@astra/database": "workspace:*",
     "@astra/observability": "workspace:*",
+    "@astra/queue": "workspace:*",
     "@aws-sdk/client-s3": "^3.1115.0",
     "@aws-sdk/s3-request-presigner": "^3.1115.0",
     "hono": "^4.7.2"

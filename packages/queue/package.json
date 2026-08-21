@@ -7,6 +7,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@astra/contracts": "workspace:*"
+    "@astra/auth": "workspace:*",
+    "@astra/contracts": "workspace:*",
+    "redis": "^5.8.2"
   }
 }

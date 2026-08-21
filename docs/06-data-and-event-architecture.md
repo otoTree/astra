@@ -17,7 +17,13 @@
 ```mermaid
 erDiagram
     organizations ||--o{ projects : owns
-    projects ||--o{ api_keys : owns
+    organizations ||--o{ api_keys : issues
+    projects ||--o{ api_key_project_grants : grants
+    api_keys ||--o{ api_key_project_grants : authorizes
+    projects ||--|| project_quotas : limits
+    projects ||--o{ admission_reservations : reserves
+    projects ||--o{ usage_ledger : accounts
+    organizations ||--o{ audit_events : audits
     projects ||--o{ generation_tasks : creates
     generation_tasks ||--o{ task_attempts : retries
     task_attempts ||--o| task_leases : holds
@@ -37,6 +43,11 @@ erDiagram
 
 | 表 | 关键内容 |
 | --- | --- |
+| `organizations` / `projects` | Public、Admin 和 Worker 信任域共享的租户边界与启停状态 |
+| `api_keys` / `api_key_project_grants` | Argon2id Key、scope、默认项目、显式项目授权、过期与吊销 |
+| `project_quotas` | 版本化速率、队列、并发 reservation、GPU/费用、上传和存储上限 |
+| `admission_reservations` | Task/File 创建事务中的预计 GPU 秒、费用和字节占额；终态幂等释放 |
+| `usage_ledger` | GPU 秒、费用、上传字节和存储用量的只追加权威账本 |
 | `generation_tasks` | 类型、操作、状态、加密请求、Release、优先级、进度、错误、费用、时间和版本 |
 | `task_attempts` | 每次执行、Replica、阶段、错误、使用量、开始/结束时间 |
 | `task_leases` | 有效租约 Token 哈希、过期、心跳和序列 |
@@ -56,6 +67,10 @@ erDiagram
 | `scheduling_decisions` | 候选、排序、过滤、Placement 得分和最终选择 |
 | `outbox_events` | 待发布领域事件 |
 | `audit_events` | 人员/API Key 行为、资源、差异、请求与结果 |
+
+`usage_ledger` 与 `audit_events` 在数据库层使用 `BEFORE UPDATE OR DELETE` 触发器拒绝历史修改。
+修正必须追加冲正或更正事件，不能覆盖原记录。Admission 先锁定项目 `project_quotas` 行，再读取
+当前 Task、reservation 和当日账本，因此并发创建不会越过同一项目限额。
 
 ### 2.2 Task 表关键约束
 

@@ -1,5 +1,122 @@
 import { pgTable, text, integer, timestamp, jsonb, boolean, index, uniqueIndex, bigint } from "drizzle-orm/pg-core";
 
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  status: text("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const projects = pgTable("projects", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  name: text("name").notNull(),
+  status: text("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const apiKeys = pgTable("api_keys", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  defaultProjectId: text("default_project_id").notNull(),
+  name: text("name").notNull(),
+  keyPrefix: text("key_prefix").notNull().unique(),
+  keyLastFour: text("key_last_four").notNull(),
+  secretHash: text("secret_hash").notNull(),
+  scopes: text("scopes").array().notNull(),
+  status: text("status").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const projectQuotas = pgTable("project_quotas", {
+  projectId: text("project_id").primaryKey(),
+  version: integer("version").notNull(),
+  requestRatePerMinute: integer("request_rate_per_minute").notNull(),
+  requestBurst: integer("request_burst").notNull(),
+  taskRatePerMinute: integer("task_rate_per_minute").notNull(),
+  taskBurst: integer("task_burst").notNull(),
+  queuedTaskLimit: integer("queued_task_limit").notNull(),
+  onlineReservationLimit: integer("online_reservation_limit").notNull(),
+  batchReservationLimit: integer("batch_reservation_limit").notNull(),
+  dailyGpuSecondsLimit: bigint("daily_gpu_seconds_limit", { mode: "number" }),
+  dailyCostLimitMinor: bigint("daily_cost_limit_minor", { mode: "number" }),
+  currency: text("currency").notNull(),
+  maxFileSizeBytes: bigint("max_file_size_bytes", { mode: "number" }).notNull(),
+  dailyUploadBytesLimit: bigint("daily_upload_bytes_limit", { mode: "number" }).notNull(),
+  activeFileBytesLimit: bigint("active_file_bytes_limit", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const admissionReservations = pgTable(
+  "admission_reservations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    apiKeyId: text("api_key_id").notNull(),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id").notNull(),
+    lane: text("lane"),
+    status: text("status").notNull(),
+    estimatedGpuSeconds: bigint("estimated_gpu_seconds", { mode: "number" }).notNull(),
+    estimatedCostMinor: bigint("estimated_cost_minor", { mode: "number" }).notNull(),
+    reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull(),
+    releaseReason: text("release_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
+  },
+  (table) => ({
+    projectResourceIdx: uniqueIndex("admission_reservations_project_id_resource_type_resource_id_key").on(
+      table.projectId,
+      table.resourceType,
+      table.resourceId,
+    ),
+  }),
+);
+
+export const usageLedger = pgTable("usage_ledger", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  projectId: text("project_id").notNull(),
+  taskId: text("task_id"),
+  reservationId: text("reservation_id"),
+  sourceType: text("source_type").notNull(),
+  sourceId: text("source_id").notNull(),
+  metric: text("metric").notNull(),
+  quantity: bigint("quantity", { mode: "number" }).notNull(),
+  currency: text("currency"),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const auditEvents = pgTable("audit_events", {
+  id: text("id").primaryKey(),
+  actorType: text("actor_type").notNull(),
+  actorId: text("actor_id"),
+  apiKeyId: text("api_key_id"),
+  organizationId: text("organization_id"),
+  projectId: text("project_id"),
+  action: text("action").notNull(),
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  outcome: text("outcome").notNull(),
+  reasonCode: text("reason_code"),
+  sourceIp: text("source_ip"),
+  userAgent: text("user_agent"),
+  requestId: text("request_id").notNull(),
+  traceId: text("trace_id"),
+  purpose: text("purpose"),
+  details: jsonb("details").notNull(),
+  signature: text("signature").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
 export const tasks = pgTable(
   "tasks",
   {
