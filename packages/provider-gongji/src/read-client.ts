@@ -3,6 +3,7 @@ import type {
   ProviderObservationPage,
   ProviderObservationReader,
   ProviderOperationContext,
+  ProviderObservedObject,
 } from "@astra/provider-core";
 import { ProviderError } from "@astra/provider-core";
 import { decodeBilling, decodeNodeList, decodeResources, decodeTaskList, decodeWarmupRegions } from "./dto.ts";
@@ -22,6 +23,12 @@ export type GongjiReadClientOptions = Readonly<{
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   sleep?: (milliseconds: number) => Promise<void>;
   random?: () => number;
+}>;
+
+export type GongjiResourceSelection = Readonly<{
+  mark: string;
+  regionName: string;
+  resource: Readonly<Record<string, string | number | null>>;
 }>;
 
 type JsonObject = Record<string, unknown>;
@@ -123,6 +130,79 @@ export class GongjiReadClient implements ProviderObservationReader {
       },
       pages,
     };
+  }
+
+  async selectResource(
+    region: string,
+    gpuSku: string,
+    context: ProviderOperationContext,
+  ): Promise<GongjiResourceSelection> {
+    const raw = await this.get(paths.resources, { task_type: "Deployment", device_type: "GpuDevice" }, context);
+    if (!raw || typeof raw !== "object") throw new ProviderError("invalid_provider_response", false);
+    const data = (raw as JsonObject).data;
+    const results = data && typeof data === "object" ? (data as JsonObject).results : undefined;
+    if (!Array.isArray(results)) throw new ProviderError("invalid_provider_response", false);
+    for (const item of results) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as JsonObject;
+      if (String(record.gpu_name ?? "") !== gpuSku || !Array.isArray(record.regions)) continue;
+      for (const candidate of record.regions) {
+        if (!candidate || typeof candidate !== "object") continue;
+        const regionRecord = candidate as JsonObject;
+        if (String(regionRecord.region ?? "") !== region) continue;
+        const markRecord = regionRecord.mark;
+        if (!markRecord || typeof markRecord !== "object" || Array.isArray(markRecord)) {
+          throw new ProviderError("invalid_provider_response", false);
+        }
+        const mark = String((markRecord as JsonObject).mark ?? "");
+        const resource = (markRecord as JsonObject).resource;
+        if (!mark || !resource || typeof resource !== "object" || Array.isArray(resource)) {
+          throw new ProviderError("invalid_provider_response", false);
+        }
+        const normalized = Object.fromEntries(
+          Object.entries(resource as JsonObject).flatMap(([key, value]) =>
+            typeof value === "string" || typeof value === "number" || value === null ? [[key, value]] : [],
+          ),
+        );
+        return { mark, regionName: String(regionRecord.region_name ?? region), resource: normalized };
+      }
+    }
+    throw new ProviderError("inventory_exhausted", true, 30);
+  }
+
+  async findDeployment(
+    selector: Readonly<{ id?: string; name?: string }>,
+    context: ProviderOperationContext,
+  ): Promise<ProviderObservedObject | undefined> {
+    const pages = await this.list(paths.deployments, selector.name ? { search_value: selector.name } : {}, context);
+    return this.findTaskObject("deployment", paths.deployments, pages, selector);
+  }
+
+  async findWarmup(
+    selector: Readonly<{ id?: string; name?: string }>,
+    context: ProviderOperationContext,
+  ): Promise<ProviderObservedObject | undefined> {
+    const pages = await this.list(paths.warmups, selector.name ? { search_value: selector.name } : {}, context);
+    return this.findTaskObject("image_prewarm", paths.warmups, pages, selector);
+  }
+
+  private findTaskObject(
+    kind: "deployment" | "image_prewarm",
+    path: string,
+    rawPages: readonly unknown[],
+    selector: Readonly<{ id?: string; name?: string }>,
+  ): ProviderObservedObject | undefined {
+    for (const raw of rawPages) {
+      const decoded = decodeTaskList(kind, path, raw, this.now());
+      if (decoded.quarantineReasons.length > 0) throw new ProviderError("invalid_provider_response", false);
+      const found = decoded.objects.find(
+        (object) =>
+          (selector.id !== undefined && object.providerId === selector.id) ||
+          (selector.name !== undefined && object.attributes.name === selector.name),
+      );
+      if (found) return found;
+    }
+    return undefined;
   }
 
   private async list(

@@ -89,6 +89,10 @@ export const providerControllerConfigSchema = environmentSchema
     PROVIDER_BREAKER_COOLDOWN_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
     PROVIDER_PAGE_SIZE: z.coerce.number().int().min(1).max(200).default(100),
     PROVIDER_MAXIMUM_PAGES: z.coerce.number().int().min(1).max(100).default(20),
+    PROVIDER_OPERATION_POLL_INTERVAL_MS: z.coerce.number().int().min(50).max(60000).default(500),
+    PROVIDER_OPERATION_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
+    PROVIDER_OPERATION_LEASE_SECONDS: z.coerce.number().int().min(5).max(300).default(30),
+    PROVIDER_OPERATION_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(120).default(20),
   })
   .superRefine((config, context) => {
     if (config.PROVIDER_DRIVER === "gongji") {

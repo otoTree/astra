@@ -8,6 +8,7 @@
     "@astra/database": "workspace:*",
     "@astra/observability": "workspace:*",
     "@astra/provider-core": "workspace:*",
-    "@astra/provider-gongji": "workspace:*"
+    "@astra/provider-gongji": "workspace:*",
+    "@astra/provider-reference": "workspace:*"
   }
 }

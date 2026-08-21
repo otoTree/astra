@@ -78,8 +78,11 @@
       "version": "0.1.0",
       "dependencies": {
         "@astra/config": "workspace:*",
+        "@astra/database": "workspace:*",
         "@astra/observability": "workspace:*",
         "@astra/provider-core": "workspace:*",
+        "@astra/provider-gongji": "workspace:*",
+        "@astra/provider-reference": "workspace:*",
       },
     },
     "apps/registry-reference": {
@@ -95,7 +98,9 @@
       "version": "0.1.0",
       "dependencies": {
         "@astra/config": "workspace:*",
+        "@astra/database": "workspace:*",
         "@astra/observability": "workspace:*",
+        "@astra/queue": "workspace:*",
       },
     },
     "apps/worker-agent": {
@@ -157,6 +162,13 @@
         "@astra/provider-core": "workspace:*",
       },
     },
+    "packages/provider-reference": {
+      "name": "@astra/provider-reference",
+      "version": "0.1.0",
+      "dependencies": {
+        "@astra/provider-core": "workspace:*",
+      },
+    },
     "packages/queue": {
       "name": "@astra/queue",
       "version": "0.1.0",
@@ -209,6 +221,8 @@
     "@astra/provider-core": ["@astra/provider-core@workspace:packages/provider-core"],
 
     "@astra/provider-gongji": ["@astra/provider-gongji@workspace:packages/provider-gongji"],
+
+    "@astra/provider-reference": ["@astra/provider-reference@workspace:packages/provider-reference"],
 
     "@astra/queue": ["@astra/queue@workspace:packages/queue"],
 

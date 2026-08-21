@@ -11,6 +11,7 @@
       "@astra/queue": ["packages/queue/src/index.ts"],
       "@astra/provider-core": ["packages/provider-core/src/index.ts"],
       "@astra/provider-gongji": ["packages/provider-gongji/src/index.ts"],
+      "@astra/provider-reference": ["packages/provider-reference/src/index.ts"],
       "@astra/testkit": ["packages/testkit/src/index.ts"]
     }
   },

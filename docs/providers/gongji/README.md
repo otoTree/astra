@@ -53,5 +53,6 @@ Adapter 负责资源查询、弹性 Deployment、镜像预热、Job、节点、�
 `packages/provider-gongji/fixtures/documented/`，由本目录 OpenAPI 示例裁剪并脱敏，不是对生产接口的实时请求。
 本地 `PROVIDER_DRIVER=reference`，不会读取共绩凭证或连接 `openapi.suanli.cn`。
 
-创建、启动、扩缩、停止、回收和预热写操作属于阶段 9，不能通过阶段 8 的读取客户端绕过 Provider Operation
-与 Reconcile。真实供应商合同验证只能在隔离环境显式启用，并必须设置成本上限和自动回收。
+阶段 9 已实现 Deployment 创建/暂停/停止与镜像预热创建 Transport，但只能由 Provider Controller 根据数据库
+Provider Operation 调用，不能绕过 Operation 与 Reconcile。模糊写入失败由确定性任务名查询收敛，不在 HTTP
+客户端内盲目重放。真实供应商合同验证只能在隔离环境显式启用，并必须设置成本上限和自动回收。

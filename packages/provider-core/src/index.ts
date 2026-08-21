@@ -137,11 +137,11 @@ export type ProviderUsage = Readonly<{
 export interface ProviderAdapter {
   getResourceSnapshot(context: ProviderOperationContext): Promise<ProviderResourceSnapshot>;
   prewarmImage(
-    input: Readonly<{ imageDigest: string; region: string; gpuSku: string }>,
+    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
     context: ProviderOperationContext,
   ): Promise<ProviderImageWarmup>;
   provisionReplica(
-    input: Readonly<{ imageDigest: string; region: string; gpuSku: string }>,
+    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
     context: ProviderOperationContext,
   ): Promise<ProviderReplica>;
   drainReplica(replicaId: string, context: ProviderOperationContext): Promise<void>;
@@ -158,4 +158,21 @@ export interface ProviderAdapter {
     context: ProviderOperationContext,
   ): Promise<ProviderUploadReservation>;
   getUsage(resourceId: string, context: ProviderOperationContext): Promise<ProviderUsage>;
+}
+
+export interface ProviderResourceOperator {
+  prewarmImage(
+    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
+    context: ProviderOperationContext,
+  ): Promise<ProviderImageWarmup>;
+  provisionReplica(
+    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
+    context: ProviderOperationContext,
+  ): Promise<ProviderReplica>;
+  drainReplica(replicaId: string, context: ProviderOperationContext): Promise<void>;
+  terminateReplica(replicaId: string, context: ProviderOperationContext): Promise<void>;
+  observeReplica(
+    replicaId: string,
+    context: ProviderOperationContext,
+  ): Promise<Readonly<{ id: string; state: ProviderReplica["state"] }>>;
 }

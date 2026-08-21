@@ -22,8 +22,8 @@
 | 6 | 最小确定性调度与租约 | 完成 | 5 |
 | 7 | Worker Control 与 Agent 执行环 | 完成 | 6 |
 | 8 | 共绩 Transport 与只读快照 | 完成 | 7 |
-| 9 | 共绩资源操作与 Reconcile | 进行中 | 8 |
-| 10 | 预热、滚动发布、排空、回滚 | 未开始 | 9 |
+| 9 | 共绩资源操作与 Reconcile | 完成 | 8 |
+| 10 | 预热、滚动发布、排空、回滚 | 进行中 | 9 |
 | 11 | WFQ、耗时预测、Retry Policy | 未开始 | 10 |
 | 12 | 扩缩容、成本收益、跨区放置 | 未开始 | 11 |
 | 13 | 生产安全、灾备、10-50 GPU 验收 | 未开始 | 12 |
@@ -247,6 +247,28 @@
 交付：Provider Controller 按数据库期望状态创建、启动、预热、停止、回收；确定性 operation key；操作成本和供应商 ID；漂移 Reconcile。
 
 退出条件：响应丢失、重复消息、限流、无库存、签名错误和区域故障不创建重复计费资源；隔离真实验证有成本上限和自动回收。
+
+阶段 9 完成证据（2026-08-22）：
+
+- PostgreSQL Provider Operation 已扩展为期望状态账本，固定 operation key、请求摘要和目标载荷，并保存租约、
+  最大尝试次数、下一次执行时间、供应商资源 ID、状态、响应摘要、费用和最后对账时间。身份字段由数据库触发器
+  禁止修改；多 Controller 通过 `FOR UPDATE SKIP LOCKED` 与租约 CAS 领取，过期执行进入 `reconciling`。
+- Provider Controller 现在是唯一资源操作出口，按 Provider 隔离激活、领取和指标。快照过期时 provision/prewarm
+  写为 `suppressed`，新鲜快照恢复后自动激活；drain/terminate 不被库存快照阻塞，但只有 Worker 已 `drained`、
+  Replica 没有活跃 Attempt 时才可领取，避免停止运行中任务。
+- 共绩写 Transport 实现固定请求字节签名、超时、错误映射与熔断；创建 Deployment 和镜像预热只接受完整的
+  `registry/repository@sha256:...` 引用。模糊超时不在 HTTP 层重放，下一轮按 operation key 派生的确定性任务名
+  查询供应商后再决定创建，避免重复计费资源；暂停和停止前读取当前状态并保持幂等。
+- 独立 `provider-reference` 实现同一资源操作合同。本地 Compose 继续只启用 reference，Operation Loop health 为
+  ready，且没有配置真实凭证、没有请求共绩、没有创建外部算力或拉取镜像。
+- 集成测试覆盖 operation key 冲突/重放、双 Controller 领取、创建成功但响应未持久化、旧租约迟到结果、活跃
+  Replica 回收抑制、快照过期与恢复、限流退避、鉴权失败和确定性资源收敛。`bun run check` 通过 73 项常规
+  测试，PostgreSQL 回归 29 项通过。
+
+本阶段迁移 `0014_provider_operations_reconcile.sql` checksum 固定为
+`83f88c304ab2859c668a99112217461c40b39a966d2d2b3de2bed4775df08177`。回滚时先停止 Provider Controller，
+保留未终态 Operation、供应商资源 ID、重试和费用记录；旧应用忽略新增列。恢复后由租约过期和确定性任务名查询
+继续 Reconcile，禁止删除 Operation 以“解决”不确定供应商状态。
 
 ### 阶段 10：镜像发布
 

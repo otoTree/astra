@@ -1,0 +1,12 @@
+{
+  "name": "@astra/provider-reference",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@astra/provider-core": "workspace:*"
+  }
+}
