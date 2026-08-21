@@ -16,7 +16,7 @@ kubectl apply --dry-run=client -f /tmp/astra-rendered.yaml
 - 三 API、Scheduler、Provider Controller、Event Relay 使用独立 Deployment/ServiceAccount；PDB 至少保留一个副本。
 - 数据库迁移只通过 pre-install/pre-upgrade Job，应用启动不自动迁移。
 - ExternalSecret 默认关闭；生产启用后 Secret 只来自 SecretStore，不进入 values/Git/日志。
-- 默认拒绝 NetworkPolicy 后仅放行 DNS、PostgreSQL、Redis、Kafka、S3、OIDC、Provider 和监控端点；Model App 无外网。
+- 默认拒绝 NetworkPolicy 后，三个 API 按信任域/端口分别放行；控制面指标只允许观测命名空间；DNS、PostgreSQL、Redis、Kafka、S3、OIDC、Provider 和监控端点必须显式配置。Model App 无外网。
 - CI 生成 SBOM、签名、漏洞报告并在准入层验证 digest、签名和严重漏洞阈值。
 
 ## 故障验收

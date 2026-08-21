@@ -147,6 +147,7 @@ export class AdminQueryService {
         "policies",
         "policy_previews",
         "release_approvals",
+        "capacity_plans",
       ].includes(resource)
     ) {
       const table = tableByResource[resource];

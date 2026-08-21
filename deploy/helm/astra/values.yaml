@@ -75,7 +75,13 @@ containerSecurityContext:
 networkPolicy:
   enabled: true
   namespaceSelector: {}
-  allowedIngressNamespaceSelector: {}
+  allowedIngressNamespaceSelector:
+    matchLabels:
+      astra.network/allow: ingress
+  allowedIngressNamespaceSelectors: {}
+  allowedMetricsNamespaceSelector:
+    matchLabels:
+      astra.network/allow: metrics
   allowedEgress:
     - name: database
       namespaceSelector: {}

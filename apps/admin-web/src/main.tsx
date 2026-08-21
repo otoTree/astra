@@ -1064,6 +1064,22 @@ function App() {
               columns={["region_name", "gpu_sku", "available_replicas", "price_per_gpu_hour_minor", "observed_at"]}
             />
             <ResourceTable
+              title="容量计划"
+              path="/admin/v1/capacity-plans"
+              columns={[
+                "id",
+                "pool_id",
+                "status",
+                "current_replicas",
+                "desired_replicas",
+                "queue_slo_replicas",
+                "cost_minor",
+                "net_benefit_minor",
+                "suppression_reason",
+                "created_at",
+              ]}
+            />
+            <ResourceTable
               title="Worker"
               path="/admin/v1/workers"
               columns={["id", "replica_id", "release_id", "status", "last_heartbeat_at"]}

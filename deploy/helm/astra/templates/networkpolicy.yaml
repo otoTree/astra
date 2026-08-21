@@ -6,32 +6,53 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
+{{- range .Values.apiDeployments }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "astra.fullname" . }}-internal-ingress
+  name: {{ include "astra.fullname" $ }}-{{ .name }}-ingress
 spec:
   podSelector:
-    matchLabels: { app.kubernetes.io/name: {{ include "astra.name" . }} }
+    matchLabels:
+      app.kubernetes.io/name: {{ include "astra.name" $ }}
+      astra.deployment: {{ .name | quote }}
   policyTypes: [Ingress]
   ingress:
     - from:
         - namespaceSelector:
-{{ toYaml .Values.networkPolicy.allowedIngressNamespaceSelector | indent 12 }}
+{{- $selector := $.Values.networkPolicy.allowedIngressNamespaceSelector }}
+{{- if $.Values.networkPolicy.allowedIngressNamespaceSelectors }}
+{{- $configured := index $.Values.networkPolicy.allowedIngressNamespaceSelectors .name }}
+{{- if $configured }}
+{{- $selector = $configured }}
+{{- end }}
+{{- end }}
+{{ toYaml $selector | indent 12 }}
       ports:
         - protocol: TCP
-          port: 4100
+          port: {{ .port }}
+{{- end }}
+{{- range .Values.controlPlaneDeployments }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "astra.fullname" $ }}-{{ .name }}-metrics
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "astra.name" $ }}
+      astra.deployment: {{ .name | quote }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+{{ toYaml $.Values.networkPolicy.allowedMetricsNamespaceSelector | indent 12 }}
+      ports:
         - protocol: TCP
-          port: 4101
-        - protocol: TCP
-          port: 4102
-        - protocol: TCP
-          port: 4110
-        - protocol: TCP
-          port: 4111
-        - protocol: TCP
-          port: 4112
+          port: {{ .port }}
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -39,7 +60,8 @@ metadata:
   name: {{ include "astra.fullname" . }}-dependency-egress
 spec:
   podSelector:
-    matchLabels: { app.kubernetes.io/name: {{ include "astra.name" . }} }
+    matchLabels:
+      app.kubernetes.io/name: {{ include "astra.name" . }}
   policyTypes: [Egress]
   egress:
     - to:

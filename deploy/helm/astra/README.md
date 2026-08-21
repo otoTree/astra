@@ -6,7 +6,7 @@ Chart 包含：
 
 - pre-install/pre-upgrade 数据库迁移 Job。应用不会在启动时自动迁移。
 - 非 root、RuntimeDefault、只读根文件系统、禁止提权和丢弃 Linux capabilities。
-- 默认拒绝入站/出站 NetworkPolicy，DNS、数据库、Redis、Kafka 和配置的 TLS 出站目标必须显式放行。
+- 默认拒绝入站/出站 NetworkPolicy；三个 API 按 Deployment/端口分别限制入口，控制面指标仅允许观测命名空间，DNS、数据库、Redis、Kafka 和配置的 TLS 出站目标必须显式放行。
 - 每个信任域独立 ServiceAccount、PDB 和 HPA；migration Job 使用单独的受限 ServiceAccount。
 - 可选 ExternalSecret。生产 Secret 不写入 values 或 Git，`externalSecret.enabled=true` 时由集群 SecretStore 提供。
 

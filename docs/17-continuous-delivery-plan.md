@@ -390,3 +390,11 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 交付：图片 Model App 复用 Task/Worker/Provider/发布/计费体系；图片能力仅位于 Release Schema；压测调度分片、数据库分区、Outbox、Redis 重建和 Provider 限流。
 
 退出条件：图片和视频创建路径分离、查询统一；数百 GPU 压测无重复调度、租约冲突或状态丢失，并形成容量评审报告。
+
+阶段 15 平台侧无权重验收证据（2026-08-22）：
+
+- 图片生成、图片编辑、视频生成和视频编辑继续使用分开的创建路由；Task 查询、取消、文件下载、审计、计费和 Worker Contract 共享同一生命周期实现。图片 Release 特有字段只存在图片 Schema/Manifest 命名空间。
+- 参考 Model App 已覆盖 PNG 图片产物、视频产物、取消、超时、重复 `execution_key` 和严格输出 manifest；没有加载模型权重。
+- `packages/queue/src/scale-acceptance.test.ts` 使用 300 个混合在线/批量任务和 256 个单槽 Replica 验证确定性排序、单任务单槽位和无重复分配；同一输入反转顺序得到完全相同的计划。该测试验证平台算法，不替代真实 GPU 容量报告。
+
+真实数百 GPU 压测、数据库分片/分区容量、Kafka/Redis/Provider 生产限流和模型质量仍需在隔离环境执行；平台仓库不下载或保存权重。

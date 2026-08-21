@@ -36,6 +36,19 @@ async function fixture() {
       await transaction`INSERT INTO task_state_events (id, task_id, from_status, to_status, version, created_at)
         VALUES (${`event_${index}_${suffix}`}, ${taskId}, NULL, 'queued', 0, ${createdAt})`;
     }
+    for (const [index, selectedProject] of [projectId, foreignProjectId].entries()) {
+      const createdAt = new Date(Date.now() - (index + 10) * 1_000).toISOString();
+      await transaction`INSERT INTO capacity_plans (
+        id, project_id, pool_id, status, observed_at, input_snapshot, result,
+        current_replicas, desired_replicas, workload_replicas, queue_slo_replicas,
+        cost_minor, benefit_minor, net_benefit_minor, admission_control,
+        strategy_version, created_at
+      ) VALUES (
+        ${`capacity_plan_admin_${index}_${suffix}`}, ${selectedProject}, 'pool_local_reference', 'planned',
+        ${createdAt}, ${JSON.stringify({ queue: [] })}, ${JSON.stringify({ desired_replicas: 1 })},
+        1, 1, 1, 1, 0, 0, 0, false, 'capacity-v1', ${createdAt}
+      )`;
+    }
   });
   return { organizationId, projectId, foreignOrganizationId, foreignProjectId, suffix };
 }
@@ -80,5 +93,15 @@ describe("AdminQueryService PostgreSQL contract", () => {
         WHERE project_id=${context.projectId} ORDER BY created_at DESC, id DESC LIMIT 50`;
     });
     expect(plan.map((row) => String(row["QUERY PLAN"])).join("\n")).toContain("tasks_project_created_idx");
+  });
+
+  integrationTest("lists capacity plans with the same project-bound cursor contract", async () => {
+    if (!database) throw new Error("test database unavailable");
+    const context = await fixture();
+    const service = new AdminQueryService(database.client, "admin-query-integration-key-at-least-32-bytes");
+    const result = await service.list(context, "capacity_plans", { limit: 10 });
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]?.project_id).toBe(context.projectId);
+    expect(result.data[0]?.status).toBe("planned");
   });
 });

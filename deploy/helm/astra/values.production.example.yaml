@@ -37,6 +37,19 @@ networkPolicy:
   allowedIngressNamespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: astra-gateway
+  allowedIngressNamespaceSelectors:
+    public-api:
+      matchLabels:
+        kubernetes.io/metadata.name: astra-public-gateway
+    admin-api:
+      matchLabels:
+        kubernetes.io/metadata.name: astra-admin-gateway
+    worker-control-api:
+      matchLabels:
+        kubernetes.io/metadata.name: astra-worker-egress
+  allowedMetricsNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: astra-observability
   allowedEgress:
     - name: database
       namespaceSelector:
