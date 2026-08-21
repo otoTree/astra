@@ -4,6 +4,7 @@ import {
   loadEventRelayConfig,
   loadProviderControllerConfig,
   loadPublicApiConfig,
+  loadSchedulerConfig,
 } from "./index.ts";
 
 describe("service configuration", () => {
@@ -62,6 +63,20 @@ describe("service configuration", () => {
         REDIS_URL: "redis://localhost:6379",
         KAFKA_BROKERS: "localhost:9092",
         EVENT_RELAY_MAXIMUM_ATTEMPTS: "0",
+      }),
+    ).toThrow();
+  });
+
+  test("scheduler uses bounded reservation and freshness controls", () => {
+    const config = loadSchedulerConfig({
+      DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+    });
+    expect(config.SCHEDULER_RESERVATION_SECONDS).toBe(30);
+    expect(config.SCHEDULER_WORKER_FRESHNESS_SECONDS).toBe(60);
+    expect(() =>
+      loadSchedulerConfig({
+        DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+        SCHEDULER_RESERVATION_SECONDS: "31",
       }),
     ).toThrow();
   });

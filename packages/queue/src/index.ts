@@ -23,6 +23,83 @@ export type SchedulingDecision = Readonly<{
   policyVersion: string;
 }>;
 
+export type DeterministicTaskCandidate = Readonly<{
+  taskId: string;
+  projectId: string;
+  releaseId: string;
+  taskVersion: number;
+  lane: QueueClass;
+  createdAt: string;
+}>;
+
+export type DispatchableReplica = Readonly<{
+  replicaId: string;
+  replicaVersion: number;
+  poolId: string;
+  releaseId: string;
+  workerId: string;
+  regionId: string;
+  gpuSku: string;
+  maximumConcurrency: number;
+  occupiedSlots: readonly number[];
+  policyVersion: string;
+}>;
+
+export type DeterministicAssignment = Readonly<{
+  task: DeterministicTaskCandidate;
+  replica: DispatchableReplica;
+  slotIndex: number;
+  reason: "online_priority" | "batch_priority";
+}>;
+
+const compareText = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
+
+/** Pure phase-6 planner. Persistence performs CAS again and remains authoritative. */
+export function planDeterministicAssignments(
+  tasks: readonly DeterministicTaskCandidate[],
+  replicas: readonly DispatchableReplica[],
+): readonly DeterministicAssignment[] {
+  const orderedTasks = [...tasks].sort(
+    (left, right) =>
+      (left.lane === right.lane ? 0 : left.lane === "online" ? -1 : 1) ||
+      compareText(left.createdAt, right.createdAt) ||
+      compareText(left.taskId, right.taskId),
+  );
+  const orderedReplicas = [...replicas].sort(
+    (left, right) =>
+      compareText(left.releaseId, right.releaseId) ||
+      compareText(left.regionId, right.regionId) ||
+      compareText(left.poolId, right.poolId) ||
+      compareText(left.replicaId, right.replicaId),
+  );
+  const occupied = new Map(
+    orderedReplicas.map((replica) => [replica.replicaId, new Set(replica.occupiedSlots)] as const),
+  );
+  const assignments: DeterministicAssignment[] = [];
+
+  for (const task of orderedTasks) {
+    const replica = orderedReplicas.find((candidate) => {
+      if (candidate.releaseId !== task.releaseId) return false;
+      const slots = occupied.get(candidate.replicaId);
+      return slots !== undefined && slots.size < candidate.maximumConcurrency;
+    });
+    if (!replica) continue;
+    const slots = occupied.get(replica.replicaId);
+    if (!slots) continue;
+    let slotIndex = 0;
+    while (slots.has(slotIndex) && slotIndex < replica.maximumConcurrency) slotIndex += 1;
+    if (slotIndex >= replica.maximumConcurrency) continue;
+    slots.add(slotIndex);
+    assignments.push({
+      task,
+      replica,
+      slotIndex,
+      reason: task.lane === "online" ? "online_priority" : "batch_priority",
+    });
+  }
+  return assignments;
+}
+
 export type CapacityPlan = Readonly<{
   poolId: string;
   desiredReplicas: number;

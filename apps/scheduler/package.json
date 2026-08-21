@@ -5,6 +5,8 @@
   "type": "module",
   "dependencies": {
     "@astra/config": "workspace:*",
-    "@astra/observability": "workspace:*"
+    "@astra/database": "workspace:*",
+    "@astra/observability": "workspace:*",
+    "@astra/queue": "workspace:*"
   }
 }

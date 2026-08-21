@@ -49,6 +49,10 @@ export const workerControlApiConfigSchema = environmentSchema.extend({
 export const schedulerConfigSchema = environmentSchema.extend({
   SCHEDULER_METRICS_PORT: port(4110),
   DATABASE_URL: requiredUrl,
+  SCHEDULER_POLL_INTERVAL_MS: z.coerce.number().int().min(50).max(60000).default(250),
+  SCHEDULER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+  SCHEDULER_RESERVATION_SECONDS: z.coerce.number().int().min(5).max(30).default(30),
+  SCHEDULER_WORKER_FRESHNESS_SECONDS: z.coerce.number().int().min(10).max(300).default(60),
 });
 
 export const providerControllerConfigSchema = environmentSchema

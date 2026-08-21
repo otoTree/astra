@@ -19,8 +19,8 @@
 | 3 | Admin API 与管理台只读能力 | 完成 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 完成 | 3 |
 | 5 | Outbox、Kafka、Redis 重建 | 完成 | 4 |
-| 6 | 最小确定性调度与租约 | 进行中 | 5 |
-| 7 | Worker Control 与 Agent 执行环 | 未开始 | 6 |
+| 6 | 最小确定性调度与租约 | 完成 | 5 |
+| 7 | Worker Control 与 Agent 执行环 | 进行中 | 6 |
 | 8 | 共绩 Transport 与只读快照 | 未开始 | 7 |
 | 9 | 共绩资源操作与 Reconcile | 未开始 | 8 |
 | 10 | 预热、滚动发布、排空、回滚 | 未开始 | 9 |
@@ -163,6 +163,29 @@
 交付：不可变 `scheduling_decision`、Attempt、Reservation、Lease；按 Release/Pool/硬件/基本优先级分配；PostgreSQL CAS；`running/reserved/unknown/draining` 明确分离。Worker 只能领取预分配 Attempt。
 
 退出条件：多 Scheduler 不重复分配；旧租约不覆盖新状态；相同快照与 Clock 产生相同决策。
+
+阶段 6 完成证据（2026-08-21）：
+
+- PostgreSQL 新增不可变 `scheduling_decisions`，完整保存 Task/Replica 版本、Release、Pool、Worker、
+  槽位、策略版本、Clock 时间、输入快照、选择原因和结果；Attempt/Lease 保存 reservation 截止、状态、
+  心跳和绑定版本。历史 Attempt 保留兼容读取，新式分配必须引用 decision。
+- 活跃 Task 与 `(replica_id,slot_index)` 均有部分唯一索引。Scheduler 在单事务中锁定并复核 Task、
+  Release、Pool、Replica、Worker 心跳与并发上限，再通过 Task version CAS 写 decision、Attempt、Lease、
+  状态历史和 Outbox；Redis 候选从不决定分配结果。
+- reservation 最长 30 秒，Task 对外仍为 `queued` 且 reservation 不计吞吐。预留时 Task version 递增并
+  发布 `task.reserved` 从 Redis 移除；超时后 Lease/Attempt 原子转为 expired，再发布 `task.queued` 恢复候选。
+- 纯调度核心按 Release、在线/批量基础优先级、创建时间、区域、Pool、Replica 和最低空槽稳定排序；相同
+  快照不受输入数组顺序影响。高级公平、预测与跨区评分仍严格留在阶段 11-12。
+- 独立 Scheduler 支持横向副本、短轮询、批量、reservation TTL 和 Worker 新鲜度配置，并暴露 readiness、
+  迭代耗时、候选数、成功预留、CAS 冲突和过期指标。Task 排障接口同步展示 decision 和租约绑定详情。
+- `bun run check` 通过 53 项普通测试；24 项真实 PostgreSQL 测试通过，其中覆盖双 Scheduler 并发收敛、
+  stale Task/Replica CAS、decision 防篡改和 reservation 过期回队；7 项 Redis Cluster/Redpanda 事件测试通过。
+  本地 Scheduler readiness 为 ready，在 100 个排队 Task、0 个新鲜 Replica 时保持 0 reservation。
+
+本阶段新增并已应用迁移 `0011_deterministic_scheduling.sql`（checksum
+`2ecc8d6906c119e825e521df92fdd83468ccec3c6be65f683c2c8c24e7b1ed33`），后续禁止修改。回滚采用应用
+回滚并停止 Scheduler；保留 decision、Attempt、Lease 和状态历史，不执行降级删除。恢复本阶段应用后，
+过期 reservation 由任一 Scheduler 从 PostgreSQL 收敛，Redis 可由 Event Relay 重建。
 
 ### 阶段 7：Worker 执行闭环
 

@@ -231,10 +231,15 @@ export class AdminQueryService {
     const [events, attempts, files] = await Promise.all([
       this.sql`SELECT id, from_status, to_status, reason, version, created_at
         FROM task_state_events WHERE task_id=${taskId} ORDER BY created_at, id`,
-      this.sql`SELECT a.id, a.release_id, a.status, a.error, a.created_at, a.updated_at,
-          a.started_at, a.completed_at, l.id AS lease_id, l.worker_id, l.replica_id,
-          l.expires_at AS lease_expires_at, l.version AS lease_version
+      this.sql`SELECT a.id, a.release_id, a.status, a.error, a.attempt_no, a.pool_id,
+          a.replica_id, a.slot_index, a.decision_id, a.task_version_at_assignment,
+          a.reservation_expires_at, a.created_at, a.updated_at, a.started_at, a.completed_at,
+          l.id AS lease_id, l.worker_id, l.expires_at AS lease_expires_at, l.version AS lease_version,
+          l.status AS lease_status, l.heartbeat_at AS lease_heartbeat_at,
+          d.replica_version, d.policy_version, d.reason AS scheduling_reason,
+          d.input_snapshot AS scheduling_snapshot, d.decided_at
         FROM attempts a LEFT JOIN leases l ON l.attempt_id=a.id
+        LEFT JOIN scheduling_decisions d ON d.id=a.decision_id
         WHERE a.task_id=${taskId} ORDER BY a.created_at, a.id`,
       this.sql`SELECT tf.direction, tf.role, tf.ordinal, f.id AS file_id, f.content_type,
           f.size_bytes, f.sha256, f.status, f.expires_at
@@ -248,6 +253,11 @@ export class AdminQueryService {
         const result = jsonRecord(attempt as Record<string, unknown>);
         if ("lease_expires_at" in result)
           result.lease_expires_at = result.lease_expires_at ? unix(result.lease_expires_at) : null;
+        if ("reservation_expires_at" in result)
+          result.reservation_expires_at = result.reservation_expires_at ? unix(result.reservation_expires_at) : null;
+        if ("lease_heartbeat_at" in result)
+          result.lease_heartbeat_at = result.lease_heartbeat_at ? unix(result.lease_heartbeat_at) : null;
+        if ("decided_at" in result) result.decided_at = result.decided_at ? unix(result.decided_at) : null;
         return result;
       }),
       files: files.map((file) => jsonRecord(file as Record<string, unknown>)),

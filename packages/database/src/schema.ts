@@ -190,6 +190,13 @@ export const attempts = pgTable(
     releaseId: text("release_id").notNull(),
     status: text("status").notNull(),
     executionKey: text("execution_key").notNull().unique(),
+    attemptNo: integer("attempt_no"),
+    poolId: text("pool_id"),
+    replicaId: text("replica_id"),
+    slotIndex: integer("slot_index"),
+    decisionId: text("decision_id"),
+    taskVersionAtAssignment: integer("task_version_at_assignment"),
+    reservationExpiresAt: timestamp("reservation_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     error: jsonb("error"),
@@ -206,9 +213,37 @@ export const leases = pgTable("leases", {
   attemptId: text("attempt_id").notNull().unique(),
   workerId: text("worker_id").notNull(),
   replicaId: text("replica_id").notNull(),
+  status: text("status").notNull().default("reserved"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   version: integer("version").notNull().default(0),
+  heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
+
+export const schedulingDecisions = pgTable(
+  "scheduling_decisions",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    releaseId: text("release_id").notNull(),
+    poolId: text("pool_id").notNull(),
+    replicaId: text("replica_id").notNull(),
+    workerId: text("worker_id").notNull(),
+    taskVersion: integer("task_version").notNull(),
+    replicaVersion: integer("replica_version").notNull(),
+    slotIndex: integer("slot_index").notNull(),
+    policyVersion: text("policy_version").notNull(),
+    reason: text("reason").notNull(),
+    inputSnapshot: jsonb("input_snapshot").notNull(),
+    outcome: text("outcome").notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    taskCreatedIdx: index("scheduling_decisions_task_created_idx").on(table.taskId, table.decidedAt, table.id),
+    replicaCreatedIdx: index("scheduling_decisions_replica_created_idx").on(table.replicaId, table.decidedAt, table.id),
+  }),
+);
 
 export const modelReleases = pgTable("model_releases", {
   id: text("id").primaryKey(),

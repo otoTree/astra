@@ -213,12 +213,15 @@ export class EventRepository {
   }
 
   async taskQueueState(taskId: string): Promise<RedisTaskQueueState | undefined> {
-    const rows = await this.sql`SELECT id, project_id, model_release_id, priority, version, created_at
-      , status FROM tasks WHERE id=${taskId}`;
+    const rows = await this.sql`SELECT t.id, t.project_id, t.model_release_id, t.priority, t.version,
+      t.created_at, t.status, EXISTS (
+        SELECT 1 FROM attempts a WHERE a.task_id=t.id
+          AND a.status IN ('reserved', 'leased', 'running', 'unknown')
+      ) AS has_active_attempt FROM tasks t WHERE t.id=${taskId}`;
     const row = rows[0];
     if (!row) return undefined;
     const releaseId = String(row.model_release_id);
-    if (row.status !== "queued") return { releaseId };
+    if (row.status !== "queued" || row.has_active_attempt === true) return { releaseId };
     return {
       releaseId,
       candidate: {
@@ -267,10 +270,12 @@ export class EventRepository {
   }
 
   async scanQueuedTasks(after: Readonly<{ createdAt: string; id: string }> | undefined, limit: number) {
-    const rows = await this.sql`SELECT id, project_id, model_release_id, priority, version, created_at
-      FROM tasks WHERE status='queued'
-        AND (${after?.createdAt ?? null}::timestamptz IS NULL OR (created_at, id) > (${after?.createdAt ?? null}::timestamptz, ${after?.id ?? ""}))
-      ORDER BY created_at, id LIMIT ${Math.min(Math.max(limit, 1), 1000)}`;
+    const rows = await this.sql`SELECT t.id, t.project_id, t.model_release_id, t.priority, t.version, t.created_at
+      FROM tasks t WHERE t.status='queued'
+        AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.task_id=t.id
+          AND a.status IN ('reserved', 'leased', 'running', 'unknown'))
+        AND (${after?.createdAt ?? null}::timestamptz IS NULL OR (t.created_at, t.id) > (${after?.createdAt ?? null}::timestamptz, ${after?.id ?? ""}))
+      ORDER BY t.created_at, t.id LIMIT ${Math.min(Math.max(limit, 1), 1000)}`;
     return rows.map((row) => ({
       taskId: String(row.id),
       projectId: String(row.project_id),
@@ -393,7 +398,9 @@ export class EventRepository {
   }
 
   async queuedTaskCount(): Promise<number> {
-    const rows = await this.sql`SELECT count(*)::int AS count FROM tasks WHERE status='queued'`;
+    const rows = await this.sql`SELECT count(*)::int AS count FROM tasks t WHERE t.status='queued'
+      AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.task_id=t.id
+        AND a.status IN ('reserved', 'leased', 'running', 'unknown'))`;
     return Number(rows[0]?.count ?? 0);
   }
 }
