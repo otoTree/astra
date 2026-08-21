@@ -660,8 +660,33 @@ export const replicas = pgTable("replicas", {
   rolloutReserved: boolean("rollout_reserved").notNull(),
   version: integer("version").notNull(),
   lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+  idleSince: timestamp("idle_since", { withTimezone: true }),
+  readyAt: timestamp("ready_at", { withTimezone: true }),
+  lastScaleActionAt: timestamp("last_scale_action_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const capacityPlans = pgTable("capacity_plans", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  poolId: text("pool_id").notNull(),
+  policyVersionId: text("policy_version_id"),
+  status: text("status").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  inputSnapshot: jsonb("input_snapshot").notNull(),
+  result: jsonb("result").notNull(),
+  currentReplicas: integer("current_replicas").notNull(),
+  desiredReplicas: integer("desired_replicas").notNull(),
+  workloadReplicas: integer("workload_replicas").notNull(),
+  queueSloReplicas: integer("queue_slo_replicas").notNull(),
+  costMinor: bigint("cost_minor", { mode: "number" }).notNull(),
+  benefitMinor: bigint("benefit_minor", { mode: "number" }).notNull(),
+  netBenefitMinor: bigint("net_benefit_minor", { mode: "number" }).notNull(),
+  admissionControl: boolean("admission_control").notNull(),
+  suppressionReason: text("suppression_reason"),
+  strategyVersion: text("strategy_version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 
 export const workers = pgTable("workers", {

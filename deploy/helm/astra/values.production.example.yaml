@@ -1,0 +1,72 @@
+# Production example. Copy into an external deployment repository and replace
+# every placeholder through the deployment system; do not commit secrets here.
+image:
+  repository: registry.example.internal/astra/control-plane
+  tag: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  perDeployment: true
+
+externalSecret:
+  enabled: true
+  name: astra-runtime-secrets
+  refreshInterval: 1h
+  secretStoreRef:
+    name: astra-production
+    kind: ClusterSecretStore
+  remoteKey: astra/production/runtime
+
+secretRef: astra-runtime-secrets
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 20
+  targetCpuUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  # Replace these selectors with the namespace/pod identities of the
+  # production database, Redis, Kafka, observability and egress gateways.
+  allowedIngressNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: astra-gateway
+  allowedEgress:
+    - name: database
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: astra-data
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: postgresql
+      ports: [{ protocol: TCP, port: 5432 }]
+    - name: redis
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: astra-data
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redis
+      ports: [{ protocol: TCP, port: 6379 }]
+    - name: kafka
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: astra-data
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redpanda
+      ports: [{ protocol: TCP, port: 9092 }]
+    - name: egress-gateway
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: astra-egress
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: egress-gateway
+      ports: [{ protocol: TCP, port: 443 }]

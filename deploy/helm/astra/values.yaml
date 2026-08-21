@@ -7,6 +7,31 @@ imagePullSecrets: []
 serviceAccount:
   create: true
   name: ""
+  perDeployment: true
+
+migrations:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCpuUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+externalSecret:
+  enabled: false
+  name: astra-runtime-secrets
+  refreshInterval: 1h
+  secretStoreRef:
+    name: astra-secrets
+    kind: ClusterSecretStore
+  remoteKey: astra/production/runtime
 
 apiDeployments:
   - name: public-api
@@ -21,6 +46,17 @@ apiDeployments:
     command: ["bun", "run", "apps/api/src/worker-control.ts"]
     port: 4102
     servicePort: 80
+
+controlPlaneDeployments:
+  - name: scheduler
+    command: ["bun", "run", "apps/scheduler/src/main.ts"]
+    port: 4110
+  - name: provider-controller
+    command: ["bun", "run", "apps/provider-controller/src/main.ts"]
+    port: 4111
+  - name: event-relay
+    command: ["bun", "run", "apps/event-relay/src/main.ts"]
+    port: 4112
 
 env:
   ASTRA_ENV: production
@@ -38,3 +74,25 @@ containerSecurityContext:
   capabilities: { drop: [ALL] }
 networkPolicy:
   enabled: true
+  namespaceSelector: {}
+  allowedIngressNamespaceSelector: {}
+  allowedEgress:
+    - name: database
+      namespaceSelector: {}
+      podSelector:
+        matchLabels: { app.kubernetes.io/name: postgresql }
+      ports: [{ protocol: TCP, port: 5432 }]
+    - name: redis
+      namespaceSelector: {}
+      podSelector:
+        matchLabels: { app.kubernetes.io/name: redis }
+      ports: [{ protocol: TCP, port: 6379 }]
+    - name: kafka
+      namespaceSelector: {}
+      podSelector:
+        matchLabels: { app.kubernetes.io/name: kafka }
+      ports: [{ protocol: TCP, port: 9092 }]
+    - name: https
+      namespaceSelector: {}
+      podSelector: {}
+      ports: [{ protocol: TCP, port: 443 }]

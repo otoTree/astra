@@ -936,6 +936,7 @@ export function createAdminApi(
   listRoute("/admin/v1/policies", "policies");
   listRoute("/admin/v1/policy-previews", "policy_previews");
   listRoute("/admin/v1/release-approvals", "release_approvals");
+  listRoute("/admin/v1/capacity-plans", "capacity_plans");
 
   app.post("/admin/v1/models", async (c) => {
     const mutation = await mutationContext(c.req.raw, "releases:write");

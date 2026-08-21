@@ -427,6 +427,13 @@ paths:
       responses:
         '200': { description: Immutable Release approval list }
         default: { $ref: '#/components/responses/Error' }
+  /capacity-plans:
+    get:
+      operationId: listCapacityPlans
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/After' }]
+      responses:
+        '200': { description: Immutable capacity plan list }
+        default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     oidc:
@@ -655,6 +662,38 @@ components:
         expected_version: { type: integer, minimum: 1 }
         status: { type: string, enum: [active, disabled, degraded] }
         reason: { type: string, minLength: 8, maxLength: 1000 }
+    CapacityPolicyConfiguration:
+      type: object
+      additionalProperties: false
+      required: [min_replicas, max_replicas, queue_target_seconds, target_utilization_percent, scale_up_step, scale_down_step_percent, idle_window_seconds, scale_down_cooldown_seconds, hysteresis_percent]
+      properties:
+        mode: { type: string, enum: [automatic, protected, manual], default: automatic }
+        min_replicas: { type: integer, minimum: 0 }
+        max_replicas: { type: integer, minimum: 1 }
+        manual_replicas: { type: integer, minimum: 0 }
+        queue_target_seconds: { type: integer, minimum: 1 }
+        max_queue_eta_seconds: { type: integer, minimum: 1, default: 900 }
+        backlog_drain_seconds: { type: integer, minimum: 1, default: 1800 }
+        target_utilization_percent: { type: integer, minimum: 1, maximum: 100 }
+        scale_up_step: { type: integer, minimum: 1 }
+        emergency_scale_up_step: { type: integer, minimum: 1, default: 10 }
+        scale_down_step_percent: { type: integer, minimum: 1, maximum: 100 }
+        idle_window_seconds: { type: integer, minimum: 60 }
+        scale_down_observation_seconds: { type: integer, minimum: 60, default: 900 }
+        scale_down_cooldown_seconds: { type: integer, minimum: 60 }
+        scale_up_cooldown_seconds: { type: integer, minimum: 1, default: 60 }
+        hysteresis_percent: { type: integer, minimum: 0, maximum: 100 }
+        scale_down_safety_margin_percent: { type: integer, minimum: 0, maximum: 100, default: 25 }
+        min_hold_seconds: { type: integer, minimum: 60, default: 1800 }
+        provisioning_p90_seconds: { type: integer, minimum: 1, default: 300 }
+        min_net_benefit_minor: { type: integer, minimum: 0, default: 0 }
+        min_net_saving_minor: { type: integer, minimum: 0, default: 0 }
+        wait_value_minor_per_minute: { type: integer, minimum: 0, default: 0 }
+        slo_penalty_minor_per_minute: { type: integer, minimum: 0, default: 0 }
+        batch_min_share_percent: { type: integer, minimum: 0, maximum: 100, default: 10 }
+        aging_seconds: { type: integer, minimum: 60, maximum: 86400, default: 1800 }
+        prediction_min_samples: { type: integer, minimum: 1, maximum: 10000, default: 30 }
+        ewma_alpha_basis_points: { type: integer, minimum: 1, maximum: 10000, default: 2000 }
     PolicyValidation:
       type: object
       additionalProperties: false
@@ -662,7 +701,7 @@ components:
       properties:
         policy_type: { type: string, enum: [capacity, budget, region, retry] }
         pool_id: { type: string }
-        configuration: { type: object, additionalProperties: true }
+        configuration: { oneOf: [{ $ref: '#/components/schemas/CapacityPolicyConfiguration' }, { type: object, additionalProperties: true }] }
         reason: { type: string, minLength: 8, maxLength: 1000 }
     PolicyImpactPreview:
       type: object

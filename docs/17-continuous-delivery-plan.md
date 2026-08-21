@@ -25,8 +25,8 @@
 | 9 | 共绩资源操作与 Reconcile | 完成 | 8 |
 | 10 | 预热、滚动发布、排空、回滚 | 完成 | 9 |
 | 11 | WFQ、耗时预测、Retry Policy | 完成 | 10 |
-| 12 | 扩缩容、成本收益、跨区放置 | 进行中 | 11 |
-| 13 | 生产安全、灾备、10-50 GPU 验收 | 未开始 | 12 |
+| 12 | 扩缩容、成本收益、跨区放置 | 完成 | 11 |
+| 13 | 生产安全、灾备、10-50 GPU 验收 | 进行中 | 12 |
 | 14 | H3/10Eros 真实 Model App | 未开始 | 13 |
 | 15 | 图片模型与数百 GPU 扩展 | 未开始 | 14 |
 
@@ -339,11 +339,41 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 
 退出条件：300 并发、4-15 秒混合、无库存、价格变化、预算封顶、冷启动和缩容迟滞仿真通过；每个 Capacity Plan 保存输入、成本、收益、策略版本和抑制原因。
 
+阶段 12 完成证据（2026-08-22）：
+
+- `packages/queue/src/capacity.ts` 提供无副作用的队列离散模拟、工作量副本数、队列 SLO 副本数、边际成本/收益、
+  预算与库存 Admission Control、空闲窗口缩容候选和跨区域确定性评分。计算使用预计 GPU 服务秒，不能用 4-15
+  秒的视频输出时长替代；`max_concurrency` 仍受 Release/Worker 合同约束。
+- Capacity Policy 扩展为 `automatic/protected/manual` 三种模式，覆盖目标队列、最大 ETA、积压清空窗口、扩缩步长、
+  冷却、迟滞、空闲窗口、最小持有时间、收益阈值和等待/SLO 价值。默认起点为空闲 15 分钟、缩容冷却 20 分钟、
+  目标利用率 75%、单轮缩容不超过池容量 10%，配置必须经过 `validate -> impact_preview -> publish`。
+- Scheduler 每 5 秒从 PostgreSQL 读取活动 Pool、任务、运行 Attempt、Replica 和新鲜库存快照，写入不可变
+  `capacity_plans`；Scheduler 不调用 Provider。计划记录当前/期望副本、工作量/SLO 结果、成本、收益、净收益、
+  ETA、Placement、排空候选、库存/预算/Rollout 抑制和 Admission Control 原因。
+- Admin API 新增 `GET /admin/v1/capacity-plans` 游标查询。Replica 保存 `idle_since`、`ready_at` 和
+  `last_scale_action_at`，缩容过滤运行/预留槽、Rollout 所有权、空闲窗口、最小持有与冷却条件。
+- 纯算法测试覆盖运行任务剩余时间、混合长短视频 GPU 工作量、库存/预算/Rollout 抑制和忙实例不排空；
+  PostgreSQL 集成共 35 项，包含 Capacity Plan 不可变与 Admission 解释记录。
+
+本阶段迁移 `0020_capacity_plans.sql` 已应用，checksum 为
+`4f02707b76e833d58c2a951804b391ed44c221ccd262c3c6524c82248eb919b1`，后续禁止修改。回滚采用应用回滚：暂停
+容量计划循环，保留已生成计划与 Replica 时间戳；不删除计划历史，不直接删除 Provider 资源。恢复后由 Scheduler
+按最新 PostgreSQL 快照重新生成计划。
+
 ### 阶段 13：生产验收
 
 交付：完整 Helm、独立三 API 信任域、Migration Job、PDB/HPA、默认拒绝 NetworkPolicy、External Secret、非 root/SBOM/签名/漏洞门、监控告警、备份恢复和值班手册。
 
 退出条件：PostgreSQL 切换、Redis 丢失、Kafka 延迟、Worker 失联演练通过；10-50 GPU 容量满足 SLO。
+
+阶段 13 当前进度（2026-08-22）：
+
+- Helm 已提供三类 API、Scheduler、Provider Controller、Event Relay 的独立 Deployment/ServiceAccount/Service、Migration pre-install/pre-upgrade Job、PDB、控制面 HPA、ExternalSecret 选项和默认拒绝 NetworkPolicy。模板会在渲染时拒绝 mutable image tag，只接受 `sha256:<64 位十六进制>`；生产值示例见 `deploy/helm/astra/values.production.example.yaml`。
+- 控制面镜像和本地参考镜像均使用非 root、RuntimeDefault、只读根文件系统、禁止提权和 `drop: ALL`；Compose 与 Helm 均不包含模型权重。
+- `bun run model-artifacts:check` 已纳入全仓检查，扫描仓库、构建上下文和工作目录中的 `.safetensors`、`.ckpt`、`.pt`、`.pth`、`.gguf`、`.onnx` 文件；当前结果为 clear。CI 已加入 Helm render/dry-run 门。
+- 灾备恢复顺序和值班动作已写入 [`docs/runbooks/disaster-recovery.md`](./runbooks/disaster-recovery.md)，容量验收脚本/报告模板已写入 [`docs/18-production-capacity-acceptance.md`](./18-production-capacity-acceptance.md)。
+
+阶段 13 尚未宣称完成的项目：真实 Kubernetes 集群 PostgreSQL 主从切换、真实 KMS/ExternalSecret、10-50 张 GPU 压测、真实 SBOM 签名和漏洞扫描报告。这些必须在隔离环境执行并附运行证据；当前仅完成模板、合同和无权重本地验证。
 
 ### 阶段 14：人类模型团队交接边界
 
@@ -352,6 +382,8 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 人类模型团队交付：固定 ComfyUI/节点/工作流/权重/VAE/LoRA hash 的真实模型镜像；预加载、常驻权重、编译缓存、Attention 内核和 I/O 并行优化；GPU 资源与人工质量批准。平台只接收固定 OCI digest 和资产哈希清单。
 
 平台退出条件：在无权重参考实现上完成执行、取消、超时、输出 Manifest、预热、灰度和回滚合同验收，并形成可由人类填写的 GPU/质量验收清单。真实 5090 推理、15 秒质量基准、T2VA/I2VA 与参考媒体矩阵由人类模型团队签署后，候选 Release 才可进入生产。
+
+阶段 14 平台侧已完成无权重闭环：参考 Model App、Worker Agent、严格媒体验证、原始字节上传、Release Manifest、镜像 digest 发布、排空和回滚合同均可在本地验证。真实 H3/10Eros 镜像、权重、GPU 推理、质量和性能由人类模型团队独立完成；平台不会下载或接收权重文件。详细交接表见 [`docs/19-model-team-handoff-without-weights.md`](./19-model-team-handoff-without-weights.md)。
 
 ### 阶段 15：图片与规模扩展
 

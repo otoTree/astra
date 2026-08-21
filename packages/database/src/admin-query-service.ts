@@ -18,7 +18,8 @@ export type AdminResource =
   | "aliases"
   | "policies"
   | "policy_previews"
-  | "release_approvals";
+  | "release_approvals"
+  | "capacity_plans";
 export type AdminListResource = Exclude<AdminResource, "tasks">;
 
 export type AdminListResult = Readonly<{
@@ -41,6 +42,7 @@ const tableByResource: Readonly<Record<Exclude<AdminResource, "tasks" | "regions
   policies: "policy_versions",
   policy_previews: "policy_impact_previews",
   release_approvals: "release_approvals",
+  capacity_plans: "capacity_plans",
 };
 
 const unix = (value: unknown): number | null =>

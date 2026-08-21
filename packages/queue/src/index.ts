@@ -1,6 +1,7 @@
 import type { TaskStatus } from "@astra/contracts";
 import type { ProjectContext } from "@astra/auth";
 import { createCluster, type RedisClusterType } from "redis";
+export * from "./capacity.ts";
 
 export type QueueClass = "online" | "batch";
 export type SlotState = "running" | "reserved" | "unknown" | "draining";

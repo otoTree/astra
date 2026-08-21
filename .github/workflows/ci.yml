@@ -47,6 +47,14 @@ jobs:
           bun-version: 1.3.6
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - name: Render production Helm contract
+        uses: azure/setup-helm@v4
+      - run: >-
+          helm template astra deploy/helm/astra
+          --set image.repository=registry.internal/astra/control-plane
+          --set image.tag=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          > /tmp/astra-rendered.yaml
+      - run: kubectl apply --dry-run=client -f /tmp/astra-rendered.yaml
       - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml config --quiet
       - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml up -d --wait postgres minio
       - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml run --rm database-migrate

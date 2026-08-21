@@ -1,0 +1,28 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range .Values.apiDeployments }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "astra.fullname" $ }}-{{ .name }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "astra.name" $ }}
+      astra.deployment: {{ .name | quote }}
+---
+{{- end }}
+{{- range .Values.controlPlaneDeployments }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "astra.fullname" $ }}-{{ .name }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "astra.name" $ }}
+      astra.deployment: {{ .name | quote }}
+---
+{{- end }}
+{{- end }}

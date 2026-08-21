@@ -158,22 +158,53 @@ export const poolUpdateSchema = z
 
 export const capacityPolicyConfigurationSchema = z
   .object({
+    mode: z.enum(["automatic", "protected", "manual"]).default("automatic"),
     min_replicas: z.number().int().nonnegative(),
     max_replicas: z.number().int().positive(),
+    manual_replicas: z.number().int().nonnegative().optional(),
     queue_target_seconds: z.number().int().positive(),
+    max_queue_eta_seconds: z.number().int().positive().default(900),
+    backlog_drain_seconds: z.number().int().positive().default(1800),
     target_utilization_percent: z.number().int().min(1).max(100),
     scale_up_step: z.number().int().positive(),
+    emergency_scale_up_step: z.number().int().positive().default(10),
     scale_down_step_percent: z.number().int().min(1).max(100),
     idle_window_seconds: z.number().int().min(60),
+    scale_down_observation_seconds: z.number().int().min(60).default(900),
     scale_down_cooldown_seconds: z.number().int().min(60),
+    scale_up_cooldown_seconds: z.number().int().min(1).default(60),
     hysteresis_percent: z.number().int().min(0).max(100),
+    scale_down_safety_margin_percent: z.number().int().min(0).max(100).default(25),
+    min_hold_seconds: z.number().int().min(60).default(1800),
+    provisioning_p90_seconds: z.number().int().min(1).default(300),
+    min_net_benefit_minor: z.number().int().nonnegative().default(0),
+    min_net_saving_minor: z.number().int().nonnegative().default(0),
+    wait_value_minor_per_minute: z.number().int().nonnegative().default(0),
+    slo_penalty_minor_per_minute: z.number().int().nonnegative().default(0),
     batch_min_share_percent: z.number().int().min(0).max(100).default(10),
     aging_seconds: z.number().int().min(60).max(86400).default(1800),
     prediction_min_samples: z.number().int().min(1).max(10000).default(30),
     ewma_alpha_basis_points: z.number().int().min(1).max(10000).default(2000),
   })
   .strict()
-  .refine((value) => value.max_replicas >= value.min_replicas, { message: "max_replicas must be >= min_replicas" });
+  .superRefine((value, context) => {
+    if (value.max_replicas < value.min_replicas) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["max_replicas"], message: "must be >= min_replicas" });
+    }
+    if (value.mode === "manual" && value.manual_replicas === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["manual_replicas"], message: "required in manual mode" });
+    }
+    if (
+      value.manual_replicas !== undefined &&
+      (value.manual_replicas < value.min_replicas || value.manual_replicas > value.max_replicas)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["manual_replicas"],
+        message: "must be within min_replicas and max_replicas",
+      });
+    }
+  });
 
 export const budgetPolicyConfigurationSchema = z
   .object({

@@ -1,7 +1,8 @@
 import { loadSchedulerConfig } from "@astra/config";
-import { createDatabase, DatabaseHealth, SchedulingRepository } from "@astra/database";
+import { CapacityPlanRepository, createDatabase, DatabaseHealth, SchedulingRepository } from "@astra/database";
 import { Counter, createLogger, createMetricRegistry, Gauge, Histogram, metricResponse } from "@astra/observability";
 import { DeterministicScheduler } from "./scheduler.ts";
+import { CapacityPlanner } from "./capacity-planner.ts";
 
 const config = loadSchedulerConfig();
 const logger = createLogger("scheduler");
@@ -13,6 +14,7 @@ const scheduler = new DeterministicScheduler(repository, {
   reservationSeconds: config.SCHEDULER_RESERVATION_SECONDS,
   workerFreshnessSeconds: config.SCHEDULER_WORKER_FRESHNESS_SECONDS,
 });
+const capacityPlanner = new CapacityPlanner(new CapacityPlanRepository(database.client));
 const metrics = createMetricRegistry("scheduler");
 const iterations = new Counter({
   name: "astra_scheduler_iterations_total",
@@ -49,6 +51,12 @@ const assignmentReasons = new Counter({
   labelNames: ["reason"] as const,
   registers: [metrics],
 });
+const capacityPlans = new Counter({
+  name: "astra_capacity_plans_total",
+  help: "Capacity plans persisted by outcome",
+  labelNames: ["outcome"] as const,
+  registers: [metrics],
+});
 const iterationDuration = new Histogram({
   name: "astra_scheduler_iteration_duration_seconds",
   help: "Duration of one deterministic scheduling iteration",
@@ -59,6 +67,7 @@ const iterationDuration = new Histogram({
 const abort = new AbortController();
 let loopHealthy = true;
 let lastSuccessAt: Date | undefined;
+let capacityLoopHealthy = true;
 
 const run = async (): Promise<void> => {
   while (!abort.signal.aborted) {
@@ -100,6 +109,24 @@ const run = async (): Promise<void> => {
 };
 
 void run();
+const runCapacity = async (): Promise<void> => {
+  while (!abort.signal.aborted) {
+    try {
+      const result = await capacityPlanner.runOnce();
+      capacityPlans.inc({ outcome: "planned" }, result.planned - result.suppressed - result.admissionControl);
+      capacityPlans.inc({ outcome: "suppressed" }, result.suppressed);
+      capacityPlans.inc({ outcome: "admission_control" }, result.admissionControl);
+      capacityLoopHealthy = true;
+    } catch (error) {
+      capacityLoopHealthy = false;
+      logger.error("capacity_planning_failed", {
+        error_code: error instanceof Error ? error.message : "capacity_planning_failed",
+      });
+    }
+    await Bun.sleep(5_000);
+  }
+};
+void runCapacity();
 const server = Bun.serve({
   port: config.SCHEDULER_METRICS_PORT,
   async fetch(request) {
@@ -110,9 +137,15 @@ const server = Bun.serve({
       const fresh = lastSuccessAt
         ? Date.now() - lastSuccessAt.getTime() <= Math.max(config.SCHEDULER_POLL_INTERVAL_MS * 10, 5_000)
         : false;
-      const ready = databaseReady && loopHealthy && fresh;
+      const ready = databaseReady && loopHealthy && capacityLoopHealthy && fresh;
       return Response.json(
-        { status: ready ? "ready" : "not_ready", database: databaseReady, loop: loopHealthy, fresh },
+        {
+          status: ready ? "ready" : "not_ready",
+          database: databaseReady,
+          loop: loopHealthy,
+          capacity_loop: capacityLoopHealthy,
+          fresh,
+        },
         { status: ready ? 200 : 503 },
       );
     }

@@ -24,6 +24,7 @@ const configuration =
           "packages/database/src/admin-query.integration.test.ts",
           "packages/database/src/admin-management.integration.test.ts",
           "packages/database/src/scheduling-repository.integration.test.ts",
+          "packages/database/src/capacity-plan-repository.integration.test.ts",
           "packages/database/src/worker-control-repository.integration.test.ts",
           "packages/database/src/provider-snapshot-repository.integration.test.ts",
           "apps/provider-controller/src/reconciler.integration.test.ts",
