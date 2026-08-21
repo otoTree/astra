@@ -13,11 +13,21 @@ describe("service configuration", () => {
     expect(() => loadPublicApiConfig({ ASTRA_ENV: "production" })).toThrow();
   });
 
-  test("Gongji driver requires an explicit endpoint", () => {
+  test("Gongji driver requires endpoint and signing credentials", () => {
     expect(() =>
       loadProviderControllerConfig({
         DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
         PROVIDER_DRIVER: "gongji",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadProviderControllerConfig({
+        ASTRA_ENV: "production",
+        DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+        PROVIDER_DRIVER: "gongji",
+        GONGJI_ENDPOINT: "http://openapi.suanli.cn",
+        GONGJI_TOKEN: "secret",
+        GONGJI_PRIVATE_KEY_PEM: "x".repeat(64),
       }),
     ).toThrow();
   });
@@ -27,6 +37,8 @@ describe("service configuration", () => {
       DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
     });
     expect(config.PROVIDER_DRIVER).toBe("reference");
+    expect(config.PROVIDER_SYNC_INTERVAL_SECONDS).toBe(60);
+    expect(config.PROVIDER_SNAPSHOT_STALE_SECONDS).toBe(300);
   });
 
   test("admin API validates required OIDC settings while tolerating process environment keys", () => {

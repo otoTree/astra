@@ -17,6 +17,7 @@
     "dev:registry-reference": "bun run apps/registry-reference/src/main.ts",
     "dev:event-relay": "bun run apps/event-relay/src/main.ts",
     "dev:scheduler": "bun run apps/scheduler/src/main.ts",
+    "dev:provider-controller": "bun run apps/provider-controller/src/main.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",

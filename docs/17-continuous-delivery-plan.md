@@ -21,8 +21,8 @@
 | 5 | Outbox、Kafka、Redis 重建 | 完成 | 4 |
 | 6 | 最小确定性调度与租约 | 完成 | 5 |
 | 7 | Worker Control 与 Agent 执行环 | 完成 | 6 |
-| 8 | 共绩 Transport 与只读快照 | 进行中 | 7 |
-| 9 | 共绩资源操作与 Reconcile | 未开始 | 8 |
+| 8 | 共绩 Transport 与只读快照 | 完成 | 7 |
+| 9 | 共绩资源操作与 Reconcile | 进行中 | 8 |
 | 10 | 预热、滚动发布、排空、回滚 | 未开始 | 9 |
 | 11 | WFQ、耗时预测、Retry Policy | 未开始 | 10 |
 | 12 | 扩缩容、成本收益、跨区放置 | 未开始 | 11 |
@@ -220,6 +220,27 @@
 交付：按本地供应商文档实现签名、DTO、错误映射、超时/退避/限流/熔断；同步区域、GPU、库存、价格、实例、Job、镜像与账单快照。共绩 DTO 不得离开 transport 包。
 
 退出条件：使用到的每个接口都有脱敏录制合同；未知状态隔离告警；过期快照抑制调度和扩容。
+
+阶段 8 完成证据（2026-08-22）：
+
+- `provider-gongji` 已实现 RSA-SHA256/PKCS#1 v1.5 请求签名、动态凭证读取、有限指数退避、
+  `Retry-After`、供应商错误映射和熔断；Transport 只读覆盖资源、Deployment、节点、Job、镜像预热区域、
+  镜像预热任务和计费七类实际接口，共绩字段未进入 Provider Core、Scheduler 或公共 API。
+- 每个接口均有基于本地 OpenAPI 示例裁剪并脱敏的合同夹具；测试验证签名、MiB 到 bytes、积分到人民币最小
+  单位、递归敏感字段移除、鉴权熔断，以及全部七类路径无外部网络读取。运行时出现未声明字段、未知状态、
+  重复对象或分页超过边界时整次快照进入隔离，不静默覆盖当前库存。
+- PostgreSQL 新增不可变 Snapshot Run/Page/Object、可更新 Freshness State 和当前区域/库存原子发布。
+  隔离或失败批次保留完整诊断证据，但继续使用未过期的最后成功快照；过期后 `usable=false`，供后续放置与
+  扩缩容明确抑制。迁移 `0013_provider_read_snapshots.sql` checksum 固定为
+  `8c9187de405d93f8f2e3b613f4ff75185229747933a33c6be8b3ee26bc902573`。
+- Provider Controller 已加入 `astra-local` Compose，默认只使用确定性 `reference` 合同实现。实际运行发布
+  `reference` 区域和 20 个 `reference-gpu` 库存，readiness 为 ready，快照可用指标为 1，隔离原因指标为 0；
+  本批没有配置共绩凭证、没有请求真实供应商、没有创建算力或拉取镜像。
+- `bun run check` 通过 70 项常规测试，完整 PostgreSQL 回归 28 项通过；集成测试验证发布原子性、隔离不污染
+  当前库存、失败沿用未过期快照、过期抑制和不可变诊断记录。
+
+回滚时停止 Provider Controller 并回滚应用，不删除 `0013` 表、快照或当前库存。阶段 7 及更早应用会忽略
+这些新增结构；恢复阶段 8 应用后由下一轮只读同步生成新版本。禁止为回滚修改已应用迁移或清除供应商诊断历史。
 
 ### 阶段 9：共绩写操作
 

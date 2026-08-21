@@ -79,13 +79,45 @@ export const providerControllerConfigSchema = environmentSchema
     DATABASE_URL: requiredUrl,
     PROVIDER_DRIVER: z.enum(["reference", "gongji"]),
     GONGJI_ENDPOINT: requiredUrl.optional(),
+    GONGJI_TOKEN: z.string().min(1).optional(),
+    GONGJI_PRIVATE_KEY_PEM: z.string().min(64).optional(),
+    PROVIDER_SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+    PROVIDER_SNAPSHOT_STALE_SECONDS: z.coerce.number().int().min(30).max(86400).default(300),
+    PROVIDER_REQUEST_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(120).default(15),
+    PROVIDER_MAXIMUM_RETRIES: z.coerce.number().int().min(0).max(8).default(3),
+    PROVIDER_BREAKER_FAILURE_THRESHOLD: z.coerce.number().int().min(1).max(20).default(5),
+    PROVIDER_BREAKER_COOLDOWN_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
+    PROVIDER_PAGE_SIZE: z.coerce.number().int().min(1).max(200).default(100),
+    PROVIDER_MAXIMUM_PAGES: z.coerce.number().int().min(1).max(100).default(20),
   })
   .superRefine((config, context) => {
-    if (config.PROVIDER_DRIVER === "gongji" && !config.GONGJI_ENDPOINT) {
+    if (config.PROVIDER_DRIVER === "gongji") {
+      for (const name of ["GONGJI_ENDPOINT", "GONGJI_TOKEN", "GONGJI_PRIVATE_KEY_PEM"] as const) {
+        if (!config[name]) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [name],
+            message: `${name} is required when PROVIDER_DRIVER=gongji`,
+          });
+        }
+      }
+      if (
+        config.ASTRA_ENV === "production" &&
+        config.GONGJI_ENDPOINT &&
+        !config.GONGJI_ENDPOINT.startsWith("https://")
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["GONGJI_ENDPOINT"],
+          message: "GONGJI_ENDPOINT must use HTTPS in production",
+        });
+      }
+    }
+    if (config.PROVIDER_SNAPSHOT_STALE_SECONDS <= config.PROVIDER_SYNC_INTERVAL_SECONDS) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["GONGJI_ENDPOINT"],
-        message: "GONGJI_ENDPOINT is required when PROVIDER_DRIVER=gongji",
+        path: ["PROVIDER_SNAPSHOT_STALE_SECONDS"],
+        message: "snapshot stale threshold must exceed sync interval",
       });
     }
   });

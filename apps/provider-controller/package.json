@@ -5,7 +5,9 @@
   "type": "module",
   "dependencies": {
     "@astra/config": "workspace:*",
+    "@astra/database": "workspace:*",
     "@astra/observability": "workspace:*",
-    "@astra/provider-core": "workspace:*"
+    "@astra/provider-core": "workspace:*",
+    "@astra/provider-gongji": "workspace:*"
   }
 }

@@ -17,6 +17,7 @@ docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-com
 - Model App: `http://127.0.0.1:49000`
 - Media Validator: `http://127.0.0.1:54103`
 - Event Relay health/metrics: `http://127.0.0.1:54112`
+- Provider Controller health/metrics: `http://127.0.0.1:54111`
 - PostgreSQL: `localhost:55432`
 - Redis Cluster seed: `localhost:56379`
 - Kafka-compatible Redpanda: `localhost:59092`

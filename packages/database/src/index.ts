@@ -13,6 +13,7 @@ export * from "./event-repository.ts";
 export * from "./scheduling-repository.ts";
 export * from "./request-cipher.ts";
 export * from "./worker-control-repository.ts";
+export * from "./provider-snapshot-repository.ts";
 
 export function createDatabase(databaseUrl: string) {
   const client = postgres(databaseUrl, { prepare: false });

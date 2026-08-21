@@ -46,3 +46,12 @@ Adapter 负责资源查询、弹性 Deployment、镜像预热、Job、节点、�
 - 运行 Provider Adapter 合同测试、录制响应测试和影响预估。
 - 若破坏通用 Contract 或改变状态语义，先新增 ADR，再修改适配器。
 - 记录同步时间、来源索引哈希、详情页数量和变更摘要。
+
+## 阶段 8 实现状态
+
+当前 Adapter 只启用七类读取：资源、Deployment、节点、Job、镜像预热区域、镜像预热任务和计费。合同夹具位于
+`packages/provider-gongji/fixtures/documented/`，由本目录 OpenAPI 示例裁剪并脱敏，不是对生产接口的实时请求。
+本地 `PROVIDER_DRIVER=reference`，不会读取共绩凭证或连接 `openapi.suanli.cn`。
+
+创建、启动、扩缩、停止、回收和预热写操作属于阶段 9，不能通过阶段 8 的读取客户端绕过 Provider Operation
+与 Reconcile。真实供应商合同验证只能在隔离环境显式启用，并必须设置成本上限和自动回收。

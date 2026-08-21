@@ -431,6 +431,55 @@ export const providerInventory = pgTable("provider_inventory", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 
+export const providerSnapshotRuns = pgTable("provider_snapshot_runs", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  contractVersion: text("contract_version").notNull(),
+  status: text("status").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  payloadHash: text("payload_hash"),
+  objectCount: integer("object_count").notNull(),
+  quarantineReasons: jsonb("quarantine_reasons").notNull(),
+  errorCode: text("error_code"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+});
+
+export const providerSnapshotObjects = pgTable("provider_snapshot_objects", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  provider: text("provider").notNull(),
+  kind: text("kind").notNull(),
+  providerResourceId: text("provider_resource_id").notNull(),
+  normalized: jsonb("normalized").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const providerSnapshotPages = pgTable("provider_snapshot_pages", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  kind: text("kind").notNull(),
+  endpoint: text("endpoint").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  redactedPayload: jsonb("redacted_payload").notNull(),
+  quarantineReasons: jsonb("quarantine_reasons").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const providerSnapshotState = pgTable("provider_snapshot_state", {
+  provider: text("provider").primaryKey(),
+  latestAttemptRunId: text("latest_attempt_run_id").notNull(),
+  latestPublishedRunId: text("latest_published_run_id"),
+  status: text("status").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  version: integer("version").notNull(),
+  lastErrorCode: text("last_error_code"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
 export const modelPools = pgTable("model_pools", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),

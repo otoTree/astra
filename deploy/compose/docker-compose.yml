@@ -348,6 +348,34 @@ services:
       timeout: 5s
       retries: 20
 
+  provider-controller:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/provider-controller/src/main.ts"]
+    environment:
+      ASTRA_ENV: local
+      PROVIDER_CONTROLLER_METRICS_PORT: 4111
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      PROVIDER_DRIVER: reference
+      PROVIDER_SYNC_INTERVAL_SECONDS: 60
+      PROVIDER_SNAPSHOT_STALE_SECONDS: 300
+      PROVIDER_REQUEST_TIMEOUT_SECONDS: 15
+      PROVIDER_MAXIMUM_RETRIES: 3
+      PROVIDER_BREAKER_FAILURE_THRESHOLD: 5
+      PROVIDER_BREAKER_COOLDOWN_SECONDS: 60
+      PROVIDER_PAGE_SIZE: 100
+      PROVIDER_MAXIMUM_PAGES: 20
+    ports: ["${ASTRA_LOCAL_PROVIDER_CONTROLLER_PORT:-54111}:4111"]
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4111/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   admin-api:
     build:
       context: ../..

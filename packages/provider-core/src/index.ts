@@ -50,6 +50,47 @@ export type ProviderResourceSnapshot = Readonly<{
   offers: readonly ProviderCapacityOffer[];
 }>;
 
+export type ProviderObservationKind =
+  | "resource"
+  | "deployment"
+  | "node"
+  | "batch_job"
+  | "image_prewarm_region"
+  | "image_prewarm"
+  | "billing";
+
+export type ProviderObservedObject = Readonly<{
+  kind: ProviderObservationKind;
+  providerId: string;
+  state?: string;
+  region?: string;
+  gpuSku?: string;
+  imageReference?: string;
+  observedAt: Date;
+  attributes: Readonly<Record<string, string | number | boolean | null>>;
+}>;
+
+export type ProviderObservationPage = Readonly<{
+  kind: ProviderObservationKind;
+  endpoint: string;
+  objects: readonly ProviderObservedObject[];
+  redactedPayload: unknown;
+  payloadHash: string;
+  quarantineReasons: readonly string[];
+}>;
+
+export type ProviderObservationBundle = Readonly<{
+  provider: string;
+  contractVersion: string;
+  observedAt: Date;
+  resources: ProviderResourceSnapshot;
+  pages: readonly ProviderObservationPage[];
+}>;
+
+export interface ProviderObservationReader {
+  observe(context: ProviderOperationContext): Promise<ProviderObservationBundle>;
+}
+
 export type ProviderImageWarmup = Readonly<{
   id: string;
   imageDigest: string;
