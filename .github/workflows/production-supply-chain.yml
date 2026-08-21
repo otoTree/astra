@@ -1,0 +1,70 @@
+name: production supply chain
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: OCI image reference including immutable digest
+        required: true
+        type: string
+      helm_repository:
+        description: Helm image repository value (without tag)
+        required: true
+        type: string
+      cosign_public_key:
+        description: PEM public key stored by the deployment operator
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: ${{ inputs.image }}
+      HELM_REPOSITORY: ${{ inputs.helm_repository }}
+      COSIGN_PUBLIC_KEY: ${{ inputs.cosign_public_key }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.image }}
+          format: cyclonedx-json
+          output-file: astra-sbom.cdx.json
+          artifact-name: astra-sbom
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.image }}
+          format: sarif
+          output: astra-trivy.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+      - uses: sigstore/cosign-installer@v3.7.0
+      - name: Verify image signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$COSIGN_PUBLIC_KEY" > "$RUNNER_TEMP/astra-cosign.pub"
+          cosign verify --key "$RUNNER_TEMP/astra-cosign.pub" "$IMAGE"
+      - name: Render and validate digest-pinned Helm release
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_digest="${IMAGE##*@}"
+          test "$image_digest" =~ ^sha256:[0-9a-f]{64}$
+          helm template astra deploy/helm/astra \
+            --set image.repository="$HELM_REPOSITORY" \
+            --set image.tag="$image_digest" \
+            > "$RUNNER_TEMP/astra-rendered.yaml"
+          kubectl apply --dry-run=client -f "$RUNNER_TEMP/astra-rendered.yaml"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: astra-supply-chain-${{ github.run_id }}
+          path: |
+            astra-sbom.cdx.json
+            astra-trivy.sarif

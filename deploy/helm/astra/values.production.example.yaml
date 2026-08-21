@@ -30,6 +30,20 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
+monitoring:
+  enabled: true
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+    labels:
+      release: kube-prometheus-stack
+  prometheusRule:
+    labels:
+      release: kube-prometheus-stack
+    annotations:
+      runbook_base_url: https://runbooks.example.internal/astra
+    evaluationInterval: 30s
+
 networkPolicy:
   enabled: true
   # Replace these selectors with the namespace/pod identities of the

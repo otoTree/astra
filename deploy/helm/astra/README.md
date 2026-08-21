@@ -9,6 +9,7 @@ Chart 包含：
 - 默认拒绝入站/出站 NetworkPolicy；三个 API 按 Deployment/端口分别限制入口，控制面指标仅允许观测命名空间，DNS、数据库、Redis、Kafka 和配置的 TLS 出站目标必须显式放行。
 - 每个信任域独立 ServiceAccount、PDB 和 HPA；migration Job 使用单独的受限 ServiceAccount。
 - 可选 ExternalSecret。生产 Secret 不写入 values 或 Git，`externalSecret.enabled=true` 时由集群 SecretStore 提供。
+- `monitoring.enabled=true` 时生成每个服务的 ServiceMonitor 和统一 PrometheusRule；默认关闭以便没有监控 Operator 的本地渲染仍可验证。
 
 渲染与门禁：
 

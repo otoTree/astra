@@ -18,6 +18,7 @@ kubectl apply --dry-run=client -f /tmp/astra-rendered.yaml
 - ExternalSecret 默认关闭；生产启用后 Secret 只来自 SecretStore，不进入 values/Git/日志。
 - 默认拒绝 NetworkPolicy 后，三个 API 按信任域/端口分别放行；控制面指标只允许观测命名空间；DNS、PostgreSQL、Redis、Kafka、S3、OIDC、Provider 和监控端点必须显式配置。Model App 无外网。
 - CI 生成 SBOM、签名、漏洞报告并在准入层验证 digest、签名和严重漏洞阈值。
+- 生产手动工作流 `.github/workflows/production-supply-chain.yml` 以外部镜像 digest 为输入，输出 `astra-sbom.cdx.json` 和 `astra-trivy.sarif`，并要求部署方提供 Cosign 公钥；工作流不构建、不下载模型权重。
 
 ## 故障验收
 

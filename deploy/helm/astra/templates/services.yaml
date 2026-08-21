@@ -3,6 +3,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "astra.fullname" $ }}-{{ .name }}
+  labels:
+    app.kubernetes.io/name: {{ include "astra.name" $ }}
+    astra.deployment: {{ .name | quote }}
 spec:
   selector:
     app.kubernetes.io/name: {{ include "astra.name" $ }}

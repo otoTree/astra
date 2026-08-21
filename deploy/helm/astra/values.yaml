@@ -24,6 +24,17 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
+monitoring:
+  enabled: false
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  prometheusRule:
+    labels: {}
+    annotations: {}
+    evaluationInterval: 30s
+
 externalSecret:
   enabled: false
   name: astra-runtime-secrets

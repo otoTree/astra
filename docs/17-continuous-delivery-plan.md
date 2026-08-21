@@ -369,9 +369,11 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 阶段 13 当前进度（2026-08-22）：
 
 - Helm 已提供三类 API、Scheduler、Provider Controller、Event Relay 的独立 Deployment/ServiceAccount/Service、Migration pre-install/pre-upgrade Job、PDB、控制面 HPA、ExternalSecret 选项和默认拒绝 NetworkPolicy。模板会在渲染时拒绝 mutable image tag，只接受 `sha256:<64 位十六进制>`；生产值示例见 `deploy/helm/astra/values.production.example.yaml`。
+- 控制面六个 Deployment 均生成 HPA；启用 `monitoring.enabled` 后为六个服务生成 ServiceMonitor 和 PrometheusRule，覆盖控制面不可用、调度失败、Outbox backlog、供应商快照失效和容量 Admission Control 告警。
 - 控制面镜像和本地参考镜像均使用非 root、RuntimeDefault、只读根文件系统、禁止提权和 `drop: ALL`；Compose 与 Helm 均不包含模型权重。
 - `bun run model-artifacts:check` 已纳入全仓检查，扫描仓库、构建上下文和工作目录中的 `.safetensors`、`.ckpt`、`.pt`、`.pth`、`.gguf`、`.onnx` 文件；当前结果为 clear。CI 已加入 Helm render/dry-run 门。
 - 灾备恢复顺序和值班动作已写入 [`docs/runbooks/disaster-recovery.md`](./runbooks/disaster-recovery.md)，容量验收脚本/报告模板已写入 [`docs/18-production-capacity-acceptance.md`](./18-production-capacity-acceptance.md)。
+- `.github/workflows/production-supply-chain.yml` 提供手动生产门：对外部固定 digest 生成 CycloneDX SBOM、执行 Trivy 高危扫描、验证 Cosign 签名并做 Helm digest 渲染；不在开发机拉取模型权重。
 
 阶段 13 尚未宣称完成的项目：真实 Kubernetes 集群 PostgreSQL 主从切换、真实 KMS/ExternalSecret、10-50 张 GPU 压测、真实 SBOM 签名和漏洞扫描报告。这些必须在隔离环境执行并附运行证据；当前仅完成模板、合同和无权重本地验证。
 
