@@ -40,23 +40,38 @@ const configuration =
             ASTRA_TEST_MEDIA_VALIDATOR_TOKEN: required("MEDIA_VALIDATOR_TOKEN"),
           },
         }
-      : suite === "http"
+      : suite === "events"
         ? {
             files: [
-              "apps/api/src/public-security.integration.test.ts",
-              "apps/api/src/admin-security.integration.test.ts",
+              "packages/database/src/event-repository.integration.test.ts",
+              "packages/queue/src/candidate-index.integration.test.ts",
+              "apps/event-relay/src/kafka.integration.test.ts",
+              "apps/event-relay/src/redis-rebuild.integration.test.ts",
             ],
             env: {
               ...common,
-              ASTRA_TEST_PUBLIC_API_URL: required("PUBLIC_API_URL"),
-              ASTRA_TEST_PUBLIC_API_KEY: required("ASTRA_LOCAL_API_KEY"),
-              ASTRA_TEST_ADMIN_API_URL: localUrl("ADMIN_API_URL", "ASTRA_LOCAL_ADMIN_API_PORT", 54101),
-              ASTRA_TEST_IDENTITY_URL: localUrl("IDENTITY_URL", "ASTRA_LOCAL_IDENTITY_PORT", 54180),
+              ASTRA_TEST_REDIS_URL: required("REDIS_URL"),
+              ASTRA_TEST_KAFKA_BROKERS: required("KAFKA_BROKERS"),
+              ASTRA_TEST_KAFKA_TASK_TOPIC: process.env.KAFKA_TASK_TOPIC ?? "astra.task-lifecycle.v1",
             },
           }
-        : undefined;
+        : suite === "http"
+          ? {
+              files: [
+                "apps/api/src/public-security.integration.test.ts",
+                "apps/api/src/admin-security.integration.test.ts",
+              ],
+              env: {
+                ...common,
+                ASTRA_TEST_PUBLIC_API_URL: required("PUBLIC_API_URL"),
+                ASTRA_TEST_PUBLIC_API_KEY: required("ASTRA_LOCAL_API_KEY"),
+                ASTRA_TEST_ADMIN_API_URL: localUrl("ADMIN_API_URL", "ASTRA_LOCAL_ADMIN_API_PORT", 54101),
+                ASTRA_TEST_IDENTITY_URL: localUrl("IDENTITY_URL", "ASTRA_LOCAL_IDENTITY_PORT", 54180),
+              },
+            }
+          : undefined;
 
-if (!configuration) throw new Error("integration_suite_must_be_postgres_s3_or_http");
+if (!configuration) throw new Error("integration_suite_must_be_postgres_s3_events_or_http");
 const processResult = Bun.spawn(["bun", "test", ...configuration.files, "--timeout", "30000"], {
   env: configuration.env,
   stdin: "inherit",

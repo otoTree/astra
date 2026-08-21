@@ -108,6 +108,26 @@ services:
     ports: ["${ASTRA_LOCAL_KAFKA_PORT:?set in .env.local}:19092"]
     volumes: ["astra-local-redpanda:/var/lib/redpanda/data"]
     networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=127.0.0.1:9092 --exit-when-healthy"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka-topic-init:
+    image: docker.redpanda.com/redpandadata/redpanda@sha256:04baa40ed34edf86028396f762be802f3b6b0acaab65e9de696a3f15d54c550f
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        for topic in astra.task-lifecycle.v1 astra.capacity.v1 astra.usage.v1
+        astra.audit.v1 astra.control.v1; do
+          rpk topic create "$$topic" -X brokers=redpanda:9092 >/dev/null 2>&1 ||
+          rpk topic describe "$$topic" -X brokers=redpanda:9092 >/dev/null;
+        done;
+        rpk topic list -X brokers=redpanda:9092
+    depends_on: { redpanda: { condition: service_healthy } }
+    networks: [astra-local-network]
+    restart: "no"
 
   minio:
     image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
@@ -251,6 +271,55 @@ services:
       database-migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
     networks: [astra-local-network]
+
+  event-relay:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/event-relay/src/main.ts"]
+    environment:
+      ASTRA_ENV: local
+      EVENT_RELAY_METRICS_PORT: 4112
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      REDIS_URL: redis://redis-node-1:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_CLIENT_ID: astra-local-event-relay
+      EVENT_RELAY_BATCH_SIZE: 100
+      EVENT_RELAY_LEASE_SECONDS: 30
+      EVENT_RELAY_MAXIMUM_ATTEMPTS: 12
+      EVENT_RELAY_POLL_INTERVAL_MS: 500
+      REDIS_REBUILD_BATCH_SIZE: 500
+      REDIS_REBUILD_LEASE_SECONDS: 900
+      REDIS_REBUILD_CHECK_INTERVAL_SECONDS: 30
+    ports: ["${ASTRA_LOCAL_EVENT_RELAY_METRICS_PORT:-54112}:4112"]
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+      redis-cluster-init: { condition: service_completed_successfully }
+      kafka-topic-init: { condition: service_completed_successfully }
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4112/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  event-contract-tests:
+    profiles: ["test"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "scripts/run-integration.ts", "events"]
+    environment:
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      REDIS_URL: redis://redis-node-1:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TASK_TOPIC: astra.task-lifecycle.v1
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+      redis-cluster-init: { condition: service_completed_successfully }
+      kafka-topic-init: { condition: service_completed_successfully }
+    networks: [astra-local-network]
+    restart: "no"
 
   admin-api:
     build:

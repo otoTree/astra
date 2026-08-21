@@ -399,6 +399,7 @@ export function createPublicApi(
         "generation",
         "/v1/videos/generations",
         key,
+        requestId(c.req.raw),
       );
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
@@ -438,6 +439,7 @@ export function createPublicApi(
         "generation",
         "/v1/images/generations",
         key,
+        requestId(c.req.raw),
       );
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
@@ -465,7 +467,15 @@ export function createPublicApi(
     const limited = await taskRateLimit(c.req.raw, selected, "task", `/v1/videos/edits:${key ?? requestId(c.req.raw)}`);
     if (limited) return limited;
     try {
-      const result = await taskService.create(selected, parsed.value, "video", "edit", "/v1/videos/edits", key);
+      const result = await taskService.create(
+        selected,
+        parsed.value,
+        "video",
+        "edit",
+        "/v1/videos/edits",
+        key,
+        requestId(c.req.raw),
+      );
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
       return serviceError(c.req.raw, error);
@@ -492,7 +502,15 @@ export function createPublicApi(
     const limited = await taskRateLimit(c.req.raw, selected, "task", `/v1/images/edits:${key ?? requestId(c.req.raw)}`);
     if (limited) return limited;
     try {
-      const result = await taskService.create(selected, parsed.value, "image", "edit", "/v1/images/edits", key);
+      const result = await taskService.create(
+        selected,
+        parsed.value,
+        "image",
+        "edit",
+        "/v1/images/edits",
+        key,
+        requestId(c.req.raw),
+      );
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
       return serviceError(c.req.raw, error);
@@ -606,7 +624,7 @@ export function createPublicApi(
     const parsed = await parseJson(emptyObjectSchema, c.req.raw);
     if (parsed.response) return parsed.response;
     try {
-      const task = await taskService.cancel(selected, c.req.param("id"));
+      const task = await taskService.cancel(selected, c.req.param("id"), requestId(c.req.raw));
       return task ? c.json(task) : errorResponse(requestId(c.req.raw), 404, "task_not_found", "Task not found");
     } catch (error) {
       return serviceError(c.req.raw, error);

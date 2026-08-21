@@ -144,17 +144,30 @@ COMMIT
 
 ### 3.2 Outbox Relay
 
-Relay 使用 `FOR UPDATE SKIP LOCKED` 批量领取 Outbox，按聚合 ID 保持顺序。事件 ID 在插入时生成并作为 Kafka message key/去重键。
+每个 Outbox 事件在数据库触发器中建立 `kafka` 和 `redis` 两条独立 delivery。每条 delivery 拥有
+`pending -> leased -> retry_wait -> delivered/dead_letter` 状态、短租约、尝试次数、下一次重试时间和
+目标元数据；任一 sink 故障都不会伪造另一 sink 已完成。`outbox_events.published_at` 只保留为 Kafka
+兼容观察字段，不能表示全部 sink 已完成。
+
+Relay 使用 `FOR UPDATE SKIP LOCKED` 批量领取。Kafka 领取 SQL 会阻止同一 `aggregate_id` 的后继事件
+越过未 delivered 的前序事件，Kafka message key 同样使用 `aggregate_id`，因此多 Relay 实例仍保持
+单聚合顺序。Redis sink 不相信事件 payload 中的状态，而是重新读取 PostgreSQL Task 当前版本后幂等
+收敛候选索引。
 
 ```text
-loop:
-  rows = claim unpublished outbox rows with lease
-  publish Kafka event(event_id, aggregate_id, aggregate_version)
-  record topic/partition/offset and published_at
-  on timeout leave/release lease for retry
+for sink in [kafka, redis]:
+  rows = claim due delivery rows with short lease
+  for row in rows:
+    publish or converge sink
+    CAS leased -> delivered and record destination metadata
+    on retryable failure: leased -> retry_wait with bounded exponential backoff
+    on deterministic failure or attempts exhausted: leased -> dead_letter
 ```
 
-数据库提交后 Relay 崩溃可能重复发送，消费者必须以 `event_id` 幂等。禁止先标发布再发 Kafka。
+数据库提交后 Relay 崩溃可能重复发送，消费者必须在业务事务内写
+`event_consumer_receipts(consumer_name,event_id,payload_hash)`；相同 ID、相同 payload 返回 duplicate，
+相同 ID、不同 payload 进入冲突告警。死信可显式 replay，replay 只重置对应 sink 的 delivery。禁止先标
+发布再发 Kafka，也禁止 Kafka/Redis 故障回滚已提交业务事务。
 
 ## 4. Redis Cluster
 
@@ -181,12 +194,16 @@ Redis Cluster 数据丢失或 Schema 版本升级时：
 1. 将 Scheduler 切换为 `queue_rebuilding`，暂停新 Lease，不停止运行任务。
 2. 清理目标前缀或切换到带新 generation 的 key namespace。
 3. 按 `(created_at, id)` 游标扫描 PostgreSQL 中可调度状态。
-4. 重新解析 Pool，计算 WFQ score 并批量写新 namespace。
+4. 重新解析 Release/Pool 并批量写新 namespace；阶段 5 使用稳定创建时间分数，阶段 11 发布 WFQ
+   策略后再使用版本化公平分数。
 5. 扫描期间记录 Task 变更 Outbox 水位。
 6. 回放水位后的队列事件。
 7. 抽样比对 PostgreSQL 数量/版本，原子切换 active generation。
 8. 恢复 Scheduler。
 
+重建由 PostgreSQL 短租约保证单执行者，进程失联后允许其他 Relay 接管。运行期周期核对数据库/Redis
+active generation 指针；指针丢失立即重建，候选数量在无 Redis delivery 积压时连续两次不一致才重建，
+避免正常事件传播延迟触发抖动。重建期间 Redis delivery 保持 retry，不会错误确认到旧 generation。
 重建过程可重复。旧 namespace 延迟删除，便于回滚。首期 10-50 GPU 下目标恢复时间小于 10 分钟。
 
 ### 4.4 Cluster 约束
@@ -214,7 +231,7 @@ Redis Cluster 数据丢失或 Schema 版本升级时：
   "organization_id": "org_media",
   "project_id": "project_media",
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "data": {}
+  "payload": {}
 }
 ```
 
@@ -224,11 +241,11 @@ Redis Cluster 数据丢失或 Schema 版本升级时：
 
 | Topic | Key | 事件 |
 | --- | --- | --- |
-| `astra.task.lifecycle.v1` | `task_id` | queued、started、completed、failed、canceled、expired |
+| `astra.task-lifecycle.v1` | `task_id` | queued、started、completed、failed、canceled、expired |
 | `astra.capacity.v1` | `model_pool_id` | plan、replica、provider operation、circuit breaker |
 | `astra.usage.v1` | `project_id` | GPU 秒、估算和实际费用、存储用量 |
 | `astra.audit.v1` | `organization_id` | API Key 与人员高风险操作 |
-| `astra.model.release.v1` | `model_alias` | approved、rollout、rollback、disabled |
+| `astra.control.v1` | 控制资源 ID | approved、rollout、rollback、disabled、rebuild |
 
 分区数按消费者吞吐设置，业务顺序只保证同 key。Topic 保留期不替代 PostgreSQL 永久记录。
 

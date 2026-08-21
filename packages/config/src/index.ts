@@ -73,6 +73,19 @@ export const eventRelayConfigSchema = environmentSchema.extend({
   DATABASE_URL: requiredUrl,
   REDIS_URL: requiredUrl,
   KAFKA_BROKERS: z.string().min(1),
+  KAFKA_CLIENT_ID: z.string().min(1).max(128).default("astra-event-relay"),
+  KAFKA_TASK_TOPIC: z.string().min(1).default("astra.task-lifecycle.v1"),
+  KAFKA_CAPACITY_TOPIC: z.string().min(1).default("astra.capacity.v1"),
+  KAFKA_USAGE_TOPIC: z.string().min(1).default("astra.usage.v1"),
+  KAFKA_AUDIT_TOPIC: z.string().min(1).default("astra.audit.v1"),
+  KAFKA_CONTROL_TOPIC: z.string().min(1).default("astra.control.v1"),
+  EVENT_RELAY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+  EVENT_RELAY_LEASE_SECONDS: z.coerce.number().int().min(5).max(300).default(30),
+  EVENT_RELAY_MAXIMUM_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(12),
+  EVENT_RELAY_POLL_INTERVAL_MS: z.coerce.number().int().min(50).max(60000).default(500),
+  REDIS_REBUILD_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(500),
+  REDIS_REBUILD_LEASE_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
+  REDIS_REBUILD_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(3600).default(30),
 });
 
 export const workerAgentConfigSchema = environmentSchema.extend({

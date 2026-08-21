@@ -1,0 +1,25 @@
+diff --git a/src/network/requestQueue/index.js b/src/network/requestQueue/index.js
+index eee14d66c3869d90f7bac0ac755ecbad3f2a2741..1f97b31bd88de628d9a6c9eed0f66ea8f28f6545 100644
+--- a/src/network/requestQueue/index.js
++++ b/src/network/requestQueue/index.js
+@@ -304,6 +304,9 @@ module.exports = class RequestQueue extends EventEmitter {
+    * the pending request queue eventually.
+    */
+   scheduleCheckPendingRequests() {
++    if (this.pending.length === 0) {
++      return
++    }
+     // If we're throttled: Schedule checkPendingRequests when the throttle
+     // should be resolved. If there is already something scheduled we assume that that
+     // will be fine, and potentially fix up a new timeout if needed at that time.
+@@ -311,9 +314,7 @@ module.exports = class RequestQueue extends EventEmitter {
+     // we will anyways check the queue when one of them gets fulfilled.
+     let scheduleAt = this.throttledUntil - Date.now()
+     if (!this.throttleCheckTimeoutId) {
+-      if (this.pending.length > 0) {
+-        scheduleAt = scheduleAt > 0 ? scheduleAt : CHECK_PENDING_REQUESTS_INTERVAL
+-      }
++      scheduleAt = scheduleAt > 0 ? scheduleAt : CHECK_PENDING_REQUESTS_INTERVAL
+       this.throttleCheckTimeoutId = setTimeout(() => {
+         this.throttleCheckTimeoutId = null
+         this.checkPendingRequests()

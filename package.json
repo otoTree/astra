@@ -15,6 +15,7 @@
     "dev:media-validator": "bun run apps/api/src/media-validator.ts",
     "dev:admin-web": "bun run --cwd apps/admin-web dev",
     "dev:registry-reference": "bun run apps/registry-reference/src/main.ts",
+    "dev:event-relay": "bun run apps/event-relay/src/main.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
@@ -23,8 +24,9 @@
     "test:unit": "bun test --timeout 10000",
     "test:integration:postgres": "bun run scripts/run-integration.ts postgres",
     "test:integration:s3": "bun run scripts/run-integration.ts s3",
+    "test:integration:events": "docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml --profile test run --rm --build event-contract-tests",
     "test:integration:http": "bun run scripts/run-integration.ts http",
-    "test:integration:local": "bun run test:integration:postgres && bun run test:integration:s3 && bun run test:integration:http",
+    "test:integration:local": "bun run test:integration:postgres && bun run test:integration:s3 && bun run test:integration:events && bun run test:integration:http",
     "db:migrate": "bun run packages/database/src/migrate.ts",
     "db:migrate:check": "bun run scripts/check-migrations.ts",
     "auth:bootstrap-local": "bun run scripts/bootstrap-local-identity.ts",
@@ -56,5 +58,8 @@
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "yaml": "2.9.0"
+  },
+  "patchedDependencies": {
+    "kafkajs@2.2.4": "patches/kafkajs@2.2.4.patch"
   }
 }

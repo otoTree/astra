@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { loadAdminApiConfig, loadProviderControllerConfig, loadPublicApiConfig } from "./index.ts";
+import {
+  loadAdminApiConfig,
+  loadEventRelayConfig,
+  loadProviderControllerConfig,
+  loadPublicApiConfig,
+} from "./index.ts";
 
 describe("service configuration", () => {
   test("public API fails at startup when an infrastructure boundary is absent", () => {
@@ -38,6 +43,25 @@ describe("service configuration", () => {
         DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
         ASTRA_REQUEST_ENCRYPTION_KEY: "e".repeat(32),
         ASTRA_AUDIT_SIGNING_KEY: "a".repeat(32),
+      }),
+    ).toThrow();
+  });
+
+  test("event relay validates infrastructure and bounded delivery controls", () => {
+    const config = loadEventRelayConfig({
+      DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+      REDIS_URL: "redis://localhost:6379",
+      KAFKA_BROKERS: "localhost:9092",
+    });
+    expect(config.KAFKA_TASK_TOPIC).toBe("astra.task-lifecycle.v1");
+    expect(config.EVENT_RELAY_BATCH_SIZE).toBe(100);
+    expect(config.REDIS_REBUILD_CHECK_INTERVAL_SECONDS).toBe(30);
+    expect(() =>
+      loadEventRelayConfig({
+        DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+        REDIS_URL: "redis://localhost:6379",
+        KAFKA_BROKERS: "localhost:9092",
+        EVENT_RELAY_MAXIMUM_ATTEMPTS: "0",
       }),
     ).toThrow();
   });

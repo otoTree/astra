@@ -62,7 +62,7 @@ export class AssetExpirationRepository {
       await transaction`UPDATE admission_reservations
         SET status='released', release_reason='file_expired', released_at=${timestamp.toISOString()}
         WHERE resource_type='file_upload' AND resource_id=${fileId} AND status='held'`;
-      const tasks = await transaction`SELECT t.id, t.status, t.version
+      const tasks = await transaction`SELECT t.id, t.project_id, t.status, t.version
         FROM tasks t
         WHERE t.status IN ('queued', 'scheduling', 'provisioning')
           AND EXISTS (
@@ -85,8 +85,14 @@ export class AssetExpirationRepository {
         if (!changed[0]) throw new Error("task_expiration_cas_conflict");
         await transaction`INSERT INTO task_state_events (id, task_id, from_status, to_status, reason, version, created_at)
           VALUES (${this.createId("evt")}, ${taskId}, ${fromStatus}, 'failed', 'input_asset_expired', ${version}, ${timestamp.toISOString()})`;
-        await transaction`INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
-          VALUES (${this.createId("evt")}, 'generation_task', ${taskId}, 'task.failed', ${JSON.stringify({ task_id: taskId, error_code: "input_asset_expired" })}, ${timestamp.toISOString()})`;
+        await transaction`INSERT INTO outbox_events (
+          id, aggregate_type, aggregate_id, aggregate_version, event_type, trace_id, payload, created_at
+        ) VALUES (
+          ${this.createId("evt")}, 'generation_task', ${taskId}, ${version}, 'task.failed',
+          ${`trace_${taskId}`},
+          ${JSON.stringify({ task_id: taskId, project_id: String(task.project_id), error_code: "input_asset_expired" })},
+          ${timestamp.toISOString()}
+        )`;
         await transaction`UPDATE admission_reservations
           SET status='released', release_reason='input_asset_expired', released_at=${timestamp.toISOString()}
           WHERE resource_type='task' AND resource_id=${taskId} AND status='held'`;

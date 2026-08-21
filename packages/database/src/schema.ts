@@ -236,8 +236,65 @@ export const outboxEvents = pgTable("outbox_events", {
   aggregateId: text("aggregate_id").notNull(),
   eventType: text("event_type").notNull(),
   payload: jsonb("payload").notNull(),
+  aggregateVersion: integer("aggregate_version").notNull(),
+  traceId: text("trace_id").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
+});
+
+export const eventRelayDeliveries = pgTable("event_relay_deliveries", {
+  eventId: text("event_id").notNull(),
+  sink: text("sink").notNull(),
+  status: text("status").notNull(),
+  leaseOwner: text("lease_owner"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  attemptCount: integer("attempt_count").notNull(),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull(),
+  lastErrorCode: text("last_error_code"),
+  destinationMetadata: jsonb("destination_metadata"),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const eventDeadLetters = pgTable("event_dead_letters", {
+  id: text("id").primaryKey(),
+  eventId: text("event_id").notNull(),
+  sink: text("sink").notNull(),
+  attemptCount: integer("attempt_count").notNull(),
+  errorCode: text("error_code").notNull(),
+  payloadSnapshot: jsonb("payload_snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  replayedAt: timestamp("replayed_at", { withTimezone: true }),
+});
+
+export const eventConsumerReceipts = pgTable("event_consumer_receipts", {
+  consumerName: text("consumer_name").notNull(),
+  eventId: text("event_id").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull(),
+});
+
+export const redisIndexGenerations = pgTable("redis_index_generations", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull(),
+  startedOutboxCreatedAt: timestamp("started_outbox_created_at", { withTimezone: true }),
+  startedOutboxId: text("started_outbox_id"),
+  scannedTasks: bigint("scanned_tasks", { mode: "number" }).notNull(),
+  indexedTasks: bigint("indexed_tasks", { mode: "number" }).notNull(),
+  validation: jsonb("validation"),
+  leaseOwner: text("lease_owner"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  failureCode: text("failure_code"),
+});
+
+export const redisIndexState = pgTable("redis_index_state", {
+  singleton: boolean("singleton").primaryKey(),
+  activeGenerationId: text("active_generation_id"),
+  schedulerMode: text("scheduler_mode").notNull(),
+  version: integer("version").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
 
 export const files = pgTable("files", {

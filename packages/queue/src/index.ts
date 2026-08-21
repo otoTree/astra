@@ -144,3 +144,164 @@ export class RedisPublicApiRateLimiter implements PublicApiRateLimiter {
     this.connection = undefined;
   }
 }
+
+export type RedisCandidate = Readonly<{
+  taskId: string;
+  projectId: string;
+  releaseId: string;
+  lane: QueueClass;
+  taskVersion: number;
+  createdAt: string;
+}>;
+
+export class RedisCandidateIndex {
+  private readonly client: RedisClusterType;
+  private connection: Promise<void> | undefined;
+  private connectedState = false;
+
+  constructor(
+    rootUrl: string,
+    private readonly namespace = "astra",
+  ) {
+    if (!/^[a-zA-Z0-9:_-]+$/.test(namespace)) throw new Error("invalid_redis_namespace");
+    this.client = createCluster({ rootNodes: [{ url: rootUrl }] });
+    this.client.on("error", () => undefined);
+  }
+
+  private async connected(): Promise<void> {
+    if (this.connectedState) return;
+    this.connection ??= this.client.connect().then(() => {
+      this.connectedState = true;
+    });
+    try {
+      await this.connection;
+    } catch {
+      this.connection = undefined;
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  private candidateKey(generation: string, releaseId: string): string {
+    return `${this.namespace}:candidates:{${releaseId}}:${generation}`;
+  }
+
+  private queueKey(generation: string, releaseId: string, lane: QueueClass): string {
+    return `${this.namespace}:queue:{${releaseId}}:${generation}:${lane}`;
+  }
+
+  async put(generation: string, candidate: RedisCandidate): Promise<void> {
+    await this.connected();
+    const score = new Date(candidate.createdAt).getTime();
+    if (!Number.isFinite(score)) throw new Error("invalid_candidate_created_at");
+    try {
+      await this.client.sAdd(`${this.namespace}:queue:releases:${generation}`, candidate.releaseId);
+      await this.client
+        .multi()
+        .hSet(this.candidateKey(generation, candidate.releaseId), candidate.taskId, JSON.stringify(candidate))
+        .zAdd(this.queueKey(generation, candidate.releaseId, candidate.lane), {
+          score,
+          value: candidate.taskId,
+        })
+        .exec();
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async remove(generation: string, taskId: string, releaseId: string): Promise<void> {
+    await this.connected();
+    try {
+      await this.client
+        .multi()
+        .hDel(this.candidateKey(generation, releaseId), taskId)
+        .zRem(this.queueKey(generation, releaseId, "online"), taskId)
+        .zRem(this.queueKey(generation, releaseId, "batch"), taskId)
+        .exec();
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async switchGeneration(generation: string): Promise<void> {
+    await this.connected();
+    try {
+      await this.client.set(`${this.namespace}:queue:active_generation`, generation);
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async activeGeneration(): Promise<string | undefined> {
+    await this.connected();
+    try {
+      return (await this.client.get(`${this.namespace}:queue:active_generation`)) ?? undefined;
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async count(generation: string): Promise<number> {
+    await this.connected();
+    try {
+      const releases = await this.client.sMembers(`${this.namespace}:queue:releases:${generation}`);
+      const counts = await Promise.all(
+        releases.map((releaseId) => this.client.hLen(this.candidateKey(generation, releaseId))),
+      );
+      return counts.reduce((total, value) => total + value, 0);
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async candidate(generation: string, releaseId: string, taskId: string): Promise<RedisCandidate | undefined> {
+    await this.connected();
+    try {
+      const raw = await this.client.hGet(this.candidateKey(generation, releaseId), taskId);
+      return raw ? (JSON.parse(raw) as RedisCandidate) : undefined;
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async deleteGeneration(generation: string): Promise<void> {
+    await this.connected();
+    try {
+      const releasesKey = `${this.namespace}:queue:releases:${generation}`;
+      const releases = await this.client.sMembers(releasesKey);
+      for (const releaseId of releases) {
+        await this.client
+          .multi()
+          .del([
+            this.candidateKey(generation, releaseId),
+            this.queueKey(generation, releaseId, "online"),
+            this.queueKey(generation, releaseId, "batch"),
+          ])
+          .exec();
+      }
+      await this.client.del(releasesKey);
+      if ((await this.activeGeneration()) === generation) {
+        await this.client.del(`${this.namespace}:queue:active_generation`);
+      }
+    } catch {
+      throw new Error("redis_candidate_index_unavailable");
+    }
+  }
+
+  async ready(): Promise<boolean> {
+    try {
+      await this.connected();
+      const masters = await this.client.getMasters();
+      if (!masters[0]?.client) return false;
+      await masters[0].client.ping();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.connectedState) await this.client.close();
+    this.connectedState = false;
+    this.connection = undefined;
+  }
+}

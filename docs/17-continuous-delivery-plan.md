@@ -18,8 +18,8 @@
 | 2 | API Key、配额、限流、审计 | 完成 | 1 |
 | 3 | Admin API 与管理台只读能力 | 完成 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 完成 | 3 |
-| 5 | Outbox、Kafka、Redis 重建 | 进行中 | 4 |
-| 6 | 最小确定性调度与租约 | 未开始 | 5 |
+| 5 | Outbox、Kafka、Redis 重建 | 完成 | 4 |
+| 6 | 最小确定性调度与租约 | 进行中 | 5 |
 | 7 | Worker Control 与 Agent 执行环 | 未开始 | 6 |
 | 8 | 共绩 Transport 与只读快照 | 未开始 | 7 |
 | 9 | 共绩资源操作与 Reconcile | 未开始 | 8 |
@@ -132,6 +132,31 @@
 交付：PostgreSQL Outbox 到 Kafka、确定性事件去重/重放/死信、Redis 候选和限流索引、从 PostgreSQL 分批重建、backlog/age/retry 指标。
 
 退出条件：Redis 全量丢失可在线重建；Kafka 停机、重复、乱序不改变数据库最终状态；业务写与 Outbox 同事务。
+
+阶段 5 完成证据（2026-08-21）：
+
+- `event_relay_deliveries` 对 Kafka/Redis 分别维护短租约、重试、目标元数据和死信；Outbox 插入与
+  Task 状态在同一事务，供应商或消息系统调用不进入事务。
+- Kafka 多实例领取阻止同聚合后继越过前序，message key 固定为 `aggregate_id`；消费者以
+  `(consumer_name,event_id,payload_hash)` 在 PostgreSQL 事务内去重并拒绝 payload 冲突。
+- Redis 候选只保存可重建数据。重建使用 PostgreSQL 独占短租约、Task 游标、Outbox 高水位增量回放、
+  数量校验和 generation 指针切换；运行期指针丢失立即重建，稳定数量不一致触发受迟滞保护的重建。
+- Compose 显式创建五个 Kafka topic，并提供独立 Event Relay、健康检查、backlog/age/retry/dead-letter/
+  delivery duration/rebuild 指标；KafkaJS 在 Bun 下的空队列负 timeout 已通过最小依赖 patch 消除。
+- `bun run check` 通过：50 项普通测试通过，strict TypeScript、依赖边界、三份 OpenAPI、迁移 checksum
+  和生产构建均成功。事件合同容器 7 项真实集成测试通过，覆盖 PostgreSQL 并发 claim、租约接管、
+  DLQ/replay、Consumer 去重、Redis 幂等与全量丢失重建、Redpanda 同聚合顺序。
+- 实际故障演练中停止 `astra-local` Redpanda 后，Task 仍成功提交为 queued，Redis delivery 已完成而
+  Kafka delivery 保持积压；Redpanda 恢复后同一事件收敛为双 sink delivered，Event Relay readiness
+  恢复且未产生死信。
+- 运行期完整性演练观测到 Redis 比 PostgreSQL 少 12 条候选：首轮只记录差异，第二轮自动创建新
+  generation，并从 366 条恢复到权威的 378 条，`scanned/indexed` 指标均为 378，全程未把 Redis 当作
+  Task 状态真源。
+
+本阶段新增并已应用迁移 `0010_event_delivery_and_rebuild.sql`（checksum
+`7ad4a1b9cb8cf9a900cda5202de826002a33758ef3580f51f88ede7ab3f5bd0b`），后续禁止修改。回滚采用应用
+回滚并保留 delivery、死信、消费收据和 generation 历史；旧应用可继续只读取 `published_at`，但不得
+删除新表或将 Redis/Kafka 提升为状态真源。
 
 ### 阶段 6：最小确定性调度
 

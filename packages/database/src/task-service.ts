@@ -216,6 +216,7 @@ export class TaskService {
     operation: "generation" | "edit",
     endpoint: string,
     idempotencyKey?: string,
+    traceId?: string,
   ): Promise<{ task: CreatedTask; replayed: boolean }> {
     const requestHash = hash(input);
     const task = await this.sql.begin(async (transaction) => {
@@ -412,7 +413,13 @@ export class TaskService {
         await transaction`INSERT INTO task_files (id, task_id, file_id, direction, role, ordinal) VALUES (${this.createId("taskfile")}, ${taskId}, ${inputFile.fileId}, 'input', ${inputFile.role}, ${inputFile.ordinal})`;
       }
       await transaction`INSERT INTO task_state_events (id, task_id, from_status, to_status, reason, version, created_at) VALUES (${this.createId("evt")}, ${taskId}, NULL, 'queued', 'created', 0, ${timestamp.toISOString()})`;
-      await transaction`INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at) VALUES (${this.createId("evt")}, 'generation_task', ${taskId}, 'task.queued', ${JSON.stringify({ task_id: taskId, project_id: context.projectId, type })}, ${timestamp.toISOString()})`;
+      await transaction`INSERT INTO outbox_events (
+        id, aggregate_type, aggregate_id, aggregate_version, event_type, trace_id, payload, created_at
+      ) VALUES (
+        ${this.createId("evt")}, 'generation_task', ${taskId}, 0, 'task.queued',
+        ${traceId ?? `trace_${taskId}`},
+        ${JSON.stringify({ task_id: taskId, organization_id: context.organizationId, project_id: context.projectId, type })}, ${timestamp.toISOString()}
+      )`;
       if (this.enforceAdmission && context.apiKeyId) {
         await transaction`INSERT INTO admission_reservations (
           id, project_id, api_key_id, resource_type, resource_id, lane, status,
@@ -499,7 +506,7 @@ export class TaskService {
     };
   }
 
-  async cancel(context: TaskServiceContext, taskId: string): Promise<CreatedTask | undefined> {
+  async cancel(context: TaskServiceContext, taskId: string, traceId?: string): Promise<CreatedTask | undefined> {
     const result = await this.sql.begin(async (transaction) => {
       const rows = await transaction`SELECT t.*, r.alias AS model,
         ARRAY(SELECT tf.file_id FROM task_files tf WHERE tf.task_id=t.id AND tf.direction='output' ORDER BY tf.ordinal) AS output_file_ids
@@ -518,7 +525,14 @@ export class TaskService {
         const changedAt = this.now().toISOString();
         await transaction`UPDATE tasks SET status=${next}, version=${version}, updated_at=${changedAt} WHERE id=${taskId} AND version=${Number(row.version)}`;
         await transaction`INSERT INTO task_state_events (id, task_id, from_status, to_status, reason, version, created_at) VALUES (${this.createId("evt")}, ${taskId}, ${current}, ${next}, 'client_cancel', ${version}, ${changedAt})`;
-        await transaction`INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at) VALUES (${this.createId("evt")}, 'generation_task', ${taskId}, 'task.' || ${next}, ${JSON.stringify({ task_id: taskId })}, ${changedAt})`;
+        await transaction`INSERT INTO outbox_events (
+          id, aggregate_type, aggregate_id, aggregate_version, event_type, trace_id, payload, created_at
+        ) VALUES (
+          ${this.createId("evt")}, 'generation_task', ${taskId}, ${version}, 'task.' || ${next},
+          ${traceId ?? `trace_${taskId}`},
+          ${JSON.stringify({ task_id: taskId, organization_id: context.organizationId, project_id: context.projectId })},
+          ${changedAt}
+        )`;
         if (next === "canceled") {
           await transaction`UPDATE admission_reservations
             SET status='released', release_reason='task_canceled', released_at=${changedAt}

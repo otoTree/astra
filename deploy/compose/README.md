@@ -16,6 +16,7 @@ docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-com
 - Worker Control API: `http://127.0.0.1:54102`
 - Model App: `http://127.0.0.1:49000`
 - Media Validator: `http://127.0.0.1:54103`
+- Event Relay health/metrics: `http://127.0.0.1:54112`
 - PostgreSQL: `localhost:55432`
 - Redis Cluster seed: `localhost:56379`
 - Kafka-compatible Redpanda: `localhost:59092`
@@ -26,3 +27,12 @@ docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-com
 ```bash
 docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml down
 ```
+
+事件合同测试在 `test` profile 的一次性容器中运行，以便在专用网络内连接真实 Redis Cluster 全部节点：
+
+```bash
+bun run test:integration:events
+```
+
+该命令使用临时 PostgreSQL schema、独立 Redis namespace 和随机 Kafka consumer group，结束后精确清理
+临时资源；不会执行 `FLUSHALL`、复用其他项目网络或访问真实 Provider/模型。

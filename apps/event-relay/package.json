@@ -5,6 +5,10 @@
   "type": "module",
   "dependencies": {
     "@astra/config": "workspace:*",
-    "@astra/observability": "workspace:*"
+    "@astra/contracts": "workspace:*",
+    "@astra/database": "workspace:*",
+    "@astra/observability": "workspace:*",
+    "@astra/queue": "workspace:*",
+    "kafkajs": "^2.2.4"
   }
 }
