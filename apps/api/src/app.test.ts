@@ -235,6 +235,7 @@ describe("worker control API", () => {
       heartbeat_interval_seconds: 10,
       lease_duration_seconds: 30,
       orphan_grace_period_seconds: 180,
+      rollout_validation_required: false,
     }),
     authenticate: async (token, workerId) => {
       if (token !== "worker-session-token" || (workerId && workerId !== identity.workerId)) {
@@ -253,6 +254,7 @@ describe("worker control API", () => {
     complete: async () => unavailable(),
     fail: async () => unavailable(),
     drained: async () => ({ accepted: true, reclaim_token: "reclaim_token_with_at_least_thirty_two_chars" }),
+    reportRolloutValidation: async () => unavailable(),
   };
   const app = withErrorHandling(createWorkerControlApi({ ready: async () => true }, service));
 
@@ -351,5 +353,68 @@ describe("worker control API", () => {
       }),
     });
     expect(emptyLease.status).toBe(204);
+  });
+
+  test("accepts rollout validation only from the bound Worker session", async () => {
+    let reportedSequence: number | undefined;
+    const validationService: WorkerControlUseCases = {
+      ...service,
+      reportRolloutValidation: async (_identity, input) => {
+        reportedSequence = input.sequence;
+        return { accepted: true as const, rollout_id: "rollout_test", rollout_step_id: "rolloutstep_test" };
+      },
+    };
+    const validationApp = withErrorHandling(createWorkerControlApi({ ready: async () => true }, validationService));
+    const report = {
+      sequence: 7,
+      observed_at: new Date().toISOString(),
+      image_digest: `sha256:${"a".repeat(64)}`,
+      status: "passed",
+      capabilities_hash: "b".repeat(64),
+      smoke: {
+        validation_id: "validation_test",
+        model_release: "release_test",
+        status: "passed",
+        evidence_sha256: "c".repeat(64),
+        duration_ms: 125,
+        checks: { readiness: true, capabilities: true, execution: true, output_contract: true },
+      },
+      resources: { gpu_memory_peak_bytes: 0, system_memory_peak_bytes: 1024 },
+    };
+    const accepted = await validationApp.request(
+      "http://localhost/internal/v1/workers/worker_test/rollout-validation",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer worker-session-token", "content-type": "application/json" },
+        body: JSON.stringify(report),
+      },
+    );
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({
+      accepted: true,
+      rollout_id: "rollout_test",
+      rollout_step_id: "rolloutstep_test",
+    });
+    expect(reportedSequence).toBe(7);
+
+    const wrongWorker = await validationApp.request(
+      "http://localhost/internal/v1/workers/worker_other/rollout-validation",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer worker-session-token", "content-type": "application/json" },
+        body: JSON.stringify(report),
+      },
+    );
+    expect(wrongWorker.status).toBe(401);
+
+    const invalidEvidence = await validationApp.request(
+      "http://localhost/internal/v1/workers/worker_test/rollout-validation",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer worker-session-token", "content-type": "application/json" },
+        body: JSON.stringify({ ...report, status: "failed" }),
+      },
+    );
+    expect(invalidEvidence.status).toBe(422);
   });
 });

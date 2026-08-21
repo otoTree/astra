@@ -16,6 +16,7 @@ import {
 } from "@astra/provider-gongji";
 import { ReferenceProviderOperator } from "@astra/provider-reference";
 import { ProviderOperationReconciler } from "./reconciler.ts";
+import { RolloutController } from "./rollout-controller.ts";
 
 const config = loadProviderControllerConfig();
 const logger = createLogger("provider-controller");
@@ -23,7 +24,12 @@ const port = config.PROVIDER_CONTROLLER_METRICS_PORT;
 const database = createDatabase(config.DATABASE_URL);
 const databaseHealth = new DatabaseHealth(database.client);
 const repository = new ProviderSnapshotRepository(database.client);
-const operationRepository = new ProviderOperationRepository(database.client);
+const operationRepository = new ProviderOperationRepository(
+  database.client,
+  () => new Date(),
+  (prefix) => `${prefix}_${Bun.randomUUIDv7()}`,
+  config.PROVIDER_OPERATION_ENCRYPTION_KEY,
+);
 const provider = config.PROVIDER_DRIVER;
 const credentials = () => ({
   token: process.env.GONGJI_TOKEN ?? (config.GONGJI_TOKEN as string),
@@ -68,6 +74,13 @@ const operationReconciler = new ProviderOperationReconciler(
   controllerId,
   config.PROVIDER_OPERATION_LEASE_SECONDS,
   config.PROVIDER_OPERATION_TIMEOUT_SECONDS,
+);
+const rolloutController = new RolloutController(
+  database.client,
+  operationRepository,
+  provider,
+  config.WORKER_TOKEN_PEPPER,
+  config.ROLLOUT_WORKER_CONTROL_URL,
 );
 
 const metrics = createMetricRegistry("provider-controller");
@@ -120,11 +133,30 @@ const operationBacklogAge = new Gauge({
   labelNames: ["provider", "operation_type", "status"] as const,
   registers: [metrics],
 });
+const rolloutTotal = new Counter({
+  name: "astra_rollout_reconcile_total",
+  help: "Image rollout reconcile outcomes",
+  labelNames: ["provider", "outcome"] as const,
+  registers: [metrics],
+});
+const rolloutActive = new Gauge({
+  name: "astra_rollout_active",
+  help: "Active image rollouts by state",
+  labelNames: ["provider", "status"] as const,
+  registers: [metrics],
+});
+const rolloutAge = new Gauge({
+  name: "astra_rollout_oldest_age_seconds",
+  help: "Age of the oldest active image rollout",
+  labelNames: ["provider"] as const,
+  registers: [metrics],
+});
 
 const abort = new AbortController();
 let latestStatus: Awaited<ReturnType<ProviderSnapshotRepository["freshness"]>> | undefined;
 let syncing = false;
 let operationLoopHealthy = true;
+let rolloutLoopHealthy = true;
 
 const synchronize = async (): Promise<void> => {
   if (syncing) return;
@@ -229,6 +261,56 @@ const operationMetricsLoop = async (): Promise<void> => {
 void operationLoop();
 void operationMetricsLoop();
 
+const rolloutLoop = async (): Promise<void> => {
+  while (!abort.signal.aborted) {
+    try {
+      const result = await rolloutController.runOnce();
+      rolloutTotal.inc({ provider, outcome: result.outcome });
+      rolloutLoopHealthy = true;
+      if (result.outcome !== "idle" && result.outcome !== "waiting") {
+        logger.info("rollout_reconcile_progress", {
+          rollout_id: result.rolloutId,
+          outcome: result.outcome,
+          reason: result.reason,
+        });
+      }
+    } catch (error) {
+      rolloutLoopHealthy = false;
+      logger.error("rollout_reconcile_failed", {
+        error_code: error instanceof Error ? error.message : "rollout_reconcile_failed",
+      });
+    }
+    await Bun.sleep(config.ROLLOUT_RECONCILE_INTERVAL_MS);
+  }
+};
+void rolloutLoop();
+
+const rolloutMetricsLoop = async (): Promise<void> => {
+  while (!abort.signal.aborted) {
+    try {
+      rolloutActive.reset();
+      rolloutAge.reset();
+      const rows = await database.client`SELECT status, count(*)::int AS count,
+          COALESCE(EXTRACT(EPOCH FROM (${new Date().toISOString()}::timestamptz-min(created_at))),0)::bigint AS age
+        FROM model_rollouts WHERE provider=${provider}
+          AND status IN ('pending','validating','rolling','paused','rolling_back')
+        GROUP BY status`;
+      let oldest = 0;
+      for (const row of rows) {
+        rolloutActive.set({ provider, status: String(row.status) }, Number(row.count));
+        oldest = Math.max(oldest, Number(row.age));
+      }
+      rolloutAge.set({ provider }, oldest);
+    } catch (error) {
+      logger.error("rollout_metrics_failed", {
+        error_code: error instanceof Error ? error.message : "rollout_metrics_failed",
+      });
+    }
+    await Bun.sleep(5_000);
+  }
+};
+void rolloutMetricsLoop();
+
 const server = Bun.serve({
   port,
   fetch: async (request) => {
@@ -256,6 +338,7 @@ const server = Bun.serve({
           latest_published_run_id: latestStatus?.latestPublishedRunId,
           last_error_code: latestStatus?.lastErrorCode,
           operation_reconcile: operationLoopHealthy ? "ready" : "degraded",
+          rollout_reconcile: rolloutLoopHealthy ? "ready" : "degraded",
         },
         { status: ready ? 200 : 503 },
       );

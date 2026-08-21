@@ -27,6 +27,7 @@ const configuration =
           "packages/database/src/worker-control-repository.integration.test.ts",
           "packages/database/src/provider-snapshot-repository.integration.test.ts",
           "apps/provider-controller/src/reconciler.integration.test.ts",
+          "apps/provider-controller/src/rollout-controller.integration.test.ts",
         ],
         env: common,
       }

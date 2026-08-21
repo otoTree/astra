@@ -757,6 +757,205 @@ function ManagementWorkbench() {
   );
 }
 
+const rolloutStrategy = {
+  max_surge: 1,
+  max_unavailable: 0,
+  batch_size: 1,
+  readiness_timeout_seconds: 1800,
+  readiness_stability_seconds: 60,
+  progress_deadline_seconds: 7200,
+  pause_on_failure: true,
+  maximum_failure_rate_basis_points: 500,
+  maximum_duration_regression_basis_points: 2500,
+  maximum_extra_cost_minor: 600,
+  currency: "CNY",
+  rollback_retention_seconds: 604800,
+};
+
+function RolloutWorkbench() {
+  const [preview, setPreview] = useState<Row | null>(null);
+  const [detail, setDetail] = useState<Row | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const execute = async (operation: () => Promise<Row>, destination: (value: Row) => void) => {
+    setBusy(true);
+    setError(null);
+    try {
+      destination(await operation());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "rollout_operation_failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const previewRollout = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const version = Number(values.get("expected_pool_version"));
+    void execute(
+      () =>
+        mutate<Row>(
+          "/admin/v1/rollouts/preview",
+          "POST",
+          {
+            release_id: values.get("release_id"),
+            pool_id: values.get("pool_id"),
+            expected_pool_version: version,
+            strategy: JSON.parse(String(values.get("strategy"))),
+            reason: values.get("reason"),
+          },
+          crypto.randomUUID(),
+          version,
+        ),
+      setPreview,
+    );
+  };
+  const startRollout = () => {
+    if (!preview) return;
+    const version = Number(preview.pool_version);
+    void execute(
+      () =>
+        mutate<Row>(
+          "/admin/v1/rollouts",
+          "POST",
+          {
+            release_id: preview.target_release_id,
+            pool_id: preview.pool_id,
+            preview_id: preview.id,
+            expected_pool_version: version,
+            reason: "Start reviewed image rollout",
+          },
+          crypto.randomUUID(),
+          version,
+        ),
+      (value) => {
+        setPreview(null);
+        setDetail(value);
+      },
+    );
+  };
+  const controlRollout = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const rolloutId = String(values.get("rollout_id"));
+    const action = String(values.get("action"));
+    const version = Number(values.get("expected_version"));
+    void execute(
+      () =>
+        mutate<Row>(
+          `/admin/v1/rollouts/${encodeURIComponent(rolloutId)}/${action}`,
+          "POST",
+          { expected_version: version, reason: values.get("reason") },
+          crypto.randomUUID(),
+          version,
+        ),
+      setDetail,
+    );
+  };
+  const inspectRollout = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const rolloutId = String(new FormData(event.currentTarget).get("rollout_id"));
+    void execute(() => api<Row>(`/admin/v1/rollouts/${encodeURIComponent(rolloutId)}`), setDetail);
+  };
+  return (
+    <section className="band">
+      <div className="section-title">
+        <h2>镜像滚动发布</h2>
+        <Status value={busy ? "running" : "ready"} />
+      </div>
+      <div className="form-grid">
+        <form onSubmit={previewRollout}>
+          <h3>发布预览</h3>
+          <label>
+            Pool ID
+            <input required name="pool_id" />
+          </label>
+          <label>
+            目标 Release ID
+            <input required name="release_id" />
+          </label>
+          <label>
+            Pool 当前版本
+            <input required name="expected_pool_version" type="number" min="1" />
+          </label>
+          <label className="wide">
+            滚动策略
+            <textarea required name="strategy" defaultValue={JSON.stringify(rolloutStrategy, null, 2)} />
+          </label>
+          <label>
+            变更原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            影响预览
+          </button>
+        </form>
+        <form onSubmit={controlRollout}>
+          <h3>发布控制</h3>
+          <label>
+            Rollout ID
+            <input required name="rollout_id" />
+          </label>
+          <label>
+            当前版本
+            <input required name="expected_version" type="number" min="1" />
+          </label>
+          <label>
+            操作
+            <select name="action">
+              <option value="pause">暂停</option>
+              <option value="resume">恢复</option>
+              <option value="rollback">回滚</option>
+            </select>
+          </label>
+          <label>
+            操作原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            执行
+          </button>
+        </form>
+        <form onSubmit={inspectRollout}>
+          <h3>逐机状态</h3>
+          <label>
+            Rollout ID
+            <input required name="rollout_id" />
+          </label>
+          <button className="secondary" disabled={busy} type="submit">
+            查询详情
+          </button>
+        </form>
+      </div>
+      {preview && (
+        <div className="operation-result">
+          <div className="section-title">
+            <h2>影响与成本</h2>
+            <button className="primary" disabled={busy} type="button" onClick={startRollout}>
+              确认开始
+            </button>
+          </div>
+          <pre>{JSON.stringify(preview, null, 2)}</pre>
+        </div>
+      )}
+      {detail && (
+        <div className="operation-result">
+          <div className="section-title">
+            <h2>发布进度</h2>
+            <Status value={detail.status} />
+          </div>
+          <pre>{JSON.stringify(detail, null, 2)}</pre>
+        </div>
+      )}
+      {error && (
+        <div className="operation-result operation-error">
+          <code>{error}</code>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authError, setAuthError] = useState(false);
@@ -874,6 +1073,7 @@ function App() {
         {view === "releases" && (
           <>
             {session.permissions.includes("releases:write") && <ManagementWorkbench />}
+            {session.permissions.includes("rollouts:write") && <RolloutWorkbench />}
             <ResourceTable
               title="Release"
               path="/admin/v1/releases"

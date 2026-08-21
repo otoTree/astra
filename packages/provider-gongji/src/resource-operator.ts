@@ -203,7 +203,13 @@ export class GongjiResourceOperator implements ProviderResourceOperator {
   }
 
   async provisionReplica(
-    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
+    input: Readonly<{
+      imageDigest: string;
+      imageReference?: string;
+      region: string;
+      gpuSku: string;
+      environment?: Readonly<Record<string, string>>;
+    }>,
     context: ProviderOperationContext,
   ): Promise<ProviderReplica> {
     const name = operationName("replica", context.operationId);
@@ -233,6 +239,13 @@ export class GongjiResourceOperator implements ProviderResourceOperator {
             service_name: "astra-model",
             service_image: imageReference,
             resource_weight: { cpu_weight: 1, mem_weight: 1, gpu_weight: 1 },
+            ...(input.environment
+              ? {
+                  env: Object.entries(input.environment)
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([name, value]) => ({ name, value })),
+                }
+              : {}),
           },
         ],
       },

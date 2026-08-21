@@ -57,6 +57,7 @@
 | [15-5090-scale-economics.md](./15-5090-scale-economics.md) | 5090 单卡单 Worker 的 300 并发吞吐、GPU 成本、收益敏感性和扩缩容测算 | 产品、调度、SRE、财务 |
 | [16-model-app-implementation.md](./16-model-app-implementation.md) | 从 ComfyUI 工作流编写生产 Model App：运行时边界、HTTP 合同、预热、取消、产物和测试 | 模型工程、平台研发、QA、SRE |
 | [17-continuous-delivery-plan.md](./17-continuous-delivery-plan.md) | 持续开发顺序、阶段依赖、当前状态、逐阶段交付与退出条件 | 全体研发、QA、SRE、项目负责人 |
+| [runbooks/model-rollout.md](./runbooks/model-rollout.md) | 固定 digest 模型发布、暂停、排空、回滚和故障处置手册 | SRE、发布人员、值班人员 |
 | [providers/gongji/README.md](./providers/gongji/README.md) | 共绩算力 67 个 Open API 的本地原始文档、接口索引和 Adapter 说明 | Provider、调度、SRE |
 | [workflows/README.md](./workflows/README.md) | ComfyUI 工作流 JSON 资料及哈希 | 模型工程、平台研发、QA |
 | [third-party/README.md](./third-party/README.md) | ComfyUI 上游源码快照及版本说明 | 模型工程、平台研发 |

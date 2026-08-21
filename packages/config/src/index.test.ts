@@ -35,6 +35,9 @@ describe("service configuration", () => {
   test("reference provider is the local default", () => {
     const config = loadProviderControllerConfig({
       DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+      PROVIDER_OPERATION_ENCRYPTION_KEY: "e".repeat(32),
+      WORKER_TOKEN_PEPPER: "p".repeat(32),
+      ROLLOUT_WORKER_CONTROL_URL: "http://worker-control.test",
     });
     expect(config.PROVIDER_DRIVER).toBe("reference");
     expect(config.PROVIDER_SYNC_INTERVAL_SECONDS).toBe(60);

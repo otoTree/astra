@@ -4,6 +4,7 @@ import {
   drainedWorkerResponseSchema,
   leasedAttemptSchema,
   prepareOutputsResponseSchema,
+  rolloutValidationResponseSchema,
   workerHeartbeatResponseSchema,
   workerRegistrationResponseSchema,
   type CompleteAttempt,
@@ -12,6 +13,7 @@ import {
   type FailAttempt,
   type LeasedAttempt,
   type PrepareOutputs,
+  type RolloutValidationReport,
   type WorkerHeartbeat,
   type WorkerHeartbeatResponse,
   type WorkerLeaseRequest,
@@ -109,6 +111,15 @@ export class WorkerControlClient {
       `/internal/v1/workers/${encodeURIComponent(session.workerId)}/heartbeat`,
       { method: "POST", body: JSON.stringify(input) },
       workerHeartbeatResponseSchema,
+      session.token,
+    );
+  }
+
+  reportRolloutValidation(session: Session, input: RolloutValidationReport) {
+    return this.request(
+      `/internal/v1/workers/${encodeURIComponent(session.workerId)}/rollout-validation`,
+      { method: "POST", body: JSON.stringify(input) },
+      rolloutValidationResponseSchema,
       session.token,
     );
   }

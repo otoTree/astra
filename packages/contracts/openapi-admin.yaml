@@ -274,6 +274,8 @@ paths:
       operationId: createRollout
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
       requestBody:
         required: true
         content:
@@ -281,6 +283,21 @@ paths:
             schema: { $ref: '#/components/schemas/RolloutCreate' }
       responses:
         '202': { description: Rollout accepted }
+        default: { $ref: '#/components/responses/Error' }
+  /rollouts/preview:
+    post:
+      operationId: previewRollout
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RolloutPreview' }
+      responses:
+        '201': { description: Immutable rollout impact preview }
         default: { $ref: '#/components/responses/Error' }
   /rollouts/{rollout_id}:
     get:
@@ -295,6 +312,14 @@ paths:
       operationId: pauseRollout
       parameters:
         - $ref: '#/components/parameters/RolloutId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RolloutControl' }
       responses:
         '200': { description: Rollout paused }
         default: { $ref: '#/components/responses/Error' }
@@ -303,6 +328,14 @@ paths:
       operationId: resumeRollout
       parameters:
         - $ref: '#/components/parameters/RolloutId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RolloutControl' }
       responses:
         '200': { description: Rollout resumed }
         default: { $ref: '#/components/responses/Error' }
@@ -311,6 +344,14 @@ paths:
       operationId: rollbackRollout
       parameters:
         - $ref: '#/components/parameters/RolloutId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RolloutControl' }
       responses:
         '202': { description: Reverse rollout accepted }
         default: { $ref: '#/components/responses/Error' }
@@ -654,6 +695,40 @@ components:
         pool_id: { type: string }
         preview_id: { type: string }
         expected_pool_version: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    RolloutStrategy:
+      type: object
+      additionalProperties: false
+      required: [max_surge, max_unavailable, batch_size, readiness_timeout_seconds, readiness_stability_seconds, progress_deadline_seconds, pause_on_failure, maximum_failure_rate_basis_points, maximum_duration_regression_basis_points, maximum_extra_cost_minor, currency, rollback_retention_seconds]
+      properties:
+        max_surge: { type: integer, minimum: 0, maximum: 100, default: 1 }
+        max_unavailable: { type: integer, minimum: 0, maximum: 100, default: 0 }
+        batch_size: { type: integer, minimum: 1, maximum: 100, default: 1 }
+        readiness_timeout_seconds: { type: integer, minimum: 60, maximum: 7200, default: 1800 }
+        readiness_stability_seconds: { type: integer, minimum: 10, maximum: 1800, default: 60 }
+        progress_deadline_seconds: { type: integer, minimum: 300, maximum: 86400, default: 7200 }
+        pause_on_failure: { type: boolean, default: true }
+        maximum_failure_rate_basis_points: { type: integer, minimum: 0, maximum: 10000, default: 500 }
+        maximum_duration_regression_basis_points: { type: integer, minimum: 0, maximum: 100000, default: 2500 }
+        maximum_extra_cost_minor: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        rollback_retention_seconds: { type: integer, minimum: 3600, maximum: 2592000, default: 604800 }
+    RolloutPreview:
+      type: object
+      additionalProperties: false
+      required: [release_id, pool_id, expected_pool_version, strategy, reason]
+      properties:
+        release_id: { type: string }
+        pool_id: { type: string }
+        expected_pool_version: { type: integer, minimum: 1 }
+        strategy: { $ref: '#/components/schemas/RolloutStrategy' }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    RolloutControl:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
         reason: { type: string, minLength: 8, maxLength: 1000 }
     ErrorEnvelope:
       type: object

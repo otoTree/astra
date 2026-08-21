@@ -129,6 +129,10 @@ export const workerRegistrationSchema = z
     replica_id: z.string().min(1),
     pool_id: z.string().min(1),
     release_id: z.string().min(1),
+    image_digest: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .optional(),
     instance_fingerprint: z.string().min(16),
     hardware: z
       .object({
@@ -150,9 +154,73 @@ export const workerRegistrationResponseSchema = z
     heartbeat_interval_seconds: z.number().int().positive(),
     lease_duration_seconds: z.number().int().positive(),
     orphan_grace_period_seconds: z.number().int().nonnegative(),
+    rollout_validation_required: z.boolean(),
+    expected_image_digest: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .optional(),
   })
   .strict();
 export type WorkerRegistrationResponse = z.infer<typeof workerRegistrationResponseSchema>;
+
+export const modelSmokeRequestSchema = z
+  .object({
+    validation_id: z.string().min(1).max(128),
+    model_release: z.string().min(1).max(128),
+  })
+  .strict();
+export type ModelSmokeRequest = z.infer<typeof modelSmokeRequestSchema>;
+
+export const modelSmokeResponseSchema = z
+  .object({
+    validation_id: z.string().min(1).max(128),
+    model_release: z.string().min(1).max(128),
+    status: z.enum(["passed", "failed"]),
+    evidence_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    duration_ms: z.number().int().nonnegative(),
+    checks: z
+      .object({
+        readiness: z.boolean(),
+        capabilities: z.boolean(),
+        execution: z.boolean(),
+        output_contract: z.boolean(),
+      })
+      .strict(),
+    failure_code: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+export type ModelSmokeResponse = z.infer<typeof modelSmokeResponseSchema>;
+
+export const rolloutValidationReportSchema = z
+  .object({
+    sequence: z.number().int().nonnegative(),
+    observed_at: z.string().datetime({ offset: true }),
+    image_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    status: z.enum(["passed", "failed"]),
+    capabilities_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    smoke: modelSmokeResponseSchema,
+    resources: z
+      .object({
+        gpu_memory_peak_bytes: z.number().int().nonnegative(),
+        system_memory_peak_bytes: z.number().int().nonnegative(),
+      })
+      .strict(),
+    failure_code: z.string().min(1).max(128).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.status !== value.smoke.status) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "status must match smoke status" });
+    }
+    if (value.status === "failed" && !value.failure_code) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["failure_code"], message: "failure_code is required" });
+    }
+  });
+export type RolloutValidationReport = z.infer<typeof rolloutValidationReportSchema>;
+
+export const rolloutValidationResponseSchema = z
+  .object({ accepted: z.literal(true), rollout_id: z.string(), rollout_step_id: z.string() })
+  .strict();
 
 export const workerLeaseRequestSchema = z
   .object({

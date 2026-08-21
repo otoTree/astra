@@ -56,6 +56,9 @@ const jsonRecord = (row: Record<string, unknown>): Record<string, unknown> => {
     "last_heartbeat_at",
     "last_observed_at",
     "observed_at",
+    "started_at",
+    "paused_at",
+    "rollback_requested_at",
   ]) {
     if (key in output) output[key] = output[key] === null ? null : unix(output[key]);
   }
@@ -261,6 +264,32 @@ export class AdminQueryService {
         return result;
       }),
       files: files.map((file) => jsonRecord(file as Record<string, unknown>)),
+    };
+  }
+
+  async rolloutDetail(context: AdminQueryContext, rolloutId: string): Promise<Record<string, unknown> | undefined> {
+    const rows = await this.sql`SELECT * FROM model_rollouts
+      WHERE id=${rolloutId} AND project_id=${context.projectId}`;
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const [steps, events, replicas, operations] = await Promise.all([
+      this.sql`SELECT * FROM rollout_steps WHERE rollout_id=${rolloutId} ORDER BY ordinal, id`,
+      this.sql`SELECT id, rollout_version, event_type, actor_type, actor_id, reason, details, created_at
+        FROM rollout_events WHERE rollout_id=${rolloutId} ORDER BY created_at, id`,
+      this.sql`SELECT id, release_id, provider_resource_id, image_digest, desired_state, observed_state,
+          rollout_reserved, version, last_observed_at, created_at, updated_at
+        FROM replicas WHERE rollout_id=${rolloutId} ORDER BY created_at, id`,
+      this.sql`SELECT po.* FROM provider_operations po
+        WHERE po.resource_type='replica' AND po.resource_id IN (
+          SELECT id FROM replicas WHERE rollout_id=${rolloutId}
+        ) ORDER BY po.created_at, po.id`,
+    ]);
+    return {
+      ...jsonRecord(row),
+      steps: steps.map((item) => jsonRecord(item as Record<string, unknown>)),
+      timeline: events.map((item) => jsonRecord(item as Record<string, unknown>)),
+      replicas: replicas.map((item) => jsonRecord(item as Record<string, unknown>)),
+      provider_operations: operations.map((item) => jsonRecord(item as Record<string, unknown>)),
     };
   }
 

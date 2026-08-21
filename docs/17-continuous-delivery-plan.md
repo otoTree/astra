@@ -23,8 +23,8 @@
 | 7 | Worker Control 与 Agent 执行环 | 完成 | 6 |
 | 8 | 共绩 Transport 与只读快照 | 完成 | 7 |
 | 9 | 共绩资源操作与 Reconcile | 完成 | 8 |
-| 10 | 预热、滚动发布、排空、回滚 | 进行中 | 9 |
-| 11 | WFQ、耗时预测、Retry Policy | 未开始 | 10 |
+| 10 | 预热、滚动发布、排空、回滚 | 完成 | 9 |
+| 11 | WFQ、耗时预测、Retry Policy | 进行中 | 10 |
 | 12 | 扩缩容、成本收益、跨区放置 | 未开始 | 11 |
 | 13 | 生产安全、灾备、10-50 GPU 验收 | 未开始 | 12 |
 | 14 | H3/10Eros 真实 Model App | 未开始 | 13 |
@@ -275,6 +275,32 @@
 交付：运维输入镜像地址后固定 digest、使用共绩临时算力预热、逐机替换；新 Replica 验收前 `rollout_reserved`；旧 Release 停止新任务并排空；持续排队时使用受预算保护的替换容量；暂停、恢复、自动暂停和反向 Rollout。
 
 退出条件：带运行任务的滚动发布和候选故障回滚演练通过；不终止正常 Attempt；旧 digest 在保留窗口内可拉起。
+
+阶段 10 完成证据（2026-08-22）：
+
+- Admin Contract、API 和管理台已提供 Rollout 影响预览、创建、详情、暂停、恢复和回滚。写操作统一执行
+  OIDC/RBAC、CSRF、`Idempotency-Key` 与 `If-Match`，同一 Pool 只允许一个活动 Rollout。
+- Rollout Controller 通过 PostgreSQL HA 租约逐步执行固定 digest 预热、`rollout_reserved` 新 Replica、Worker
+  readiness/capabilities/smoke/output contract 验证、Alias/双接单门切换、旧版本队列排空、Worker drain 和
+  Provider 回收。运行中的 Attempt 不被发布流程终止，持续排队时使用受 `maximum_extra_cost_minor` 约束的独立
+  替换容量。
+- Worker bootstrap token 只以哈希保存在数据库；传给 Provider 的环境材料使用 AES-256-GCM 信封加密，
+  Operation、日志、响应和 Provider 快照不出现明文。共绩 Adapter 按供应商文档生成稳定排序的 `env` 数组，
+  本地仍只启用 reference Provider。
+- 回滚先把 Alias 和新任务接单门切回 source Release，再执行反向逐机 Rollout；已固定到 candidate Release 的
+  queued/running Task 仍由 candidate Worker 排空，不修改 Task 的 Release 身份。
+- PostgreSQL 演练覆盖预热、验证、切流、带运行任务排空、`drained` 前禁止回收、最终回收和秘密不泄露；真实
+  HTTP 演练覆盖 preview/create/detail/pause/resume/rollback 以及 RBAC、CSRF、幂等和版本条件。Provider
+  Controller readiness 为 `rollout_reconcile=ready`，并暴露 reconcile、活动状态和最老 Rollout age 指标。
+- 阶段验收时 `bun run check`、31 项 PostgreSQL 集成和 9 项真实 HTTP 集成通过。仓库扫描不存在
+  `.safetensors`、`.ckpt`、`.pt`、`.pth`、`.gguf` 或 `.onnx` 权重文件；未调用真实共绩、GPU 或模型推理。
+
+本阶段迁移 `0015_rollout_control.sql`、`0016_rollout_worker_validation.sql`、
+`0017_provider_operation_secrets.sql` 和 `0018_rollout_controller_lease.sql` 已应用并固定 checksum，禁止修改。
+回滚采用应用回滚：先暂停活动 Rollout，保持 Worker 心跳和运行 Attempt，切回已知稳定 Alias，再停止新版
+Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密引导材料，禁止通过删除状态记录解除
+不确定性；恢复后由确定性 operation key 和数据库租约继续 Reconcile。操作步骤见
+[`runbooks/model-rollout.md`](./runbooks/model-rollout.md)。
 
 ## 5. 算法、生产与模型阶段
 

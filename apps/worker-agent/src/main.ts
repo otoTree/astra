@@ -21,6 +21,7 @@ const agent = new WorkerAgent(
     replicaId: config.WORKER_REPLICA_ID,
     poolId: config.WORKER_POOL_ID,
     releaseId: config.WORKER_RELEASE_ID,
+    ...(config.WORKER_IMAGE_DIGEST ? { imageDigest: config.WORKER_IMAGE_DIGEST } : {}),
     instanceFingerprint: config.WORKER_INSTANCE_FINGERPRINT,
     gpuSku: config.WORKER_GPU_SKU,
     gpuCount: config.WORKER_GPU_COUNT,

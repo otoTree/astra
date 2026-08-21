@@ -250,7 +250,57 @@ export const rolloutCreateSchema = z
     release_id: z.string().min(1),
     pool_id: z.string().min(1),
     preview_id: z.string().min(1),
-    expected_pool_version: z.number().int().nonnegative(),
+    expected_pool_version: z.number().int().positive(),
     reason: z.string().min(8).max(1000),
+  })
+  .strict();
+
+export const rolloutStrategySchema = z
+  .object({
+    max_surge: z.number().int().min(0).max(100).default(1),
+    max_unavailable: z.number().int().min(0).max(100).default(0),
+    batch_size: z.number().int().min(1).max(100).default(1),
+    readiness_timeout_seconds: z.number().int().min(60).max(7200).default(1800),
+    readiness_stability_seconds: z.number().int().min(10).max(1800).default(60),
+    progress_deadline_seconds: z.number().int().min(300).max(86400).default(7200),
+    pause_on_failure: z.boolean().default(true),
+    maximum_failure_rate_basis_points: z.number().int().min(0).max(10000).default(500),
+    maximum_duration_regression_basis_points: z.number().int().min(0).max(100000).default(2500),
+    maximum_extra_cost_minor: z.number().int().nonnegative(),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    rollback_retention_seconds: z.number().int().min(3600).max(2592000).default(604800),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.max_surge === 0 && value.max_unavailable === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["max_surge"],
+        message: "max_surge and max_unavailable cannot both be zero",
+      });
+    }
+    if (value.progress_deadline_seconds < value.readiness_timeout_seconds) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["progress_deadline_seconds"],
+        message: "progress_deadline_seconds must be >= readiness_timeout_seconds",
+      });
+    }
+  });
+
+export const rolloutPreviewSchema = z
+  .object({
+    release_id: resourceIdSchema,
+    pool_id: resourceIdSchema,
+    expected_pool_version: z.number().int().positive(),
+    strategy: rolloutStrategySchema,
+    reason: reasonSchema,
+  })
+  .strict();
+
+export const rolloutControlSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    reason: reasonSchema,
   })
   .strict();

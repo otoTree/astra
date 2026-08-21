@@ -10,6 +10,8 @@ import type {
   InferenceRequest,
   LeasedAttempt,
   ModelExecutionView,
+  ModelSmokeRequest,
+  ModelSmokeResponse,
   OutputManifest,
   PrepareOutputs,
   PrepareOutputsResponse,
@@ -18,6 +20,7 @@ import type {
   WorkerLeaseRequest,
   WorkerRegistration,
   WorkerRegistrationResponse,
+  RolloutValidationReport,
 } from "@astra/contracts";
 import type { LogContext } from "@astra/observability";
 import { downloadInputs, FileTransferError, uploadOutput, verifyOutputs } from "./file-transfer.ts";
@@ -57,6 +60,10 @@ export interface WorkerControlPort {
   ): Promise<unknown>;
   fail(session: Readonly<{ workerId: string; token: string }>, attemptId: string, input: FailAttempt): Promise<unknown>;
   drained(session: Readonly<{ workerId: string; token: string }>, input: DrainedWorker): Promise<unknown>;
+  reportRolloutValidation(
+    session: Readonly<{ workerId: string; token: string }>,
+    input: RolloutValidationReport,
+  ): Promise<unknown>;
 }
 
 export interface ModelAppPort {
@@ -66,6 +73,7 @@ export interface ModelAppPort {
   accept(request: InferenceRequest): Promise<ModelExecutionView>;
   status(executionId: string): Promise<ModelExecutionView>;
   cancel(executionId: string, reason?: string): Promise<ModelExecutionView>;
+  smoke(input: ModelSmokeRequest): Promise<ModelSmokeResponse>;
 }
 
 export interface WorkerStatePort {
@@ -81,6 +89,7 @@ export type WorkerAgentOptions = Readonly<{
   replicaId: string;
   poolId: string;
   releaseId: string;
+  imageDigest?: string;
   instanceFingerprint: string;
   gpuSku: string;
   gpuCount: number;
@@ -152,6 +161,7 @@ export class WorkerAgent {
         replica_id: this.options.replicaId,
         pool_id: this.options.poolId,
         release_id: this.options.releaseId,
+        ...(this.options.imageDigest ? { image_digest: this.options.imageDigest } : {}),
         instance_fingerprint: this.options.instanceFingerprint,
         hardware: {
           gpu_sku: this.options.gpuSku,
@@ -171,6 +181,35 @@ export class WorkerAgent {
     };
     await this.stateStore.save(this.state);
     this.logger.info("worker_registered", { worker_id: registration.worker_id, replica_id: this.options.replicaId });
+    if (registration.rollout_validation_required) {
+      await this.reportRolloutValidation(registration);
+    }
+  }
+
+  private async reportRolloutValidation(registration: WorkerRegistrationResponse): Promise<void> {
+    if (!this.capabilities) throw new Error("worker_capabilities_missing");
+    const imageDigest = this.options.imageDigest;
+    if (!imageDigest || imageDigest !== registration.expected_image_digest) {
+      throw new Error("worker_rollout_image_digest_mismatch");
+    }
+    const validationId = `validation_${this.options.replicaId}`;
+    const smoke = await this.model.smoke({ validation_id: validationId, model_release: this.options.releaseId });
+    const sequence = await this.nextSequence();
+    await this.control.reportRolloutValidation(this.session(), {
+      sequence,
+      observed_at: new Date().toISOString(),
+      image_digest: imageDigest,
+      status: smoke.status,
+      capabilities_hash: hash(this.capabilities),
+      smoke,
+      resources: { gpu_memory_peak_bytes: 0, system_memory_peak_bytes: 0 },
+      ...(smoke.failure_code ? { failure_code: smoke.failure_code } : {}),
+    });
+    this.logger.info("worker_rollout_validation_reported", {
+      worker_id: registration.worker_id,
+      replica_id: this.options.replicaId,
+      status: smoke.status,
+    });
   }
 
   async run(signal: AbortSignal): Promise<void> {

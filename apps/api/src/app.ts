@@ -32,6 +32,10 @@ import {
   regionPolicyConfigurationSchema,
   releaseApprovalSchema,
   releaseCreateSchema,
+  rolloutValidationReportSchema,
+  rolloutControlSchema,
+  rolloutCreateSchema,
+  rolloutPreviewSchema,
   retryPolicyConfigurationSchema,
   taskListQuerySchema,
   taskStatusSchema,
@@ -87,6 +91,7 @@ export type WorkerControlUseCases = Pick<
   | "complete"
   | "fail"
   | "drained"
+  | "reportRolloutValidation"
 >;
 
 const generatedRequestIds = new WeakMap<Request, string>();
@@ -1146,6 +1151,79 @@ export function createAdminApi(
       return serviceError(c.req.raw, error);
     }
   });
+  app.get("/admin/v1/rollouts/:rolloutId", async (c) => {
+    if (!queryService)
+      return errorResponse(
+        requestId(c.req.raw),
+        503,
+        "admin_query_service_unavailable",
+        "Query service unavailable",
+        true,
+      );
+    const context = await authorize(c.req.raw, "resources:read");
+    if (context instanceof Response) return context;
+    const detail = await queryService.rolloutDetail(
+      { organizationId: context.organizationId, projectId: context.projectId },
+      c.req.param("rolloutId"),
+    );
+    return detail ? c.json(detail) : errorResponse(requestId(c.req.raw), 404, "rollout_not_found", "Rollout not found");
+  });
+  app.post("/admin/v1/rollouts/preview", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "rollouts:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(rolloutPreviewSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_pool_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().previewRollout(mutation.actor, mutation.metadata, mutation.key, parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/rollouts", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "rollouts:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(rolloutCreateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_pool_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().createRollout(mutation.actor, mutation.metadata, mutation.key, parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  const rolloutControl = (action: "pause" | "resume" | "rollback"): void => {
+    app.post(`/admin/v1/rollouts/:rolloutId/${action}`, async (c) => {
+      const mutation = await mutationContext(c.req.raw, "rollouts:write");
+      if (mutation instanceof Response) return mutation;
+      const parsed = await parseJson(rolloutControlSchema, c.req.raw);
+      if (parsed.response) return parsed.response;
+      const precondition = requireVersion(c.req.raw, parsed.value.expected_version);
+      if (precondition) return precondition;
+      try {
+        const method =
+          action === "pause"
+            ? management().pauseRollout.bind(management())
+            : action === "resume"
+              ? management().resumeRollout.bind(management())
+              : management().rollbackRollout.bind(management());
+        return managementResponse(
+          await method(mutation.actor, mutation.metadata, mutation.key, c.req.param("rolloutId"), parsed.value),
+        );
+      } catch (error) {
+        return serviceError(c.req.raw, error);
+      }
+    });
+  };
+  rolloutControl("pause");
+  rolloutControl("resume");
+  rolloutControl("rollback");
   app.get("/admin/v1/cost-summary", async (c) => {
     if (!queryService)
       return errorResponse(
@@ -1325,6 +1403,16 @@ export function createWorkerControlApi(readiness: ReadinessProbe, service: Worke
     try {
       const identity = await authorizeWorker(c.req.raw, c.req.param("worker_id"));
       return c.json(await service.drained(identity, parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/workers/:worker_id/rollout-validation", async (c) => {
+    const parsed = await parseJson(rolloutValidationReportSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw, c.req.param("worker_id"));
+      return c.json(await service.reportRolloutValidation(identity, parsed.value));
     } catch (error) {
       return workerError(c.req.raw, error);
     }

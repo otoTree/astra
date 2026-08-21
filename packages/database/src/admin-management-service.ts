@@ -43,6 +43,21 @@ export class AdminManagementError extends Error {
 
 type MutationResult = Readonly<{ status: number; body: Record<string, unknown> }>;
 
+type RolloutStrategy = Readonly<{
+  max_surge: number;
+  max_unavailable: number;
+  batch_size: number;
+  readiness_timeout_seconds: number;
+  readiness_stability_seconds: number;
+  progress_deadline_seconds: number;
+  pause_on_failure: boolean;
+  maximum_failure_rate_basis_points: number;
+  maximum_duration_regression_basis_points: number;
+  maximum_extra_cost_minor: number;
+  currency: string;
+  rollback_retention_seconds: number;
+}>;
+
 const canonical = (value: unknown): string => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -688,5 +703,332 @@ export class AdminManagementService {
         },
       };
     });
+  }
+
+  async previewRollout(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    input: Readonly<{
+      release_id: string;
+      pool_id: string;
+      expected_pool_version: number;
+      strategy: RolloutStrategy;
+      reason: string;
+    }>,
+  ) {
+    return this.mutate(actor, "rollouts:preview", idempotencyKey, input, async (transaction) => {
+      const rows = await transaction`SELECT p.*, source.model_id, source.alias,
+          source.image_digest AS source_image_digest, target.image_digest AS target_image_digest,
+          target.status AS target_status, target.manifest AS target_manifest
+        FROM model_pools p
+        JOIN model_releases source ON source.id=p.release_id
+        JOIN model_releases target ON target.id=${input.release_id}
+          AND target.project_id=p.project_id AND target.model_id=source.model_id
+        WHERE p.id=${input.pool_id} AND p.project_id=${actor.projectId}
+        FOR SHARE OF p, source, target`;
+      const pool = rows[0];
+      if (!pool) throw new AdminManagementError("rollout_target_not_found", 404);
+      if (Number(pool.version) !== input.expected_pool_version) throw new AdminManagementError("version_conflict", 409);
+      if (String(pool.status) !== "active") throw new AdminManagementError("rollout_pool_not_active", 422);
+      if (String(pool.target_status) !== "approved") throw new AdminManagementError("approved_release_not_found", 422);
+      if (String(pool.release_id) === input.release_id)
+        throw new AdminManagementError("rollout_release_unchanged", 422);
+      const active = await transaction`SELECT id FROM model_rollouts WHERE pool_id=${input.pool_id}
+        AND status IN ('pending','validating','rolling','paused','rolling_back') LIMIT 1`;
+      if (active[0]) throw new AdminManagementError("rollout_already_active", 409);
+      const policies = await transaction`SELECT policy_type FROM policy_versions
+        WHERE pool_id=${input.pool_id} AND status='published' GROUP BY policy_type`;
+      const policyTypes = new Set(policies.map((row) => String(row.policy_type)));
+      if (!["capacity", "budget", "region", "retry"].every((type) => policyTypes.has(type))) {
+        throw new AdminManagementError("release_policy_incomplete", 422);
+      }
+      const providerState = await transaction`SELECT latest_published_run_id, expires_at
+        FROM provider_snapshot_state WHERE provider=${String(pool.provider)}`;
+      if (
+        !providerState[0]?.latest_published_run_id ||
+        !providerState[0].expires_at ||
+        new Date(providerState[0].expires_at as string | Date) <= this.now()
+      ) {
+        throw new AdminManagementError("provider_snapshot_stale", 503, true);
+      }
+      const targetManifest = pool.target_manifest as Record<string, unknown>;
+      const requirements = targetManifest.resource_requirements as Record<string, unknown> | undefined;
+      const gpuSkus = Array.isArray(requirements?.gpu_skus) ? requirements.gpu_skus.map(String) : [];
+      if (gpuSkus.length > 0 && !gpuSkus.includes(String(pool.gpu_sku))) {
+        throw new AdminManagementError("rollout_hardware_incompatible", 422);
+      }
+      const inventory = await transaction`SELECT price_per_gpu_hour_minor, currency, available_replicas
+        FROM provider_inventory WHERE provider=${String(pool.provider)} AND region_id=${String(pool.region_id)}
+          AND gpu_sku=${String(pool.gpu_sku)} ORDER BY observed_at DESC LIMIT 1`;
+      if (!inventory[0]) throw new AdminManagementError("rollout_inventory_unavailable", 503, true);
+      if (String(inventory[0].currency) !== input.strategy.currency) {
+        throw new AdminManagementError("rollout_currency_mismatch", 422);
+      }
+      if (Number(inventory[0].available_replicas) < input.strategy.max_surge) {
+        throw new AdminManagementError("rollout_inventory_insufficient", 422);
+      }
+      const replicaCount = await transaction`SELECT count(*)::int AS count FROM replicas
+        WHERE pool_id=${input.pool_id} AND release_id=${String(pool.release_id)}
+          AND desired_state<>'terminated' AND observed_state<>'terminated'`;
+      const sourceReplicas = Number(replicaCount[0]?.count ?? 0);
+      const pricePerHour = Number(inventory[0].price_per_gpu_hour_minor);
+      const estimatedExtraCost =
+        input.strategy.max_surge * pricePerHour * Math.ceil(input.strategy.progress_deadline_seconds / 3600);
+      if (estimatedExtraCost > input.strategy.maximum_extra_cost_minor) {
+        throw new AdminManagementError("rollout_extra_cost_limit_exceeded", 422);
+      }
+      const createdAt = this.now();
+      const expiresAt = new Date(createdAt.getTime() + 15 * 60 * 1000);
+      const previewId = id("rolloutpreview");
+      const snapshot = {
+        provider_snapshot_run_id: providerState[0].latest_published_run_id,
+        pool_version: Number(pool.version),
+        source_replicas: sourceReplicas,
+        available_replicas: Number(inventory[0].available_replicas),
+        price_per_gpu_hour_minor: pricePerHour,
+      };
+      const impact = {
+        estimated_extra_cost_minor: estimatedExtraCost,
+        temporary_capacity_reduction: input.strategy.max_surge === 0 ? input.strategy.max_unavailable : 0,
+        requires_queue_risk_acceptance: input.strategy.max_surge === 0,
+        source_replicas: sourceReplicas,
+        replacement_steps: Math.max(sourceReplicas, 1),
+      };
+      await transaction`INSERT INTO rollout_impact_previews (
+          id, project_id, pool_id, source_release_id, target_release_id, pool_version,
+          source_image_digest, target_image_digest, strategy, snapshot, impact, reason,
+          created_by, created_at, expires_at
+        ) VALUES (
+          ${previewId}, ${actor.projectId}, ${input.pool_id}, ${String(pool.release_id)}, ${input.release_id},
+          ${Number(pool.version)}, ${String(pool.source_image_digest)}, ${String(pool.target_image_digest)},
+          ${JSON.stringify(input.strategy)}, ${JSON.stringify(snapshot)}, ${JSON.stringify(impact)}, ${input.reason},
+          ${actor.actorId}, ${createdAt.toISOString()}, ${expiresAt.toISOString()}
+        )`;
+      await this.audit(transaction, actor, request, "rollout.preview", "rollout_preview", previewId, input.reason, {
+        pool_id: input.pool_id,
+        source_release_id: pool.release_id,
+        target_release_id: input.release_id,
+        estimated_extra_cost_minor: estimatedExtraCost,
+        currency: input.strategy.currency,
+      });
+      return {
+        status: 201,
+        body: {
+          id: previewId,
+          object: "rollout.preview",
+          pool_id: input.pool_id,
+          source_release_id: pool.release_id,
+          target_release_id: input.release_id,
+          pool_version: Number(pool.version),
+          strategy: input.strategy,
+          snapshot,
+          impact,
+          created_at: unix(createdAt),
+          expires_at: unix(expiresAt),
+        },
+      };
+    });
+  }
+
+  async createRollout(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    input: Readonly<{
+      release_id: string;
+      pool_id: string;
+      preview_id: string;
+      expected_pool_version: number;
+      reason: string;
+    }>,
+  ) {
+    return this.mutate(actor, "rollouts:create", idempotencyKey, input, async (transaction) => {
+      const previews = await transaction`SELECT rp.*, target.model_id, target.alias, p.provider, p.region_id, p.gpu_sku,
+          p.status AS pool_status, p.version AS current_pool_version
+        FROM rollout_impact_previews rp
+        JOIN model_pools p ON p.id=rp.pool_id
+        JOIN model_releases target ON target.id=rp.target_release_id
+        WHERE rp.id=${input.preview_id} AND rp.project_id=${actor.projectId}
+        FOR UPDATE OF rp, p, target`;
+      const preview = previews[0];
+      if (!preview) throw new AdminManagementError("rollout_preview_not_found", 404);
+      if (String(preview.pool_id) !== input.pool_id || String(preview.target_release_id) !== input.release_id) {
+        throw new AdminManagementError("rollout_preview_mismatch", 409);
+      }
+      if (new Date(preview.expires_at as string | Date) <= this.now()) {
+        throw new AdminManagementError("rollout_preview_expired", 409);
+      }
+      if (
+        Number(preview.pool_version) !== input.expected_pool_version ||
+        Number(preview.current_pool_version) !== input.expected_pool_version
+      ) {
+        throw new AdminManagementError("version_conflict", 409);
+      }
+      if (String(preview.pool_status) !== "active") throw new AdminManagementError("rollout_pool_not_active", 422);
+      const rolloutId = id("rollout");
+      const createdAt = this.now();
+      const progress = {
+        total_steps: Number((preview.impact as Record<string, unknown>).replacement_steps ?? 1),
+        completed_steps: 0,
+      };
+      try {
+        await transaction`INSERT INTO model_rollouts (
+            id, project_id, pool_id, model_id, alias, provider, region_id, gpu_sku, preview_id,
+            source_release_id, target_release_id, source_image_digest, target_image_digest,
+            direction, status, strategy, progress, spent_extra_cost_minor, currency, reason,
+            created_by, version, created_at, updated_at
+          ) VALUES (
+            ${rolloutId}, ${actor.projectId}, ${input.pool_id}, ${String(preview.model_id)}, ${String(preview.alias)},
+            ${String(preview.provider)}, ${String(preview.region_id)}, ${String(preview.gpu_sku)}, ${input.preview_id},
+            ${String(preview.source_release_id)}, ${input.release_id}, ${String(preview.source_image_digest)},
+            ${String(preview.target_image_digest)}, 'forward', 'pending', ${JSON.stringify(preview.strategy)},
+            ${JSON.stringify(progress)}, 0, ${String((preview.strategy as Record<string, unknown>).currency)},
+            ${input.reason}, ${actor.actorId}, 1, ${createdAt.toISOString()}, ${createdAt.toISOString()}
+          )`;
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "23505") {
+          throw new AdminManagementError("rollout_already_active", 409);
+        }
+        throw error;
+      }
+      await transaction`INSERT INTO rollout_events (
+          id, rollout_id, rollout_version, event_type, actor_type, actor_id, reason, details, created_at
+        ) VALUES (
+          ${id("rolloutevent")}, ${rolloutId}, 1, 'rollout.created', 'oidc_user', ${actor.actorId},
+          ${input.reason}, ${JSON.stringify({ preview_id: input.preview_id, direction: "forward" })},
+          ${createdAt.toISOString()}
+        )`;
+      await transaction`INSERT INTO outbox_events (
+          id, aggregate_type, aggregate_id, aggregate_version, event_type, payload, trace_id, created_at
+        ) VALUES (
+          ${id("event")}, 'rollout', ${rolloutId}, 1, 'rollout.created.v1',
+          ${JSON.stringify({ rollout_id: rolloutId, pool_id: input.pool_id, target_release_id: input.release_id })},
+          ${request.traceId ?? request.requestId}, ${createdAt.toISOString()}
+        )`;
+      await this.audit(transaction, actor, request, "rollout.create", "rollout", rolloutId, input.reason, {
+        pool_id: input.pool_id,
+        source_release_id: preview.source_release_id,
+        target_release_id: input.release_id,
+        source_image_digest: preview.source_image_digest,
+        target_image_digest: preview.target_image_digest,
+      });
+      return { status: 202, body: { id: rolloutId, object: "rollout", status: "pending", version: 1, progress } };
+    });
+  }
+
+  private async controlRollout(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    rolloutId: string,
+    action: "pause" | "resume" | "rollback",
+    input: Readonly<{ expected_version: number; reason: string }>,
+  ) {
+    return this.mutate(actor, `rollouts:${action}:${rolloutId}`, idempotencyKey, input, async (transaction) => {
+      const rows = await transaction`SELECT * FROM model_rollouts
+        WHERE id=${rolloutId} AND project_id=${actor.projectId} FOR UPDATE`;
+      const rollout = rows[0];
+      if (!rollout) throw new AdminManagementError("rollout_not_found", 404);
+      if (Number(rollout.version) !== input.expected_version) throw new AdminManagementError("version_conflict", 409);
+      const current = String(rollout.status);
+      const allowed =
+        action === "pause"
+          ? ["pending", "validating", "rolling", "rolling_back"]
+          : action === "resume"
+            ? ["paused"]
+            : ["pending", "validating", "rolling", "paused", "completed", "failed"];
+      if (!allowed.includes(current)) throw new AdminManagementError(`rollout_${action}_not_allowed`, 409);
+      if (action === "rollback" && !rollout.source_release_id) {
+        throw new AdminManagementError("rollout_rollback_source_missing", 422);
+      }
+      const nextStatus = action === "pause" ? "paused" : action === "resume" ? "pending" : "rolling_back";
+      const nextVersion = input.expected_version + 1;
+      const timestamp = this.now();
+      await transaction`UPDATE model_rollouts SET
+          status=${nextStatus}, direction=${action === "rollback" ? "rollback" : String(rollout.direction)},
+          pause_code=${action === "pause" ? "operator_requested" : null},
+          paused_at=${action === "pause" ? timestamp.toISOString() : null},
+          rollback_requested_at=${action === "rollback" ? timestamp.toISOString() : rollout.rollback_requested_at},
+          reason=${input.reason}, version=${nextVersion}, updated_at=${timestamp.toISOString()}, completed_at=NULL
+        WHERE id=${rolloutId} AND version=${input.expected_version}`;
+      if (action === "rollback") {
+        await transaction`UPDATE model_releases SET accept_new_tasks=false WHERE id=${String(rollout.target_release_id)}`;
+        await transaction`UPDATE model_releases SET accept_new_tasks=true, accept_existing_tasks=true
+          WHERE id=${String(rollout.source_release_id)}`;
+        const activeAlias = await transaction`SELECT version FROM model_alias_versions
+          WHERE project_id=${actor.projectId} AND alias=${String(rollout.alias)} AND status='active' FOR UPDATE`;
+        if (activeAlias[0]) {
+          await transaction`UPDATE model_alias_versions SET status='superseded'
+            WHERE project_id=${actor.projectId} AND alias=${String(rollout.alias)} AND status='active'`;
+        }
+        await transaction`INSERT INTO model_alias_versions (
+            id, project_id, alias, model_id, release_id, version, status, reason, created_by, created_at
+          ) VALUES (
+            ${id("aliasver")}, ${actor.projectId}, ${String(rollout.alias)}, ${String(rollout.model_id)},
+            ${String(rollout.source_release_id)}, ${Number(activeAlias[0]?.version ?? 0) + 1}, 'active',
+            ${input.reason}, ${actor.actorId}, ${timestamp.toISOString()}
+          )`;
+      }
+      await transaction`INSERT INTO rollout_events (
+          id, rollout_id, rollout_version, event_type, actor_type, actor_id, reason, details, created_at
+        ) VALUES (
+          ${id("rolloutevent")}, ${rolloutId}, ${nextVersion}, ${`rollout.${action}`}, 'oidc_user',
+          ${actor.actorId}, ${input.reason}, ${JSON.stringify({ previous_status: current, status: nextStatus })},
+          ${timestamp.toISOString()}
+        )`;
+      await transaction`INSERT INTO outbox_events (
+          id, aggregate_type, aggregate_id, aggregate_version, event_type, payload, trace_id, created_at
+        ) VALUES (
+          ${id("event")}, 'rollout', ${rolloutId}, ${nextVersion}, ${`rollout.${action}.v1`},
+          ${JSON.stringify({ rollout_id: rolloutId, status: nextStatus, direction: action === "rollback" ? "rollback" : rollout.direction })},
+          ${request.traceId ?? request.requestId}, ${timestamp.toISOString()}
+        )`;
+      await this.audit(transaction, actor, request, `rollout.${action}`, "rollout", rolloutId, input.reason, {
+        previous_status: current,
+        status: nextStatus,
+        version: nextVersion,
+      });
+      return {
+        status: action === "rollback" ? 202 : 200,
+        body: {
+          id: rolloutId,
+          object: "rollout",
+          status: nextStatus,
+          direction: action === "rollback" ? "rollback" : rollout.direction,
+          version: nextVersion,
+        },
+      };
+    });
+  }
+
+  pauseRollout(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    rolloutId: string,
+    input: Readonly<{ expected_version: number; reason: string }>,
+  ) {
+    return this.controlRollout(actor, request, idempotencyKey, rolloutId, "pause", input);
+  }
+
+  resumeRollout(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    rolloutId: string,
+    input: Readonly<{ expected_version: number; reason: string }>,
+  ) {
+    return this.controlRollout(actor, request, idempotencyKey, rolloutId, "resume", input);
+  }
+
+  rollbackRollout(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    rolloutId: string,
+    input: Readonly<{ expected_version: number; reason: string }>,
+  ) {
+    return this.controlRollout(actor, request, idempotencyKey, rolloutId, "rollback", input);
   }
 }

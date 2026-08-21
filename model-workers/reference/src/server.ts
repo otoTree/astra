@@ -8,6 +8,8 @@ import {
   type ExecutionView,
   type InferenceRequest,
   inferenceRequestSchema,
+  modelSmokeRequestSchema,
+  modelSmokeResponseSchema,
   type OutputManifest,
   outputManifestSchema,
 } from "@astra/contracts";
@@ -273,6 +275,32 @@ export function createReferenceModelApp(options: ReferenceModelAppOptions): (req
       return json({ status: "ready", model_loaded: true, release: options.release });
     }
     if (request.method === "GET" && url.pathname === "/v1/capabilities") return json(capabilities);
+    if (request.method === "POST" && url.pathname === "/v1/validation/smoke") {
+      const startedAt = performance.now();
+      const parsed = modelSmokeRequestSchema.safeParse(await request.json().catch(() => undefined));
+      if (!parsed.success) {
+        return error("invalid_request", "Smoke request failed schema validation", 422);
+      }
+      if (parsed.data.model_release !== options.release) {
+        return error("unsupported_capability", "model_release does not match the loaded release", 422);
+      }
+      const artifact = deterministicPng(16, 16);
+      const evidence = hash({
+        request: parsed.data,
+        capabilities,
+        artifact_sha256: createHash("sha256").update(artifact).digest("hex"),
+      });
+      return json(
+        modelSmokeResponseSchema.parse({
+          validation_id: parsed.data.validation_id,
+          model_release: parsed.data.model_release,
+          status: "passed",
+          evidence_sha256: evidence,
+          duration_ms: Math.max(0, Math.ceil(performance.now() - startedAt)),
+          checks: { readiness: true, capabilities: true, execution: true, output_contract: true },
+        }),
+      );
+    }
     if (request.method === "POST" && url.pathname === "/v1/inferences") {
       let parsed: InferenceRequest;
       try {

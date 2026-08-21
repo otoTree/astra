@@ -141,7 +141,13 @@ export interface ProviderAdapter {
     context: ProviderOperationContext,
   ): Promise<ProviderImageWarmup>;
   provisionReplica(
-    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
+    input: Readonly<{
+      imageDigest: string;
+      imageReference?: string;
+      region: string;
+      gpuSku: string;
+      environment?: Readonly<Record<string, string>>;
+    }>,
     context: ProviderOperationContext,
   ): Promise<ProviderReplica>;
   drainReplica(replicaId: string, context: ProviderOperationContext): Promise<void>;
@@ -166,7 +172,13 @@ export interface ProviderResourceOperator {
     context: ProviderOperationContext,
   ): Promise<ProviderImageWarmup>;
   provisionReplica(
-    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
+    input: Readonly<{
+      imageDigest: string;
+      imageReference?: string;
+      region: string;
+      gpuSku: string;
+      environment?: Readonly<Record<string, string>>;
+    }>,
     context: ProviderOperationContext,
   ): Promise<ProviderReplica>;
   drainReplica(replicaId: string, context: ProviderOperationContext): Promise<void>;

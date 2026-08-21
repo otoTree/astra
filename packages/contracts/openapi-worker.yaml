@@ -51,6 +51,21 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/WorkerHeartbeatResponse' } }
         default: { $ref: '#/components/responses/Error' }
+  /workers/{worker_id}/rollout-validation:
+    post:
+      operationId: reportRolloutValidation
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/WorkerId' }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/RolloutValidationReport' } }
+      responses:
+        '200':
+          description: Immutable validation evidence accepted
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/RolloutValidationResponse' } }
+        default: { $ref: '#/components/responses/Error' }
   /workers/{worker_id}/drained:
     post:
       operationId: reportWorkerDrained
@@ -204,6 +219,7 @@ components:
         replica_id: { type: string, minLength: 1 }
         pool_id: { type: string, minLength: 1 }
         release_id: { type: string, minLength: 1 }
+        image_digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
         instance_fingerprint: { type: string, minLength: 16 }
         hardware:
           type: object
@@ -217,7 +233,7 @@ components:
     WorkerRegistrationResponse:
       type: object
       additionalProperties: false
-      required: [worker_id, worker_token, token_expires_at, heartbeat_interval_seconds, lease_duration_seconds, orphan_grace_period_seconds]
+      required: [worker_id, worker_token, token_expires_at, heartbeat_interval_seconds, lease_duration_seconds, orphan_grace_period_seconds, rollout_validation_required]
       properties:
         worker_id: { type: string }
         worker_token: { type: string, minLength: 32 }
@@ -225,6 +241,55 @@ components:
         heartbeat_interval_seconds: { type: integer, minimum: 1 }
         lease_duration_seconds: { type: integer, minimum: 1 }
         orphan_grace_period_seconds: { type: integer, minimum: 0 }
+        rollout_validation_required: { type: boolean }
+        expected_image_digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+    ModelSmokeResponse:
+      type: object
+      additionalProperties: false
+      required: [validation_id, model_release, status, evidence_sha256, duration_ms, checks]
+      properties:
+        validation_id: { type: string }
+        model_release: { type: string }
+        status: { enum: [passed, failed] }
+        evidence_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        duration_ms: { type: integer, minimum: 0 }
+        checks:
+          type: object
+          additionalProperties: false
+          required: [readiness, capabilities, execution, output_contract]
+          properties:
+            readiness: { type: boolean }
+            capabilities: { type: boolean }
+            execution: { type: boolean }
+            output_contract: { type: boolean }
+        failure_code: { type: string }
+    RolloutValidationReport:
+      type: object
+      additionalProperties: false
+      required: [sequence, observed_at, image_digest, status, capabilities_hash, smoke, resources]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        observed_at: { type: string, format: date-time }
+        image_digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        status: { enum: [passed, failed] }
+        capabilities_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        smoke: { $ref: '#/components/schemas/ModelSmokeResponse' }
+        resources:
+          type: object
+          additionalProperties: false
+          required: [gpu_memory_peak_bytes, system_memory_peak_bytes]
+          properties:
+            gpu_memory_peak_bytes: { type: integer, minimum: 0 }
+            system_memory_peak_bytes: { type: integer, minimum: 0 }
+        failure_code: { type: string }
+    RolloutValidationResponse:
+      type: object
+      additionalProperties: false
+      required: [accepted, rollout_id, rollout_step_id]
+      properties:
+        accepted: { const: true }
+        rollout_id: { type: string }
+        rollout_step_id: { type: string }
     WorkerLeaseRequest:
       type: object
       additionalProperties: false

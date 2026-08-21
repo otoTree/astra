@@ -282,4 +282,245 @@ describe("AdminManagementService PostgreSQL contract", () => {
     );
     expect(alias.body).toMatchObject({ release_id: release.body.id, version: 1, status: "active" });
   });
+
+  integrationTest("previews, starts, controls and reverses a digest-pinned rollout", async () => {
+    if (!database) throw new Error("test database unavailable");
+    const context = await fixture();
+    let resolution = 0;
+    const resolver: OciImageResolver = {
+      resolve: async (sourceImage) => {
+        resolution += 1;
+        return {
+          sourceImage,
+          digest: `sha256:${String(resolution).repeat(64)}`,
+          mediaType: "application/vnd.oci.image.manifest.v1+json",
+          configDigest: `sha256:${String(resolution + 4).repeat(64)}`,
+          manifestSizeBytes: 512,
+        };
+      },
+    };
+    const service = new AdminManagementService(
+      database.client,
+      resolver,
+      "management-audit-signing-key-at-least-32-bytes",
+    );
+    const model = await service.createModel(context.actor, context.request, `rollout-model-${context.suffix}`, {
+      alias: `rollout-video-${context.suffix}`,
+      modality: "video",
+      description: "rollout contract model",
+      reason: "Create rollout contract model",
+    });
+    const source = await service.createRelease(context.actor, context.request, `rollout-source-${context.suffix}`, {
+      model_id: String(model.body.id),
+      source_image: "registry-reference:5000/astra/source:stable",
+      workflow_hash: "1".repeat(64),
+      maturity: "stable",
+      manifest,
+      reason: "Register stable rollout source",
+    });
+    const target = await service.createRelease(context.actor, context.request, `rollout-target-${context.suffix}`, {
+      model_id: String(model.body.id),
+      source_image: "registry-reference:5000/astra/target:candidate",
+      workflow_hash: "2".repeat(64),
+      maturity: "candidate",
+      manifest,
+      reason: "Register candidate rollout target",
+    });
+    for (const [name, release] of [
+      ["source", source],
+      ["target", target],
+    ] as const) {
+      await service.approveRelease(
+        context.actor,
+        context.request,
+        `rollout-approve-${name}-${context.suffix}`,
+        String(release.body.id),
+        { expected_version: 1, decision: "approve", reason: `Approve rollout ${name} release` },
+      );
+    }
+    const provider = `reference_${context.suffix}`;
+    const region = `region_${context.suffix}`;
+    const run = `snapshot_${context.suffix}`;
+    await database.client.begin(async (transaction) => {
+      await transaction`INSERT INTO provider_regions (id, provider, name, status, created_at, updated_at)
+        VALUES (${region}, ${provider}, 'Rollout Region', 'healthy', now(), now())`;
+      await transaction`INSERT INTO provider_inventory (
+          id, provider, region_id, gpu_sku, gpu_memory_bytes, available_replicas,
+          price_per_gpu_hour_minor, currency, snapshot_version, observed_at, created_at
+        ) VALUES (
+          ${`inventory_${context.suffix}`}, ${provider}, ${region}, 'rtx5090', 34359738368, 10,
+          300, 'CNY', ${run}, now(), now()
+        )`;
+      await transaction`INSERT INTO provider_snapshot_runs (
+          id, provider, contract_version, status, observed_at, expires_at, payload_hash,
+          object_count, quarantine_reasons, started_at, completed_at
+        ) VALUES (
+          ${run}, ${provider}, 'reference-v1', 'published', now(), now() + interval '1 hour',
+          ${"a".repeat(64)}, 1, '[]'::jsonb, now(), now()
+        )`;
+      await transaction`INSERT INTO provider_snapshot_state (
+          provider, latest_attempt_run_id, latest_published_run_id, status, observed_at,
+          expires_at, version, updated_at
+        ) VALUES (
+          ${provider}, ${run}, ${run}, 'fresh', now(), now() + interval '1 hour', 1, now()
+        )`;
+    });
+    const pool = await service.createPool(context.actor, context.request, `rollout-pool-${context.suffix}`, {
+      release_id: String(source.body.id),
+      provider,
+      region_id: region,
+      gpu_sku: "rtx5090",
+      execution_mode: "deployment",
+      reason: "Create rollout source pool",
+    });
+    const configurations: Record<string, Record<string, unknown>> = {
+      capacity: {
+        min_replicas: 0,
+        max_replicas: 10,
+        queue_target_seconds: 60,
+        target_utilization_percent: 75,
+        scale_up_step: 2,
+        scale_down_step_percent: 10,
+        idle_window_seconds: 900,
+        scale_down_cooldown_seconds: 1200,
+        hysteresis_percent: 10,
+      },
+      budget: { currency: "CNY", hourly_limit_minor: 3000, daily_limit_minor: 30000, minimum_margin_minor: 10 },
+      region: {
+        allowed_regions: [region],
+        max_price_per_gpu_hour_minor: 300,
+        completion_weight: 5,
+        cost_weight: 5,
+        failure_weight: 5,
+        cold_start_weight: 5,
+        transfer_weight: 5,
+      },
+      retry: { max_attempts: 3, initial_backoff_seconds: 5, max_backoff_seconds: 60, retryable_codes: ["worker_lost"] },
+    };
+    for (const [policyType, configuration] of Object.entries(configurations)) {
+      const policy = await service.validatePolicy(
+        context.actor,
+        context.request,
+        `rollout-validate-${policyType}-${context.suffix}`,
+        {
+          policy_type: policyType,
+          pool_id: String(pool.body.id),
+          configuration,
+          reason: `Validate rollout ${policyType}`,
+        },
+      );
+      const policyPreview = await service.previewPolicy(
+        context.actor,
+        context.request,
+        `rollout-policy-preview-${policyType}-${context.suffix}`,
+        String(policy.body.id),
+        {
+          expected_policy_version: Number(policy.body.version),
+          horizon_seconds: 3600,
+          reason: `Preview rollout ${policyType}`,
+        },
+      );
+      await service.publishPolicy(
+        context.actor,
+        context.request,
+        `rollout-publish-${policyType}-${context.suffix}`,
+        String(policy.body.id),
+        {
+          expected_policy_version: Number(policy.body.version),
+          preview_id: String(policyPreview.body.id),
+          reason: `Publish rollout ${policyType}`,
+        },
+      );
+    }
+    await service.updatePool(
+      context.actor,
+      context.request,
+      `rollout-activate-${context.suffix}`,
+      String(pool.body.id),
+      { expected_version: 1, status: "active", reason: "Activate rollout source pool" },
+    );
+    const strategy = {
+      max_surge: 1,
+      max_unavailable: 0,
+      batch_size: 1,
+      readiness_timeout_seconds: 1800,
+      readiness_stability_seconds: 60,
+      progress_deadline_seconds: 7200,
+      pause_on_failure: true,
+      maximum_failure_rate_basis_points: 500,
+      maximum_duration_regression_basis_points: 2500,
+      maximum_extra_cost_minor: 600,
+      currency: "CNY",
+      rollback_retention_seconds: 604800,
+    };
+    const preview = await service.previewRollout(context.actor, context.request, `rollout-preview-${context.suffix}`, {
+      release_id: String(target.body.id),
+      pool_id: String(pool.body.id),
+      expected_pool_version: 2,
+      strategy,
+      reason: "Preview digest pinned rollout",
+    });
+    expect(preview.body).toMatchObject({
+      object: "rollout.preview",
+      source_release_id: source.body.id,
+      target_release_id: target.body.id,
+      impact: { estimated_extra_cost_minor: 600 },
+    });
+    const rolloutInput = {
+      release_id: String(target.body.id),
+      pool_id: String(pool.body.id),
+      preview_id: String(preview.body.id),
+      expected_pool_version: 2,
+      reason: "Start digest pinned rollout",
+    };
+    const rollout = await service.createRollout(
+      context.actor,
+      context.request,
+      `rollout-create-${context.suffix}`,
+      rolloutInput,
+    );
+    const replay = await service.createRollout(
+      context.actor,
+      context.request,
+      `rollout-create-${context.suffix}`,
+      rolloutInput,
+    );
+    expect(replay.replayed).toBe(true);
+    expect(replay.body.id).toBe(rollout.body.id);
+    const paused = await service.pauseRollout(
+      context.actor,
+      context.request,
+      `rollout-pause-${context.suffix}`,
+      String(rollout.body.id),
+      { expected_version: 1, reason: "Pause rollout for operator review" },
+    );
+    expect(paused.body).toMatchObject({ status: "paused", version: 2 });
+    const resumed = await service.resumeRollout(
+      context.actor,
+      context.request,
+      `rollout-resume-${context.suffix}`,
+      String(rollout.body.id),
+      { expected_version: 2, reason: "Resume rollout after operator review" },
+    );
+    expect(resumed.body).toMatchObject({ status: "pending", version: 3 });
+    const reversed = await service.rollbackRollout(
+      context.actor,
+      context.request,
+      `rollout-rollback-${context.suffix}`,
+      String(rollout.body.id),
+      { expected_version: 3, reason: "Restore stable digest before reverse rollout" },
+    );
+    expect(reversed.body).toMatchObject({ status: "rolling_back", direction: "rollback", version: 4 });
+    const aliases = await database.client`SELECT release_id FROM model_alias_versions
+      WHERE project_id=${context.actor.projectId} AND alias=${String(model.body.alias)} AND status='active'`;
+    expect(aliases[0]?.release_id).toBe(source.body.id);
+    const events = await database.client`SELECT event_type FROM rollout_events
+      WHERE rollout_id=${String(rollout.body.id)} ORDER BY created_at, id`;
+    expect(events.map((row) => row.event_type)).toEqual([
+      "rollout.created",
+      "rollout.pause",
+      "rollout.resume",
+      "rollout.rollback",
+    ]);
+  });
 });

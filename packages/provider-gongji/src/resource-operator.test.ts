@@ -78,12 +78,27 @@ describe("Gongji resource operator", () => {
     const imageDigest = `sha256:${"a".repeat(64)}`;
     const imageReference = `registry.example/astra/model@${imageDigest}`;
     const first = await operator.provisionReplica(
-      { imageDigest, imageReference, region: "region-a", gpuSku: "5090" },
+      {
+        imageDigest,
+        imageReference,
+        region: "region-a",
+        gpuSku: "5090",
+        environment: {
+          WORKER_RELEASE_ID: "release-contract",
+          ASTRA_WORKER_BOOTSTRAP_TOKEN: "bootstrap-contract-secret",
+          WORKER_REPLICA_ID: "replica-contract",
+        },
+      },
       context,
     );
     expect(first).toMatchObject({ id: "6799", state: "provisioning" });
     const services = writeBodies[0]?.services as Record<string, unknown>[];
     expect(services[0]?.service_image).toBe(imageReference);
+    expect(services[0]?.env).toEqual([
+      { name: "ASTRA_WORKER_BOOTSTRAP_TOKEN", value: "bootstrap-contract-secret" },
+      { name: "WORKER_RELEASE_ID", value: "release-contract" },
+      { name: "WORKER_REPLICA_ID", value: "replica-contract" },
+    ]);
     expect(JSON.stringify(writeBodies[0])).not.toContain("repository_password");
 
     const recovered = await operator.provisionReplica(

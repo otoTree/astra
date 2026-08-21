@@ -11,6 +11,7 @@ import {
   type MediaMetadata,
   outputManifestSchema,
   type PrepareOutputs,
+  type RolloutValidationReport,
   type WorkerHeartbeat,
   type WorkerHeartbeatResponse,
   type WorkerLeaseRequest,
@@ -44,6 +45,8 @@ export type WorkerIdentity = Readonly<{
 export type RegisteredWorker = WorkerIdentity &
   Readonly<{
     capabilitiesHash: string;
+    rolloutValidationRequired: boolean;
+    expectedImageDigest?: string;
   }>;
 
 export type InputDownloadMaterial = Readonly<{
@@ -135,7 +138,7 @@ export class WorkerControlRepository {
     return this.sql.begin(async (transaction) => {
       const bootstrapRows = await transaction`SELECT b.id, b.replica_id, b.release_id, b.expires_at, b.used_at,
           r.pool_id, r.provider, r.provider_resource_id, r.region_id, r.gpu_sku, r.desired_state,
-          r.observed_state, mr.manifest
+          r.observed_state, r.rollout_reserved, r.rollout_id, r.rollout_step_id, r.image_digest, mr.manifest
         FROM worker_bootstrap_tokens b JOIN replicas r ON r.id=b.replica_id
         JOIN model_releases mr ON mr.id=b.release_id
         WHERE b.token_hash=${bootstrapTokenHash} FOR UPDATE OF b, r`;
@@ -148,7 +151,8 @@ export class WorkerControlRepository {
         String(bootstrap.release_id) !== input.release_id ||
         String(bootstrap.pool_id) !== input.pool_id ||
         String(bootstrap.provider) !== input.provider ||
-        String(bootstrap.provider_resource_id) !== input.provider_instance_id ||
+        (String(bootstrap.provider_resource_id) !== input.provider_instance_id &&
+          !(bootstrap.rollout_reserved === true && String(bootstrap.replica_id) === input.provider_instance_id)) ||
         String(bootstrap.region_id) !== input.region ||
         String(bootstrap.gpu_sku) !== input.hardware.gpu_sku ||
         !["provisioning", "ready"].includes(String(bootstrap.desired_state)) ||
@@ -158,6 +162,12 @@ export class WorkerControlRepository {
       }
       if (input.capabilities.contract_version !== "1.0" || input.capabilities.model_release !== input.release_id) {
         throw new WorkerControlError("worker_contract_mismatch", 422);
+      }
+      if (
+        bootstrap.rollout_reserved === true &&
+        (!input.image_digest || String(bootstrap.image_digest) !== input.image_digest)
+      ) {
+        throw new WorkerControlError("worker_image_digest_mismatch", 422);
       }
       const manifest = (bootstrap.manifest ?? {}) as Record<string, unknown>;
       const approvedConcurrency = Number(manifest.max_concurrency ?? 1);
@@ -180,7 +190,7 @@ export class WorkerControlRepository {
       if (existing) {
         await transaction`UPDATE workers SET contract_version=${input.capabilities.contract_version},
           capabilities=${JSON.stringify(input.capabilities)}, capabilities_hash=${capabilityHash},
-          provider=${input.provider}, region_id=${input.region}, provider_instance_id=${input.provider_instance_id},
+          provider=${input.provider}, region_id=${input.region}, provider_instance_id=${String(bootstrap.provider_resource_id)},
           pool_id=${input.pool_id}, instance_fingerprint=${input.instance_fingerprint},
           hardware=${JSON.stringify(input.hardware)}, status=CASE WHEN desired_state='run' THEN 'ready' ELSE 'draining' END,
           last_heartbeat_at=${timestamp.toISOString()}, unknown_since=NULL, updated_at=${timestamp.toISOString()}
@@ -192,7 +202,7 @@ export class WorkerControlRepository {
           last_sequence, last_heartbeat_at, created_at, updated_at
         ) VALUES (
           ${workerId}, ${input.replica_id}, ${input.release_id}, ${input.capabilities.contract_version}, 'ready',
-          ${JSON.stringify(input.capabilities)}, ${input.provider}, ${input.region}, ${input.provider_instance_id},
+          ${JSON.stringify(input.capabilities)}, ${input.provider}, ${input.region}, ${String(bootstrap.provider_resource_id)},
           ${input.pool_id}, ${input.instance_fingerprint}, ${JSON.stringify(input.hardware)}, ${capabilityHash},
           'run', 0, ${timestamp.toISOString()}, ${timestamp.toISOString()}, ${timestamp.toISOString()}
         )`;
@@ -219,7 +229,104 @@ export class WorkerControlRepository {
         sessionId: session.id,
         sessionExpiresAt: session.expiresAt.toISOString(),
         capabilitiesHash: capabilityHash,
+        rolloutValidationRequired: bootstrap.rollout_reserved === true,
+        ...(bootstrap.rollout_reserved === true ? { expectedImageDigest: String(bootstrap.image_digest) } : {}),
       };
+    });
+  }
+
+  async reportRolloutValidation(
+    identity: WorkerIdentity,
+    input: RolloutValidationReport,
+    requestHash: string,
+  ): Promise<Readonly<{ rolloutId: string; rolloutStepId: string }>> {
+    const existing = await this.sql`SELECT request_hash, response_body FROM worker_request_receipts
+      WHERE worker_id=${identity.workerId} AND operation='rollout_validation' AND sequence=${input.sequence}`;
+    if (existing[0]) {
+      if (String(existing[0].request_hash) !== requestHash) {
+        throw new WorkerControlError("worker_sequence_conflict", 409);
+      }
+      const response = existing[0].response_body as { rollout_id?: unknown; rollout_step_id?: unknown };
+      if (!response?.rollout_id || !response.rollout_step_id) {
+        throw new WorkerControlError("worker_receipt_corrupt", 500, true);
+      }
+      return { rolloutId: String(response.rollout_id), rolloutStepId: String(response.rollout_step_id) };
+    }
+    const timestamp = this.now();
+    return this.sql.begin(async (transaction) => {
+      const rows = await transaction`SELECT w.id AS worker_id, w.capabilities_hash, w.release_id,
+          r.id AS replica_id, r.image_digest, r.rollout_reserved, r.rollout_id, r.rollout_step_id,
+          rs.status AS step_status, mr.status AS rollout_status, mr.target_release_id, mr.source_release_id,
+          mr.direction
+        FROM workers w JOIN replicas r ON r.id=w.replica_id
+        JOIN rollout_steps rs ON rs.id=r.rollout_step_id
+        JOIN model_rollouts mr ON mr.id=r.rollout_id
+        WHERE w.id=${identity.workerId} FOR UPDATE OF w, r, rs, mr`;
+      const row = rows[0];
+      if (
+        !row ||
+        String(row.replica_id) !== identity.replicaId ||
+        String(row.release_id) !== identity.releaseId ||
+        row.rollout_reserved !== true ||
+        !["provisioning", "validating"].includes(String(row.step_status)) ||
+        !["pending", "validating", "rolling", "rolling_back"].includes(String(row.rollout_status))
+      ) {
+        throw new WorkerControlError("rollout_validation_binding_mismatch", 409);
+      }
+      const expectedRelease = row.direction === "rollback" ? row.source_release_id : row.target_release_id;
+      if (
+        String(expectedRelease) !== identity.releaseId ||
+        String(row.image_digest) !== input.image_digest ||
+        String(row.capabilities_hash) !== input.capabilities_hash ||
+        input.smoke.model_release !== identity.releaseId
+      ) {
+        throw new WorkerControlError("rollout_validation_evidence_mismatch", 422);
+      }
+      const checks = {
+        readiness: input.smoke.checks.readiness,
+        capabilities: input.smoke.checks.capabilities,
+        execution: input.smoke.checks.execution,
+        output_contract: input.smoke.checks.output_contract,
+        capabilities_hash: input.capabilities_hash,
+        smoke_evidence_sha256: input.smoke.evidence_sha256,
+        smoke_duration_ms: input.smoke.duration_ms,
+        resources: input.resources,
+      };
+      if (input.status === "passed" && Object.values(input.smoke.checks).some((value) => value !== true)) {
+        throw new WorkerControlError("rollout_validation_incomplete", 422);
+      }
+      const rolloutId = String(row.rollout_id);
+      const rolloutStepId = String(row.rollout_step_id);
+      await transaction`INSERT INTO worker_rollout_validation_reports (
+          id, rollout_id, rollout_step_id, replica_id, worker_id, release_id, sequence,
+          image_digest, status, checks, evidence_hash, failure_code, observed_at, created_at
+        ) VALUES (
+          ${this.createId("rolloutvalidation")}, ${rolloutId}, ${rolloutStepId}, ${identity.replicaId},
+          ${identity.workerId}, ${identity.releaseId}, ${input.sequence}, ${input.image_digest}, ${input.status},
+          ${JSON.stringify(checks)}, ${input.smoke.evidence_sha256}, ${input.failure_code ?? null},
+          ${input.observed_at}, ${timestamp.toISOString()}
+        )`;
+      await transaction`UPDATE rollout_steps SET status='validating', gates=${JSON.stringify({
+        status: input.status,
+        ...checks,
+      })}, failure=${input.status === "failed" ? JSON.stringify({ code: input.failure_code }) : null},
+          version=version+1, updated_at=${timestamp.toISOString()}
+        WHERE id=${rolloutStepId}`;
+      await transaction`INSERT INTO rollout_events (
+          id, rollout_id, rollout_version, event_type, actor_type, actor_id, reason, details, created_at
+        ) SELECT ${this.createId("rolloutevent")}, id, version, ${
+          input.status === "passed" ? "rollout.validation_passed" : "rollout.validation_failed"
+        }, 'worker', ${identity.workerId}, ${input.failure_code ?? "worker_validation_report"},
+          ${JSON.stringify({ rollout_step_id: rolloutStepId, replica_id: identity.replicaId, checks })},
+          ${timestamp.toISOString()} FROM model_rollouts WHERE id=${rolloutId}`;
+      const response = { rollout_id: rolloutId, rollout_step_id: rolloutStepId };
+      await transaction`INSERT INTO worker_request_receipts (
+          worker_id, operation, sequence, request_hash, response_status, response_body, created_at
+        ) VALUES (
+          ${identity.workerId}, 'rollout_validation', ${input.sequence}, ${requestHash}, 200,
+          ${JSON.stringify(response)}, ${timestamp.toISOString()}
+        )`;
+      return { rolloutId, rolloutStepId };
     });
   }
 

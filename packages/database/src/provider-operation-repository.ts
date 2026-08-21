@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type postgres from "postgres";
+import { RequestCipher } from "./request-cipher.ts";
 
 type SqlClient = ReturnType<typeof postgres>;
 
@@ -10,6 +11,8 @@ export type ProviderOperationPayload = Readonly<{
   region?: string;
   gpu_sku?: string;
   provider_resource_id?: string;
+  environment_secret_id?: string;
+  environment?: Readonly<Record<string, string>>;
 }>;
 
 export type ProviderOperationClaim = Readonly<{
@@ -57,11 +60,16 @@ const validatePayload = (type: ProviderOperationType, payload: ProviderOperation
 };
 
 export class ProviderOperationRepository {
+  private readonly secretCipher: RequestCipher | undefined;
+
   constructor(
     private readonly sql: SqlClient,
     private readonly now: () => Date = () => new Date(),
     private readonly createId: (prefix: string) => string = (prefix) => `${prefix}_${Bun.randomUUIDv7()}`,
-  ) {}
+    secretEncryptionKey?: string,
+  ) {
+    this.secretCipher = secretEncryptionKey ? new RequestCipher(secretEncryptionKey) : undefined;
+  }
 
   async enqueue(
     input: Readonly<{
@@ -73,6 +81,8 @@ export class ProviderOperationRepository {
       resourceId?: string;
       payload: ProviderOperationPayload;
       maximumAttempts: number;
+      secretEnvironment?: Readonly<Record<string, string>>;
+      secretExpiresAt?: Date;
     }>,
   ): Promise<Readonly<{ id: string; status: string; replayed: boolean }>> {
     validatePayload(input.operationType, input.payload);
@@ -80,12 +90,24 @@ export class ProviderOperationRepository {
     if (!Number.isInteger(input.maximumAttempts) || input.maximumAttempts < 1 || input.maximumAttempts > 100) {
       throw new Error("invalid_provider_operation_maximum_attempts");
     }
+    const environmentHash = input.secretEnvironment ? requestHash(input.secretEnvironment) : undefined;
+    if (
+      input.secretEnvironment &&
+      (!this.secretCipher || !input.secretExpiresAt || input.secretExpiresAt <= this.now())
+    ) {
+      throw new Error("provider_operation_secret_invalid");
+    }
+    const secretId = input.secretEnvironment
+      ? `providersecret_${createHash("sha256").update(input.operationKey).digest("hex").slice(0, 32)}`
+      : undefined;
+    const payload = secretId ? { ...input.payload, environment_secret_id: secretId } : input.payload;
     const hash = requestHash({
       provider: input.provider,
       operation_type: input.operationType,
       resource_type: input.resourceType,
       resource_id: input.resourceId,
-      payload: input.payload,
+      payload,
+      environment_hash: environmentHash,
     });
     const timestamp = this.now();
     return this.sql.begin(async (transaction) => {
@@ -105,6 +127,14 @@ export class ProviderOperationRepository {
       const status = usable ? "pending" : "suppressed";
       const error = usable ? null : { code: "provider_snapshot_stale", retryable: true };
       const id = this.createId("provider_operation");
+      if (input.secretEnvironment && secretId && environmentHash && input.secretExpiresAt && this.secretCipher) {
+        await transaction`INSERT INTO provider_operation_secrets (
+            id, project_id, operation_key, environment_ciphertext, environment_hash, expires_at, created_at
+          ) VALUES (
+            ${secretId}, ${input.projectId}, ${input.operationKey}, ${this.secretCipher.seal(input.secretEnvironment)},
+            ${environmentHash}, ${input.secretExpiresAt.toISOString()}, ${timestamp.toISOString()}
+          )`;
+      }
       await transaction`INSERT INTO provider_operations (
           id, project_id, provider, operation_key, operation_type, status, resource_type, resource_id,
           request_hash, retry_count, cost_minor, currency, error, desired_payload, next_attempt_at,
@@ -112,7 +142,7 @@ export class ProviderOperationRepository {
         ) VALUES (
           ${id}, ${input.projectId}, ${input.provider}, ${input.operationKey}, ${input.operationType}, ${status},
           ${input.resourceType ?? null}, ${input.resourceId ?? null}, ${hash}, 0, 0, 'CNY',
-          ${error ? JSON.stringify(error) : null}, ${JSON.stringify(input.payload)}, ${timestamp.toISOString()},
+          ${error ? JSON.stringify(error) : null}, ${JSON.stringify(payload)}, ${timestamp.toISOString()},
           ${input.maximumAttempts}, 1, ${timestamp.toISOString()}, ${timestamp.toISOString()}
         )`;
       return { id, status, replayed: false };
@@ -162,22 +192,45 @@ export class ProviderOperationRepository {
         version=po.version+1, updated_at=${timestamp.toISOString()}
       FROM candidates c WHERE po.id=c.id
       RETURNING po.*`;
-    return rows.map((row) => ({
-      id: String(row.id),
-      projectId: String(row.project_id),
-      provider: String(row.provider),
-      operationKey: String(row.operation_key),
-      operationType: String(row.operation_type) as ProviderOperationType,
-      ...(row.resource_type ? { resourceType: String(row.resource_type) } : {}),
-      ...(row.resource_id ? { resourceId: String(row.resource_id) } : {}),
-      ...(row.provider_resource_id ? { providerResourceId: String(row.provider_resource_id) } : {}),
-      payload: row.desired_payload as ProviderOperationPayload,
-      retryCount: Number(row.retry_count),
-      maximumAttempts: Number(row.maximum_attempts),
-      leaseOwner: owner,
-      leaseExpiresAt: expiresAt,
-      reconciling: row.status === "reconciling",
-    }));
+    const secretIds = rows
+      .map((row) => (row.desired_payload as ProviderOperationPayload).environment_secret_id)
+      .filter((value): value is string => typeof value === "string");
+    const secretRows =
+      secretIds.length === 0
+        ? []
+        : await this.sql`SELECT id, environment_ciphertext, expires_at FROM provider_operation_secrets
+            WHERE id=ANY(${this.sql.array(secretIds)}::text[])`;
+    const secrets = new Map(secretRows.map((row) => [String(row.id), row]));
+    return rows.map((row) => {
+      const storedPayload = row.desired_payload as ProviderOperationPayload;
+      let payload = storedPayload;
+      if (storedPayload.environment_secret_id) {
+        const secret = secrets.get(storedPayload.environment_secret_id);
+        if (!secret || new Date(secret.expires_at as Date | string) <= timestamp || !this.secretCipher) {
+          throw new Error("provider_operation_secret_unavailable");
+        }
+        payload = {
+          ...storedPayload,
+          environment: this.secretCipher.open<Readonly<Record<string, string>>>(String(secret.environment_ciphertext)),
+        };
+      }
+      return {
+        id: String(row.id),
+        projectId: String(row.project_id),
+        provider: String(row.provider),
+        operationKey: String(row.operation_key),
+        operationType: String(row.operation_type) as ProviderOperationType,
+        ...(row.resource_type ? { resourceType: String(row.resource_type) } : {}),
+        ...(row.resource_id ? { resourceId: String(row.resource_id) } : {}),
+        ...(row.provider_resource_id ? { providerResourceId: String(row.provider_resource_id) } : {}),
+        payload,
+        retryCount: Number(row.retry_count),
+        maximumAttempts: Number(row.maximum_attempts),
+        leaseOwner: owner,
+        leaseExpiresAt: expiresAt,
+        reconciling: row.status === "reconciling",
+      };
+    });
   }
 
   async succeed(
@@ -202,6 +255,10 @@ export class ProviderOperationRepository {
           AND status IN ('running','reconciling') AND lease_expires_at>=${timestamp.toISOString()}
         RETURNING id`;
       if (!rows[0]) return false;
+      if (claim.payload.environment_secret_id) {
+        await transaction`UPDATE provider_operation_secrets SET consumed_at=COALESCE(consumed_at, ${timestamp.toISOString()})
+          WHERE id=${claim.payload.environment_secret_id}`;
+      }
       if (claim.resourceType === "replica" && claim.resourceId) {
         const observed =
           claim.operationType === "terminate"

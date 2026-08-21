@@ -1,9 +1,13 @@
 import {
   capabilitiesSchema,
+  modelSmokeRequestSchema,
+  modelSmokeResponseSchema,
   modelExecutionViewSchema,
   type Capabilities,
   type InferenceRequest,
   type ModelExecutionView,
+  type ModelSmokeRequest,
+  type ModelSmokeResponse,
 } from "@astra/contracts";
 
 export class ModelAppClient {
@@ -30,6 +34,18 @@ export class ModelAppClient {
     const response = await fetch(`${this.baseUrl}/v1/capabilities`, { signal: this.signal() });
     if (!response.ok) throw new Error(`model_app_capabilities:${response.status}`);
     return capabilitiesSchema.parse(await response.json());
+  }
+
+  async smoke(input: ModelSmokeRequest): Promise<ModelSmokeResponse> {
+    const body = modelSmokeRequestSchema.parse(input);
+    const response = await fetch(`${this.baseUrl}/v1/validation/smoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: this.signal(),
+    });
+    if (!response.ok) throw new Error(`model_app_smoke:${response.status}`);
+    return modelSmokeResponseSchema.parse(await response.json());
   }
 
   async accept(request: InferenceRequest): Promise<ModelExecutionView> {

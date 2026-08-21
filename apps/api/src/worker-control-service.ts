@@ -6,6 +6,7 @@ import {
   drainedWorkerResponseSchema,
   leasedAttemptSchema,
   prepareOutputsResponseSchema,
+  rolloutValidationResponseSchema,
   workerHeartbeatResponseSchema,
   workerRegistrationResponseSchema,
   type CompleteAttempt,
@@ -13,6 +14,7 @@ import {
   type DrainedWorker,
   type FailAttempt,
   type PrepareOutputs,
+  type RolloutValidationReport,
   type WorkerHeartbeat,
   type WorkerLeaseRequest,
   type WorkerRegistration,
@@ -87,11 +89,22 @@ export class WorkerControlService {
       heartbeat_interval_seconds: this.options.heartbeatIntervalSeconds,
       lease_duration_seconds: this.options.leaseDurationSeconds,
       orphan_grace_period_seconds: this.options.orphanGracePeriodSeconds,
+      rollout_validation_required: registered.rolloutValidationRequired,
+      ...(registered.expectedImageDigest ? { expected_image_digest: registered.expectedImageDigest } : {}),
     });
   }
 
   async authenticate(token: string, workerId?: string): Promise<WorkerIdentity> {
     return this.repository.authenticate(this.hashToken(token), workerId);
+  }
+
+  async reportRolloutValidation(identity: WorkerIdentity, input: RolloutValidationReport) {
+    const accepted = await this.repository.reportRolloutValidation(identity, input, canonicalHash(input));
+    return rolloutValidationResponseSchema.parse({
+      accepted: true,
+      rollout_id: accepted.rolloutId,
+      rollout_step_id: accepted.rolloutStepId,
+    });
   }
 
   async lease(identity: WorkerIdentity, input: WorkerLeaseRequest) {

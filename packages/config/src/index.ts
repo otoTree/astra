@@ -93,6 +93,10 @@ export const providerControllerConfigSchema = environmentSchema
     PROVIDER_OPERATION_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
     PROVIDER_OPERATION_LEASE_SECONDS: z.coerce.number().int().min(5).max(300).default(30),
     PROVIDER_OPERATION_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(120).default(20),
+    PROVIDER_OPERATION_ENCRYPTION_KEY: z.string().min(32),
+    WORKER_TOKEN_PEPPER: z.string().min(32),
+    ROLLOUT_WORKER_CONTROL_URL: requiredUrl,
+    ROLLOUT_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(100).max(60000).default(1000),
   })
   .superRefine((config, context) => {
     if (config.PROVIDER_DRIVER === "gongji") {
@@ -156,6 +160,10 @@ export const workerAgentConfigSchema = environmentSchema.extend({
   WORKER_REPLICA_ID: z.string().min(1),
   WORKER_POOL_ID: z.string().min(1),
   WORKER_RELEASE_ID: z.string().min(1),
+  WORKER_IMAGE_DIGEST: z
+    .string()
+    .regex(/^sha256:[0-9a-f]{64}$/)
+    .optional(),
   WORKER_INSTANCE_FINGERPRINT: z.string().min(16),
   WORKER_GPU_SKU: z.string().min(1),
   WORKER_GPU_COUNT: z.coerce.number().int().positive(),

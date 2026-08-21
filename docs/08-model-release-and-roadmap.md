@@ -292,8 +292,8 @@ Batch Job 不做运行中换镜像：已启动 Job 使用旧 digest 完成，新
 回滚先把 Alias 新流量恢复到上一稳定 Release，再使用上一稳定 digest 创建反向逐机 Rollout，不删除 Candidate Release：
 
 1. 新 Task 立即解析到上一稳定 Release。
-2. Candidate Release 立即设置 `accept_new_tasks=false`。尚未创建 Attempt 的 Candidate Task 默认在兼容性校验通过后，以审计的批量重排重新绑定到上一稳定 Release；不兼容的任务保留为 `rollback_rebind_required`，等待运维处理，不得继续执行坏版本。
-3. running Task 默认完成，不抢占；事故级问题可单独取消。
+2. Candidate Release 立即设置 `accept_new_tasks=false`，但保持 `accept_existing_tasks=true`。已经创建并固定到 Candidate Release 的 queued Task 不改写 Release，由 Candidate Worker 继续排空；如果事故等级禁止 Candidate 继续执行，运维必须显式批量取消并审计，平台不静默迁移请求。
+3. running Task 默认完成，不抢占；事故级问题可显式取消。
 4. 如果稳定 digest 没有热实例，先通过共绩 Provider Adapter 预热并完成相同的 readiness、capability 和 smoke 校验。
 5. Candidate Replica 逐台进入 draining；收到 `drained` 且租约归零后回收，并按同一容量规则补充稳定 digest。
 6. 保存触发指标、操作者和版本差异。

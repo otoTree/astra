@@ -53,7 +53,13 @@ export class ReferenceProviderOperator implements ProviderResourceOperator {
   }
 
   async provisionReplica(
-    input: Readonly<{ imageDigest: string; imageReference?: string; region: string; gpuSku: string }>,
+    input: Readonly<{
+      imageDigest: string;
+      imageReference?: string;
+      region: string;
+      gpuSku: string;
+      environment?: Readonly<Record<string, string>>;
+    }>,
     context: ProviderOperationContext,
   ): Promise<ProviderReplica> {
     this.ensureDeadline(context);

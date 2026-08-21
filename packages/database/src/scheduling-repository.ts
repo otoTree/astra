@@ -78,10 +78,12 @@ export class SchedulingRepository {
     const freshAfter = new Date(observedAt.getTime() - workerFreshnessSeconds * 1000);
     const tasks = await this.sql`SELECT t.id, t.project_id, t.model_release_id, t.priority, t.version, t.created_at
       FROM tasks t JOIN model_releases mr ON mr.id=t.model_release_id
-      WHERE t.status='queued' AND mr.accept_new_tasks=true AND mr.status='approved'
+      WHERE t.status='queued' AND (mr.accept_new_tasks=true OR mr.accept_existing_tasks=true) AND mr.status='approved'
         AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.task_id=t.id
           AND a.status IN ('reserved', 'leased', 'running', 'unknown'))
-        AND EXISTS (SELECT 1 FROM model_pools p WHERE p.release_id=t.model_release_id AND p.status='active')
+        AND EXISTS (SELECT 1 FROM replicas candidate JOIN model_pools p ON p.id=candidate.pool_id
+          WHERE candidate.release_id=t.model_release_id AND p.status='active'
+            AND candidate.desired_state='ready' AND candidate.observed_state IN ('ready','busy'))
       ORDER BY CASE WHEN t.priority='online' THEN 0 ELSE 1 END, t.created_at, t.id
       LIMIT ${boundedLimit}`;
     const releaseIds = [...new Set(tasks.map((row) => String(row.model_release_id)))];
@@ -107,7 +109,7 @@ export class SchedulingRepository {
       JOIN workers w ON w.replica_id=r.id AND w.release_id=r.release_id
       LEFT JOIN attempts a ON a.replica_id=r.id AND a.status IN ('reserved', 'leased', 'running', 'unknown')
       WHERE r.release_id=ANY(${this.sql.array(releaseIds)}::text[])
-        AND p.release_id=r.release_id AND p.region_id=r.region_id AND p.gpu_sku=r.gpu_sku
+        AND p.region_id=r.region_id AND p.gpu_sku=r.gpu_sku
         AND p.status='active' AND r.desired_state='ready' AND r.observed_state IN ('ready', 'busy')
         AND r.rollout_reserved=false AND w.status IN ('ready', 'busy')
         AND w.last_heartbeat_at IS NOT NULL AND w.last_heartbeat_at>=${freshAfter.toISOString()}
@@ -151,7 +153,7 @@ export class SchedulingRepository {
     try {
       return await this.sql.begin(async (transaction) => {
         const tasks = await transaction`SELECT t.id, t.project_id, t.model_release_id, t.status, t.version,
-            mr.accept_new_tasks, mr.status AS release_status
+            mr.accept_new_tasks, mr.accept_existing_tasks, mr.status AS release_status
           FROM tasks t JOIN model_releases mr ON mr.id=t.model_release_id
           WHERE t.id=${input.task.taskId} FOR UPDATE OF t`;
         const task = tasks[0];
@@ -159,7 +161,7 @@ export class SchedulingRepository {
           task?.status !== "queued" ||
           Number(task.version) !== input.task.taskVersion ||
           String(task.model_release_id) !== input.task.releaseId ||
-          task.accept_new_tasks !== true ||
+          (task.accept_new_tasks !== true && task.accept_existing_tasks !== true) ||
           task.release_status !== "approved"
         ) {
           return undefined;

@@ -11,6 +11,7 @@ import {
   type InferenceRequest,
   type LeasedAttempt,
   type ModelExecutionView,
+  type ModelSmokeRequest,
   type PrepareOutputs,
   type WorkerHeartbeat,
   type WorkerLeaseRequest,
@@ -81,6 +82,17 @@ class ControlledModel implements ModelAppPort {
     this.statusValue = { execution_id: executionId, status: "canceled", progress: null };
     return this.statusValue;
   }
+
+  async smoke(input: ModelSmokeRequest) {
+    return {
+      validation_id: input.validation_id,
+      model_release: input.model_release,
+      status: "passed" as const,
+      evidence_sha256: "a".repeat(64),
+      duration_ms: 1,
+      checks: { readiness: true, capabilities: true, execution: true, output_contract: true },
+    };
+  }
 }
 
 class RecordingControl implements WorkerControlPort {
@@ -104,6 +116,7 @@ class RecordingControl implements WorkerControlPort {
       heartbeat_interval_seconds: 1,
       lease_duration_seconds: 30,
       orphan_grace_period_seconds: 180,
+      rollout_validation_required: false,
     };
   }
 
@@ -160,6 +173,10 @@ class RecordingControl implements WorkerControlPort {
   async drained(_session: Readonly<{ workerId: string; token: string }>, input: DrainedWorker) {
     this.drainedInputs.push(input);
     return {};
+  }
+
+  async reportRolloutValidation(): Promise<never> {
+    throw new Error("unexpected_rollout_validation");
   }
 }
 
