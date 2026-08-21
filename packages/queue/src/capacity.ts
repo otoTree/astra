@@ -70,6 +70,11 @@ export type CapacityPolicy = Readonly<{
   allowedProviders?: readonly string[];
   allowedRegions?: readonly string[];
   maxPricePerGpuHourMinor?: number;
+  placementCompletionWeight?: number;
+  placementCostWeight?: number;
+  placementFailureWeight?: number;
+  placementColdStartWeight?: number;
+  placementTransferWeight?: number;
 }>;
 
 export type CapacitySnapshot = Readonly<{
@@ -219,12 +224,36 @@ const placement = (
   const maxCold = Math.max(...candidates.map((candidate) => candidate.coldStartSeconds));
   const maxFailure = Math.max(...candidates.map((candidate) => candidate.failureRateBasisPoints));
   const maxTransfer = Math.max(...candidates.map((candidate) => candidate.transferCostMinorPerTask));
+  const queueWaitSeconds = simulateQueue(
+    replicas,
+    snapshot.approvedMaxConcurrency,
+    snapshot.running,
+    snapshot.queue,
+  ).p95WaitSeconds;
+  const maxCompletion = Math.max(...candidates.map((candidate) => candidate.coldStartSeconds + queueWaitSeconds));
+  const weights = {
+    completion: Math.max(0, policy.placementCompletionWeight ?? 0),
+    cost: Math.max(0, policy.placementCostWeight ?? 35),
+    failure: Math.max(0, policy.placementFailureWeight ?? 25),
+    coldStart: Math.max(0, policy.placementColdStartWeight ?? 20),
+    transfer: Math.max(0, policy.placementTransferWeight ?? 20),
+  };
+  const weightTotal = Object.values(weights).reduce((total, weight) => total + weight, 0);
   const score = (offer: CapacityOffer): number => {
+    const completion = maxCompletion === 0 ? 0 : (offer.coldStartSeconds + queueWaitSeconds) / maxCompletion;
     const cost = maxCost === 0 ? 0 : offer.pricePerGpuHourMinor / maxCost;
     const cold = maxCold === 0 ? 0 : offer.coldStartSeconds / maxCold;
     const failure = maxFailure === 0 ? 0 : offer.failureRateBasisPoints / maxFailure;
     const transfer = maxTransfer === 0 ? 0 : offer.transferCostMinorPerTask / maxTransfer;
-    return cost * 0.35 + cold * 0.2 + failure * 0.25 + transfer * 0.2;
+    if (weightTotal === 0) return 0;
+    return (
+      (completion * weights.completion +
+        cost * weights.cost +
+        failure * weights.failure +
+        cold * weights.coldStart +
+        transfer * weights.transfer) /
+      weightTotal
+    );
   };
   const winner = [...candidates].sort(
     (left, right) =>
@@ -240,9 +269,7 @@ const placement = (
     gpuSku: winner.gpuSku,
     score: score(winner),
     estimatedCostMinor: Math.ceil((winner.pricePerGpuHourMinor * replicas * horizon) / 3600),
-    estimatedCompletionSeconds:
-      winner.coldStartSeconds +
-      simulateQueue(replicas, snapshot.approvedMaxConcurrency, snapshot.running, snapshot.queue).p95WaitSeconds,
+    estimatedCompletionSeconds: winner.coldStartSeconds + queueWaitSeconds,
     reasons: [
       "hardware_compatible",
       "fresh_inventory",

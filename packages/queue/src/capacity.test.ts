@@ -131,6 +131,51 @@ describe("capacity planning", () => {
     expect(result.placement?.reasons).toContain("region_policy_filtered");
   });
 
+  test("applies placement weights from the capacity decision", () => {
+    const result = planCapacity(
+      snapshot({
+        offers: [
+          {
+            provider: "reference",
+            regionId: "region_a",
+            gpuSku: "rtx5090",
+            availableReplicas: 20,
+            pricePerGpuHourMinor: 200,
+            coldStartSeconds: 900,
+            failureRateBasisPoints: 100,
+            transferCostMinorPerTask: 1,
+            healthy: true,
+            snapshotFresh: true,
+          },
+          {
+            provider: "gongji",
+            regionId: "region_b",
+            gpuSku: "rtx5090",
+            availableReplicas: 20,
+            pricePerGpuHourMinor: 600,
+            coldStartSeconds: 30,
+            failureRateBasisPoints: 20,
+            transferCostMinorPerTask: 1,
+            healthy: true,
+            snapshotFresh: true,
+          },
+        ],
+      }),
+      {
+        ...policy,
+        allowedProviders: ["reference", "gongji"],
+        allowedRegions: ["region_a", "region_b"],
+        placementCompletionWeight: 100,
+        placementCostWeight: 0,
+        placementFailureWeight: 0,
+        placementColdStartWeight: 0,
+        placementTransferWeight: 0,
+      },
+    );
+
+    expect(result.placement?.provider).toBe("gongji");
+  });
+
   test("suppresses expansion on stale inventory, budget, or rollout and never drains busy replicas", () => {
     expect(planCapacity(snapshot({ offers: [], currentDesiredReplicas: 1 }), policy).suppressedBy).toBe("inventory");
     expect(planCapacity(snapshot({ budgetRemainingMinor: 1, currentDesiredReplicas: 1 }), policy).suppressedBy).toBe(

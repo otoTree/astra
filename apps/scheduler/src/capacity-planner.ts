@@ -35,6 +35,17 @@ const policyFromDatabase = (value: Record<string, unknown>): CapacityPolicy => (
   ...(value.max_price_per_gpu_hour_minor === undefined
     ? {}
     : { maxPricePerGpuHourMinor: Math.max(0, Number(value.max_price_per_gpu_hour_minor)) }),
+  ...(value.completion_weight === undefined
+    ? {}
+    : { placementCompletionWeight: Math.max(0, Number(value.completion_weight)) }),
+  ...(value.cost_weight === undefined ? {} : { placementCostWeight: Math.max(0, Number(value.cost_weight)) }),
+  ...(value.failure_weight === undefined ? {} : { placementFailureWeight: Math.max(0, Number(value.failure_weight)) }),
+  ...(value.cold_start_weight === undefined
+    ? {}
+    : { placementColdStartWeight: Math.max(0, Number(value.cold_start_weight)) }),
+  ...(value.transfer_weight === undefined
+    ? {}
+    : { placementTransferWeight: Math.max(0, Number(value.transfer_weight)) }),
 });
 
 const toCapacitySnapshot = (

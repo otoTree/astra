@@ -235,7 +235,7 @@ util   = lambda / mu
 | `hourly_budget_minor` / `daily_budget_minor` | 硬预算上限 |
 | `allowed_regions` | 允许区域；全区域调度仍需明确列表 |
 | `allowed_providers` | 可选供应商白名单；未声明时沿用 Model Pool 的供应商，跨 Provider 必须显式配置 |
-| `placement_weights` | 成本、完工、失败、冷启和传输权重 |
+| `placement_weights` | 成本、完工、失败、冷启和传输权重；调度器按归一化权重评分，全部为 0 时使用稳定排序 |
 
 管理台可以提供模板，但数据库中不存在继承的隐式生产默认值。策略缺项时 Pool 状态为 `configuration_required`。
 
