@@ -2,7 +2,8 @@ import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const forbiddenExtensions = new Set([".safetensors", ".ckpt", ".pt", ".pth", ".gguf", ".onnx"]);
-const ignoredDirectories = new Set([".git", "node_modules", "dist", "coverage", "work", "data"]);
+// Generated work/data directories are intentionally scanned: a local model download must fail the same gate as a committed file.
+const ignoredDirectories = new Set([".git", "node_modules", "coverage"]);
 const violations: string[] = [];
 
 async function walk(directory: string): Promise<void> {
