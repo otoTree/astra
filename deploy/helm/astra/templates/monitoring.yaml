@@ -60,6 +60,9 @@ spec:
           annotations:
             summary: Astra control-plane target is unavailable
             description: One or more Astra control-plane targets have been down for more than five minutes.
+            impact: Public, admin or worker control requests may fail for the affected trust domain.
+            action: Check the target readiness endpoint, deployment events and dependency health before restoring traffic.
+            recovery: Automatic after the Deployment becomes ready; traffic remains isolated until readiness recovers.
             runbook_url: "{{ .Values.monitoring.prometheusRule.annotations.runbook_base_url | default "" }}/disaster-recovery"
         - alert: AstraSchedulerFailures
           expr: increase(astra_scheduler_iterations_total{outcome="failure"}[5m]) > 0
@@ -70,6 +73,9 @@ spec:
           annotations:
             summary: Astra scheduler has failed iterations
             description: Scheduler iterations have failed during the last five minutes; inspect database and lease health.
+            impact: Queued Tasks may wait longer and new reservations may stop.
+            action: Inspect PostgreSQL, lease conflicts and Scheduler logs; keep Provider writes unchanged until recovery.
+            recovery: Automatic retry by the Scheduler loop; operator intervention is required if failures persist.
         - alert: AstraEventRelayBacklog
           expr: max by (sink) (astra_event_relay_oldest_age_seconds{status!="delivered"}) > 300
           for: 10m
@@ -79,6 +85,9 @@ spec:
           annotations:
             summary: Astra event relay backlog is stale
             description: The oldest undelivered event has exceeded five minutes.
+            impact: Redis candidates or Kafka lifecycle consumers may lag behind PostgreSQL.
+            action: Check sink connectivity, Outbox delivery leases and dead-letter backlog.
+            recovery: Automatic retry and replay; rebuild Redis only after the authoritative count check remains mismatched.
         - alert: AstraProviderSnapshotStale
           expr: astra_provider_snapshot_usable == 0
           for: 5m
@@ -88,6 +97,9 @@ spec:
           annotations:
             summary: Astra provider inventory is unusable
             description: Capacity placement and provider writes should be suppressed until a fresh snapshot is published.
+            impact: New capacity operations may be suppressed and queued Tasks can enter admission control.
+            action: Check Provider credentials, rate limits, regional inventory and snapshot quarantine reasons.
+            recovery: Automatic after a fresh usable snapshot; do not bypass the freshness gate.
         - alert: AstraCapacityAdmissionControl
           expr: increase(astra_capacity_plans_total{outcome="admission_control"}[10m]) > 0
           for: 10m
@@ -97,4 +109,7 @@ spec:
           annotations:
             summary: Astra capacity admission control is active
             description: Tasks are being held because capacity, inventory, budget or queue ETA limits were reached.
+            impact: New work may remain queued or be rejected with an explainable admission response.
+            action: Review the Capacity Plan, budget, allowed placement policies and Provider inventory before increasing limits.
+            recovery: Automatic when capacity or queue ETA returns within policy; policy changes require audited publication.
 {{- end }}

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { parse } from "yaml";
 import {
   createPublicApi,
+  createAdminApi,
   createWorkerControlApi,
   type PublicApiSecurity,
   type PublicFileUseCases,
@@ -258,6 +259,12 @@ describe("worker control API", () => {
   };
   const app = withErrorHandling(createWorkerControlApi({ ready: async () => true }, service));
 
+  test("exposes a worker trust-domain metrics endpoint", async () => {
+    const response = await app.request("http://localhost/metrics");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("astra_process_");
+  });
+
   test("implements every Worker OpenAPI operation", async () => {
     const source = await Bun.file("packages/contracts/openapi-worker.yaml").text();
     const document = z
@@ -416,5 +423,14 @@ describe("worker control API", () => {
       },
     );
     expect(invalidEvidence.status).toBe(422);
+  });
+});
+
+describe("admin API", () => {
+  test("exposes an admin trust-domain metrics endpoint without enabling sessions", async () => {
+    const app = withErrorHandling(createAdminApi({ ready: async () => true }));
+    const response = await app.request("http://localhost/metrics");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("astra_process_");
   });
 });

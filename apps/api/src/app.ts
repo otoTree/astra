@@ -693,7 +693,22 @@ export function createAdminApi(
   managementService?: AdminManagementService,
 ): Hono {
   const app = new Hono();
+  const metrics = createMetricRegistry("admin-api");
+  const requests = new Counter({
+    name: "astra_admin_api_requests_total",
+    help: "Admin API requests by route and status",
+    labelNames: ["method", "route", "status"] as const,
+    registers: [metrics],
+  });
   attachRequestId(app);
+  app.use("/admin/v1/*", async (c, next) => {
+    await next();
+    requests.inc({
+      method: c.req.method,
+      route: matchedRoutes(c).at(-1)?.path ?? "unmatched",
+      status: String(c.res.status),
+    });
+  });
   app.get("/health/live", (c) => c.json({ status: "ok", trust_domain: "admin" }));
   app.get("/health/ready", async (c) => {
     const ready = await readiness.ready();
@@ -703,6 +718,7 @@ export function createAdminApi(
     );
   });
   app.get("/admin/v1/health", (c) => c.json({ status: "ok", trust_domain: "admin" }));
+  app.get("/metrics", () => metricResponse(metrics));
   if (!security) return app;
 
   const authenticate = async (request: Request): Promise<AdminContext | Response> => {
@@ -1322,7 +1338,22 @@ export function createAdminApi(
 
 export function createWorkerControlApi(readiness: ReadinessProbe, service: WorkerControlUseCases): Hono {
   const app = new Hono();
+  const metrics = createMetricRegistry("worker-control-api");
+  const requests = new Counter({
+    name: "astra_worker_control_api_requests_total",
+    help: "Worker Control API requests by route and status",
+    labelNames: ["method", "route", "status"] as const,
+    registers: [metrics],
+  });
   attachRequestId(app);
+  app.use("/internal/v1/*", async (c, next) => {
+    await next();
+    requests.inc({
+      method: c.req.method,
+      route: matchedRoutes(c).at(-1)?.path ?? "unmatched",
+      status: String(c.res.status),
+    });
+  });
   const bearer = (request: Request): string | undefined => {
     const value = request.headers.get("authorization");
     if (!value?.startsWith("Bearer ")) return undefined;
@@ -1366,6 +1397,7 @@ export function createWorkerControlApi(readiness: ReadinessProbe, service: Worke
       ready ? 200 : 503,
     );
   });
+  app.get("/metrics", () => metricResponse(metrics));
   app.post("/internal/v1/workers/register", async (c) => {
     const token = bearer(c.req.raw);
     if (!token) return errorResponse(requestId(c.req.raw), 401, "invalid_bootstrap_token", "Invalid bootstrap token");
