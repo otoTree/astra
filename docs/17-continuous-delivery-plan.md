@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | 0 | 工程基线与 v1 合同 | 完成 | 无 |
 | 1 | Public API 完整实现 | 完成 | 0 |
-| 2 | API Key、配额、限流、审计 | 进行中 | 1 |
+| 2 | API Key、配额、限流、审计 | 完成 | 1 |
 | 3 | Admin API 与管理台只读能力 | 未开始 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 未开始 | 3 |
 | 5 | Outbox、Kafka、Redis 重建 | 未开始 | 4 |
@@ -83,8 +83,13 @@
 与 audit event，禁止删除或改写审计历史；Public API 旧版本只允许在已隔离入口中临时运行，避免恢复
 到信任调用方身份头的旧行为。修复后重新部署本批镜像并运行显式 `identity-bootstrap` 即可恢复。
 
-阶段 2 尚未完成：人员 OIDC 会话、组织/项目 RBAC 交集、CSRF 和敏感请求读取审计仍需接入
-Admin API 并完成权限矩阵测试。在这些退出项通过前，阶段 2 不标记完成，也不启动阶段 3。
+阶段 2 完成证据（2026-08-21）：
+
+- 新增 RS256 OIDC issuer/audience/时间声明验证与 JWKS 缓存；ID Token 仅能交换一次。
+- Admin API 使用数据库不透明会话、HttpOnly/SameSite Cookie、双提交 CSRF、即时吊销和独立信任域；生产强制 `Secure` 与 `__Host-` Cookie。
+- 组织和项目成员角色在每次请求时重新读取并取权限交集；敏感 Task 请求要求 `tasks:read_sensitive` 与显式读取用途。
+- 会话创建/吊销和成功审计在同一 PostgreSQL 事务提交；审计失败时状态变更回滚，会话记录禁止删除。
+- 本地身份参考服务提供真实 RS256/JWKS 合同，不连接生产身份系统。41 项普通测试、17 项 PostgreSQL 集成测试和 6 项真实 HTTP 安全测试通过。
 
 ### 阶段 3：Admin 只读面
 
@@ -158,11 +163,13 @@ Admin API 并完成权限矩阵测试。在这些退出项通过前，阶段 2 �
 
 退出条件：PostgreSQL 切换、Redis 丢失、Kafka 延迟、Worker 失联演练通过；10-50 GPU 容量满足 SLO。
 
-### 阶段 14：真实 H3/10Eros
+### 阶段 14：人类模型团队交接边界
 
-交付：固定 ComfyUI/节点/工作流/权重/VAE/LoRA hash 的独立 Model App；原始产物保真；严格 FFmpeg 解码；预加载、常驻权重、编译缓存、Attention 内核和 I/O 并行优化，不以降低 20 步采样换取默认加速。
+平台交付：语言无关 Model App Contract、合同套件、原始产物保真、严格 FFmpeg 解码、Release Manifest 与镜像预热/灰度/回滚闭环。控制面仓库、CI 和默认开发环境不下载或执行任何权重。
 
-退出条件：5090 单卡显存安全；15 秒质量基准不下降；T2VA、I2VA、首尾帧和参考媒体矩阵通过；预热、灰度、回滚和人工质量批准完成。
+人类模型团队交付：固定 ComfyUI/节点/工作流/权重/VAE/LoRA hash 的真实模型镜像；预加载、常驻权重、编译缓存、Attention 内核和 I/O 并行优化；GPU 资源与人工质量批准。平台只接收固定 OCI digest 和资产哈希清单。
+
+平台退出条件：在无权重参考实现上完成执行、取消、超时、输出 Manifest、预热、灰度和回滚合同验收，并形成可由人类填写的 GPU/质量验收清单。真实 5090 推理、15 秒质量基准、T2VA/I2VA 与参考媒体矩阵由人类模型团队签署后，候选 Release 才可进入生产。
 
 ### 阶段 15：图片与规模扩展
 

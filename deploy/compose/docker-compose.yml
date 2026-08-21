@@ -134,6 +134,24 @@ services:
     networks: [astra-local-network]
     restart: "no"
 
+  identity-reference:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/identity-reference/src/main.ts"]
+    environment:
+      ASTRA_ENV: local
+      IDENTITY_REFERENCE_PORT: 4180
+      IDENTITY_REFERENCE_ISSUER: http://identity-reference:4180
+      IDENTITY_REFERENCE_AUDIENCE: astra-admin
+    ports: ["${ASTRA_LOCAL_IDENTITY_PORT:-54180}:4180"]
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4180/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   model-app:
     build:
       context: ../..
@@ -225,10 +243,20 @@ services:
       dockerfile: deploy/compose/Dockerfile.control-plane
     command: ["bun", "run", "apps/api/src/admin.ts"]
     environment:
+      ASTRA_ENV: local
       ADMIN_API_PORT: 4101
       DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      ASTRA_REQUEST_ENCRYPTION_KEY: ${ASTRA_LOCAL_REQUEST_ENCRYPTION_KEY:?set in .env.local}
+      ASTRA_AUDIT_SIGNING_KEY: ${ASTRA_LOCAL_AUDIT_SIGNING_KEY:?set in .env.local}
+      OIDC_ISSUER: http://identity-reference:4180
+      OIDC_AUDIENCE: astra-admin
+      OIDC_JWKS_URL: http://identity-reference:4180/jwks
+      OIDC_CLOCK_SKEW_SECONDS: 60
+      ADMIN_SESSION_TTL_SECONDS: 28800
     ports: ["${ASTRA_LOCAL_ADMIN_API_PORT:?set in .env.local}:4101"]
-    depends_on: { database-migrate: { condition: service_completed_successfully } }
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+      identity-reference: { condition: service_healthy }
     networks: [astra-local-network]
 
   worker-control-api:

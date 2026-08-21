@@ -27,6 +27,13 @@ export const publicApiConfigSchema = environmentSchema.extend({
 export const adminApiConfigSchema = environmentSchema.extend({
   ADMIN_API_PORT: port(4101),
   DATABASE_URL: requiredUrl,
+  ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
+  ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
+  OIDC_ISSUER: requiredUrl,
+  OIDC_AUDIENCE: z.string().min(1).max(256),
+  OIDC_JWKS_URL: requiredUrl,
+  OIDC_CLOCK_SKEW_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
+  ADMIN_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(28800),
 });
 
 export const workerControlApiConfigSchema = environmentSchema.extend({

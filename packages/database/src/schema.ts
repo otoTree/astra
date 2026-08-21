@@ -17,6 +17,44 @@ export const projects = pgTable("projects", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
 
+export const organizationMemberships = pgTable(
+  "organization_memberships",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: text("subject_id").notNull(),
+    role: text("role").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("organization_memberships_subject_idx").on(table.subjectType, table.subjectId, table.organizationId),
+  ],
+);
+
+export const adminSessions = pgTable(
+  "admin_sessions",
+  {
+    id: text("id").primaryKey(),
+    issuer: text("issuer").notNull(),
+    subject: text("subject").notNull(),
+    email: text("email"),
+    displayName: text("display_name"),
+    oidcGroups: text("oidc_groups").array().notNull(),
+    organizationId: text("organization_id").notNull(),
+    projectId: text("project_id").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    csrfHash: text("csrf_hash").notNull(),
+    oidcTokenHash: text("oidc_token_hash").notNull().unique(),
+    status: text("status").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("admin_sessions_subject_idx").on(table.issuer, table.subject, table.createdAt, table.id)],
+);
+
 export const apiKeys = pgTable("api_keys", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id").notNull(),

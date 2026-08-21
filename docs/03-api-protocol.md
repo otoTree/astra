@@ -48,6 +48,10 @@ API Key 绑定组织和默认项目。调用方可以传 `X-Project-Id` 选择�
 
 管理台人员通过 OIDC 登录，角色至少包含 `viewer`、`operator`、`model_releaser`、`security_auditor` 和 `admin`。查看永久保存的原始请求需要单独的 `tasks:read_sensitive` 权限并写审计日志。
 
+管理端 OIDC ID Token 只允许提交到 `POST /admin/v1/sessions/exchange` 一次。服务端验证 RS256 签名、issuer、audience、有效期与成员关系后，建立数据库会话并返回 `HttpOnly`、`SameSite=Strict` 的不透明 Session Cookie；生产 Cookie 使用 `Secure` 与 `__Host-` 前缀。写操作同时校验 `X-CSRF-Token` 与独立 CSRF Cookie。权限取组织角色和当前项目角色所授权限的交集，并在每次请求时重新求值，因此成员撤销即时生效。
+
+敏感请求读取使用 `GET /admin/v1/tasks/{task_id}/sensitive-request`，要求 `tasks:read_sensitive` 与 8-500 字符的 `X-Access-Purpose`。响应禁止缓存，读取目的、人员、会话、Task 和结果必须写入不可变审计。
+
 ## 3. File API
 
 ### 3.1 申请上传

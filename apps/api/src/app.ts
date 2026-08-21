@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  AdminAuthenticationError,
+  type AdminContext,
+  type AdminPermission,
+  type AdminSessionManager,
   AuthenticationError,
   type ProjectContext,
   type PublicApiScope,
@@ -8,6 +12,7 @@ import {
 } from "@astra/auth";
 import {
   errorResponse,
+  adminSessionExchangeSchema,
   fileUploadRequestSchema,
   imageEditSchema,
   imageGenerationSchema,
@@ -31,6 +36,14 @@ export type ReadinessProbe = Readonly<{ ready(): Promise<boolean> }>;
 export type PublicApiSecurity = Readonly<{
   authenticator: PublicRequestAuthenticator;
   rateLimiter: PublicApiRateLimiter;
+}>;
+export type AdminTaskUseCases = Pick<TaskService, "get">;
+export type AdminApiSecurity = Readonly<{
+  sessions: AdminSessionManager;
+  sessionCookieName: string;
+  csrfCookieName: string;
+  secureCookies: boolean;
+  sessionTtlSeconds: number;
 }>;
 
 const generatedRequestIds = new WeakMap<Request, string>();
@@ -59,6 +72,17 @@ const idempotencyKeySchema = z
 const emptyObjectSchema = z.object({}).strict();
 
 function serviceError(request: Request, error: unknown): Response {
+  if (error instanceof AdminAuthenticationError) {
+    return errorResponse(
+      requestId(request),
+      error.status,
+      error.code,
+      error.code.replaceAll("_", " "),
+      error.status === 503,
+      undefined,
+      error.status === 401 ? { "WWW-Authenticate": 'Bearer realm="astra-admin"' } : undefined,
+    );
+  }
   if (error instanceof AuthenticationError) {
     return errorResponse(
       requestId(request),
@@ -567,7 +591,27 @@ export function createPublicApi(
   return app;
 }
 
-export function createAdminApi(readiness: ReadinessProbe): Hono {
+const adminCookie = (
+  name: string,
+  value: string,
+  options: Readonly<{ maxAge: number; secure: boolean; httpOnly: boolean }>,
+): string =>
+  [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    `Max-Age=${options.maxAge}`,
+    "SameSite=Strict",
+    options.httpOnly ? "HttpOnly" : undefined,
+    options.secure ? "Secure" : undefined,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("; ");
+
+export function createAdminApi(
+  readiness: ReadinessProbe,
+  security?: AdminApiSecurity,
+  taskService?: AdminTaskUseCases,
+): Hono {
   const app = new Hono();
   attachRequestId(app);
   app.get("/health/live", (c) => c.json({ status: "ok", trust_domain: "admin" }));
@@ -579,6 +623,149 @@ export function createAdminApi(readiness: ReadinessProbe): Hono {
     );
   });
   app.get("/admin/v1/health", (c) => c.json({ status: "ok", trust_domain: "admin" }));
+  if (!security) return app;
+
+  const authenticate = async (request: Request): Promise<AdminContext | Response> => {
+    try {
+      return await security.sessions.authenticate(request, requestId(request));
+    } catch (error) {
+      return serviceError(request, error);
+    }
+  };
+  const authorize = async (request: Request, permission: AdminPermission): Promise<AdminContext | Response> => {
+    const context = await authenticate(request);
+    if (context instanceof Response) return context;
+    try {
+      await security.sessions.authorize(context, permission, request, requestId(request));
+      return context;
+    } catch (error) {
+      return serviceError(request, error);
+    }
+  };
+
+  app.post("/admin/v1/sessions/exchange", async (c) => {
+    const parsed = await parseJson(adminSessionExchangeSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const authorization = c.req.header("authorization");
+    const idToken = authorization?.match(/^Bearer ([^\s]+)$/)?.[1] ?? "";
+    try {
+      const issued = await security.sessions.exchange(
+        idToken,
+        {
+          organizationId: parsed.value?.organization_id ?? "",
+          projectId: parsed.value?.project_id ?? "",
+        },
+        c.req.raw,
+        requestId(c.req.raw),
+      );
+      c.header(
+        "Set-Cookie",
+        adminCookie(security.sessionCookieName, issued.sessionToken, {
+          maxAge: security.sessionTtlSeconds,
+          secure: security.secureCookies,
+          httpOnly: true,
+        }),
+        { append: true },
+      );
+      c.header(
+        "Set-Cookie",
+        adminCookie(security.csrfCookieName, issued.csrfToken, {
+          maxAge: security.sessionTtlSeconds,
+          secure: security.secureCookies,
+          httpOnly: false,
+        }),
+        { append: true },
+      );
+      c.header("Cache-Control", "no-store");
+      return c.json(security.sessions.view(issued.context, issued.csrfToken), 201);
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  app.get("/admin/v1/sessions/current", async (c) => {
+    const context = await authenticate(c.req.raw);
+    if (context instanceof Response) return context;
+    c.header("Cache-Control", "no-store");
+    return c.json(security.sessions.view(context));
+  });
+
+  app.delete("/admin/v1/sessions/current", async (c) => {
+    const context = await authenticate(c.req.raw);
+    if (context instanceof Response) return context;
+    try {
+      await security.sessions.verifyCsrf(context, c.req.raw, requestId(c.req.raw));
+      await security.sessions.revoke(context, c.req.raw, requestId(c.req.raw));
+      c.header(
+        "Set-Cookie",
+        adminCookie(security.sessionCookieName, "", {
+          maxAge: 0,
+          secure: security.secureCookies,
+          httpOnly: true,
+        }),
+        { append: true },
+      );
+      c.header(
+        "Set-Cookie",
+        adminCookie(security.csrfCookieName, "", {
+          maxAge: 0,
+          secure: security.secureCookies,
+          httpOnly: false,
+        }),
+        { append: true },
+      );
+      return c.body(null, 204);
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  app.get("/admin/v1/tasks/:id/sensitive-request", async (c) => {
+    if (!taskService)
+      return errorResponse(
+        requestId(c.req.raw),
+        503,
+        "admin_task_service_unavailable",
+        "Task service unavailable",
+        true,
+      );
+    const context = await authorize(c.req.raw, "tasks:read_sensitive");
+    if (context instanceof Response) return context;
+    const purpose = c.req.header("x-access-purpose")?.trim() ?? "";
+    if (purpose.length < 8 || purpose.length > 500) {
+      return errorResponse(
+        requestId(c.req.raw),
+        400,
+        "invalid_access_purpose",
+        "X-Access-Purpose must contain 8 to 500 characters",
+        false,
+        "X-Access-Purpose",
+      );
+    }
+    const taskId = c.req.param("id");
+    try {
+      const task = await taskService.get(
+        { organizationId: context.organizationId, projectId: context.projectId },
+        taskId,
+      );
+      if (!task) {
+        await security.sessions.recordSensitiveRead(
+          context,
+          taskId,
+          purpose,
+          c.req.raw,
+          requestId(c.req.raw),
+          "failure",
+        );
+        return errorResponse(requestId(c.req.raw), 404, "task_not_found", "Task not found");
+      }
+      await security.sessions.recordSensitiveRead(context, taskId, purpose, c.req.raw, requestId(c.req.raw), "success");
+      c.header("Cache-Control", "no-store");
+      return c.json({ task_id: task.id, request: task.request, accessed_at: Math.floor(Date.now() / 1000) });
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
   return app;
 }
 

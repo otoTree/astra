@@ -6,11 +6,53 @@ info:
 servers:
   - url: https://astra-admin.internal.example/admin/v1
 security:
-  - oidc: []
+  - adminSession: []
 paths:
+  /sessions/exchange:
+    post:
+      operationId: exchangeAdminSession
+      security:
+        - oidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminSessionExchange' }
+      responses:
+        '201':
+          description: Server-side admin session created
+          headers:
+            Set-Cookie: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminSession' }
+        default: { $ref: '#/components/responses/Error' }
+  /sessions/current:
+    get:
+      operationId: getCurrentAdminSession
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: Current session and effective permissions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminSession' }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: revokeCurrentAdminSession
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Session revoked }
+        default: { $ref: '#/components/responses/Error' }
   /tasks:
     get:
       operationId: listAdminTasks
+      security:
+        - adminSession: []
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/After'
@@ -20,10 +62,27 @@ paths:
   /tasks/{task_id}:
     get:
       operationId: getAdminTask
+      security:
+        - adminSession: []
       parameters:
         - $ref: '#/components/parameters/TaskId'
       responses:
         '200': { description: Task detail and timeline }
+        default: { $ref: '#/components/responses/Error' }
+  /tasks/{task_id}/sensitive-request:
+    get:
+      operationId: getAdminTaskSensitiveRequest
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: '#/components/parameters/AccessPurpose'
+      responses:
+        '200':
+          description: Decrypted immutable Task request with audited access
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SensitiveTaskRequest' }
         default: { $ref: '#/components/responses/Error' }
   /models:
     get:
@@ -170,6 +229,10 @@ components:
     oidc:
       type: openIdConnect
       openIdConnectUrl: https://identity.internal.example/.well-known/openid-configuration
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: __Host-astra_admin_session
   parameters:
     Limit:
       name: limit
@@ -194,7 +257,56 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 8, maxLength: 128 }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 32, maxLength: 256 }
+    AccessPurpose:
+      name: X-Access-Purpose
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 500 }
   schemas:
+    AdminSessionExchange:
+      type: object
+      additionalProperties: false
+      required: [organization_id, project_id]
+      properties:
+        organization_id: { type: string, minLength: 1, maxLength: 128 }
+        project_id: { type: string, minLength: 1, maxLength: 128 }
+    AdminSession:
+      type: object
+      additionalProperties: false
+      required: [id, object, organization_id, project_id, subject, display_name, email, organization_roles, project_roles, permissions, created_at, expires_at]
+      properties:
+        id: { type: string }
+        object: { type: string, const: admin.session }
+        organization_id: { type: string }
+        project_id: { type: string }
+        subject: { type: string }
+        display_name: { type: [string, 'null'] }
+        email: { type: [string, 'null'], format: email }
+        organization_roles:
+          type: array
+          items: { type: string, enum: [viewer, operator, model_releaser, security_auditor, admin] }
+        project_roles:
+          type: array
+          items: { type: string, enum: [viewer, operator, model_releaser, security_auditor, admin] }
+        permissions:
+          type: array
+          items: { type: string }
+        csrf_token: { type: string, minLength: 32 }
+        created_at: { type: integer, minimum: 0 }
+        expires_at: { type: integer, minimum: 0 }
+    SensitiveTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [task_id, request, accessed_at]
+      properties:
+        task_id: { type: string }
+        request: { type: object, additionalProperties: true }
+        accessed_at: { type: integer, minimum: 0 }
     ReleaseCreate:
       type: object
       additionalProperties: false

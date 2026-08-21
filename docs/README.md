@@ -34,6 +34,7 @@
 8. **吞吐基于真实服务时间**：视频时长不是 GPU 服务时间；任务分配受 Release 声明的并发槽位约束，扩容由排队收益与 GPU 成本共同决定。
 9. **实验不等于生产**：ComfyUI 工作流、节点和加速方式必须固定版本并通过机械、资源和人工质量门后才能接入稳定流量。
 10. **原始产物保真**：Model App 生成的文件字节是交付事实。Worker Agent 只验证、搬运和登记，不在平台路径中转码、裁切、重采样或重新封装；任何派生格式都必须由模型镜像内部显式生成并作为独立 Release 验收。
+11. **平台闭环不持有权重**：控制面、Worker 合同、发布和容量系统必须在无真实权重环境完成验收；真实权重、模型镜像内容与推理由人类模型团队在隔离 GPU 环境交付。
 
 ## 文档索引
 
@@ -69,6 +70,7 @@
 - [ADR-0005：镜像地址驱动的逐机滚动发布](./adr/0005-image-driven-rolling-release.md)
 - [ADR-0006：模型输出字节保真与显式后处理](./adr/0006-model-output-byte-preservation.md)
 - [ADR-0007：独立媒体验证与文件过期协调](./adr/0007-isolated-media-validation-and-expiration.md)
+- [ADR-0008：真实模型运行时由人类模型团队交付](./adr/0008-human-owned-model-runtime-delivery.md)
 
 ## 核心术语
 

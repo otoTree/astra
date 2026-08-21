@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
+export * from "./admin.ts";
+
 export const publicApiScopes = [
   "generations:create",
   "tasks:read",

@@ -2,6 +2,39 @@ import { z } from "zod";
 
 export const adminRoleSchema = z.enum(["viewer", "operator", "model_releaser", "security_auditor", "admin"]);
 
+export const adminSessionExchangeSchema = z
+  .object({
+    organization_id: z.string().min(1).max(128),
+    project_id: z.string().min(1).max(128),
+  })
+  .strict();
+
+export const adminSessionSchema = z
+  .object({
+    id: z.string().min(1),
+    object: z.literal("admin.session"),
+    organization_id: z.string().min(1),
+    project_id: z.string().min(1),
+    subject: z.string().min(1),
+    display_name: z.string().nullable(),
+    email: z.string().email().nullable(),
+    organization_roles: z.array(adminRoleSchema),
+    project_roles: z.array(adminRoleSchema),
+    permissions: z.array(z.string()),
+    csrf_token: z.string().min(32).optional(),
+    created_at: z.number().int().nonnegative(),
+    expires_at: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const sensitiveTaskRequestSchema = z
+  .object({
+    task_id: z.string().min(1),
+    request: z.record(z.string(), z.unknown()),
+    accessed_at: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const versionedMutationSchema = z
   .object({
     expected_version: z.number().int().nonnegative(),

@@ -17,6 +17,7 @@ const configuration =
         files: [
           "packages/database/src/task-service.integration.test.ts",
           "packages/database/src/identity-admission.integration.test.ts",
+          "packages/database/src/admin-identity.integration.test.ts",
         ],
         env: common,
       }
@@ -36,10 +37,16 @@ const configuration =
         }
       : suite === "http"
         ? {
-            files: ["apps/api/src/public-security.integration.test.ts"],
+            files: [
+              "apps/api/src/public-security.integration.test.ts",
+              "apps/api/src/admin-security.integration.test.ts",
+            ],
             env: {
               ...common,
               ASTRA_TEST_PUBLIC_API_URL: required("PUBLIC_API_URL"),
+              ASTRA_TEST_PUBLIC_API_KEY: required("ASTRA_LOCAL_API_KEY"),
+              ASTRA_TEST_ADMIN_API_URL: required("ADMIN_API_URL"),
+              ASTRA_TEST_IDENTITY_URL: required("IDENTITY_URL"),
             },
           }
         : undefined;

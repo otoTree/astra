@@ -1,6 +1,7 @@
 import type postgres from "postgres";
 
 type SqlClient = ReturnType<typeof postgres>;
+type TransactionClient = postgres.TransactionSql;
 
 export type ApiKeyCandidate = Readonly<{
   id: string;
@@ -59,6 +60,37 @@ export type StoredApiKeyInput = Readonly<{
   createdAt: Date;
 }>;
 
+export type AdminRole = "viewer" | "operator" | "model_releaser" | "security_auditor" | "admin";
+
+export type VerifiedOidcIdentityInput = Readonly<{
+  issuer: string;
+  subject: string;
+  audience: readonly string[];
+  groups: readonly string[];
+  email: string | null;
+  displayName: string | null;
+  expiresAt: Date;
+  tokenHash: string;
+}>;
+
+export type AdminSessionRecord = Readonly<{
+  id: string;
+  issuer: string;
+  subject: string;
+  email: string | null;
+  displayName: string | null;
+  organizationId: string;
+  projectId: string;
+  organizationRoles: readonly AdminRole[];
+  projectRoles: readonly AdminRole[];
+  csrfHash: string;
+  status: "active" | "revoked";
+  organizationStatus: "active" | "suspended";
+  projectStatus: "active" | "suspended";
+  createdAt: Date | string;
+  expiresAt: Date | string;
+}>;
+
 const candidate = (row: Record<string, unknown>): ApiKeyCandidate => ({
   id: String(row.id),
   organizationId: String(row.organization_id),
@@ -71,6 +103,24 @@ const candidate = (row: Record<string, unknown>): ApiKeyCandidate => ({
   organizationStatus: row.organization_status as ApiKeyCandidate["organizationStatus"],
   projectStatus: row.project_status as ApiKeyCandidate["projectStatus"],
   grantedProjectIds: Array.isArray(row.granted_project_ids) ? row.granted_project_ids.map(String) : [],
+});
+
+const adminSession = (row: Record<string, unknown>): AdminSessionRecord => ({
+  id: String(row.id),
+  issuer: String(row.issuer),
+  subject: String(row.subject),
+  email: row.email === null || row.email === undefined ? null : String(row.email),
+  displayName: row.display_name === null || row.display_name === undefined ? null : String(row.display_name),
+  organizationId: String(row.organization_id),
+  projectId: String(row.project_id),
+  organizationRoles: (Array.isArray(row.organization_roles) ? row.organization_roles : []).map(String) as AdminRole[],
+  projectRoles: (Array.isArray(row.project_roles) ? row.project_roles : []).map(String) as AdminRole[],
+  csrfHash: String(row.csrf_hash),
+  status: row.status as AdminSessionRecord["status"],
+  organizationStatus: row.organization_status as AdminSessionRecord["organizationStatus"],
+  projectStatus: row.project_status as AdminSessionRecord["projectStatus"],
+  createdAt: row.created_at as Date | string,
+  expiresAt: row.expires_at as Date | string,
 });
 
 export class IdentityRepository {
@@ -154,5 +204,144 @@ export class IdentityRepository {
       SET status='revoked', revoked_at=${revokedAt.toISOString()}, updated_at=${revokedAt.toISOString()}
       WHERE id=${apiKeyId} AND status='active' RETURNING id`;
     return rows.length === 1;
+  }
+
+  async createAdminSession(input: {
+    id: string;
+    identity: VerifiedOidcIdentityInput;
+    organizationId: string;
+    projectId: string;
+    tokenHash: string;
+    csrfHash: string;
+    expiresAt: Date;
+    createdAt: Date;
+    auditEvent: AuditEventInput;
+  }): Promise<AdminSessionRecord> {
+    return this.sql.begin(async (transaction) => {
+      const exchanged = await transaction`SELECT id FROM admin_sessions
+        WHERE oidc_token_hash=${input.identity.tokenHash} FOR SHARE`;
+      if (exchanged.length > 0) throw new Error("oidc_token_already_exchanged");
+      const groups = [...new Set(input.identity.groups)];
+      const access = await transaction`SELECT o.status AS organization_status, p.status AS project_status,
+        ARRAY(
+          SELECT DISTINCT om.role FROM organization_memberships om
+          WHERE om.organization_id=o.id AND (
+            (om.subject_type='oidc_user' AND om.subject_id=${input.identity.subject}) OR
+            (om.subject_type='oidc_group' AND om.subject_id=ANY(${this.sql.array(groups)}::text[]))
+          ) ORDER BY om.role
+        ) AS organization_roles,
+        ARRAY(
+          SELECT DISTINCT pm.role FROM project_memberships pm
+          WHERE pm.organization_id=o.id AND pm.project_id=p.id AND (
+            (pm.subject_type='oidc_user' AND pm.subject_id=${input.identity.subject}) OR
+            (pm.subject_type='oidc_group' AND pm.subject_id=ANY(${this.sql.array(groups)}::text[]))
+          ) ORDER BY pm.role
+        ) AS project_roles
+        FROM organizations o
+        JOIN projects p ON p.id=${input.projectId} AND p.organization_id=o.id
+        WHERE o.id=${input.organizationId}
+        FOR SHARE OF o, p`;
+      const selected = access[0] as Record<string, unknown> | undefined;
+      const organizationRoles = Array.isArray(selected?.organization_roles) ? selected.organization_roles : [];
+      const projectRoles = Array.isArray(selected?.project_roles) ? selected.project_roles : [];
+      if (
+        selected?.organization_status !== "active" ||
+        selected.project_status !== "active" ||
+        organizationRoles.length === 0 ||
+        projectRoles.length === 0
+      ) {
+        throw new Error("admin_membership_denied");
+      }
+      try {
+        await transaction`INSERT INTO admin_sessions (
+          id, issuer, subject, email, display_name, oidc_groups, organization_id, project_id,
+          token_hash, csrf_hash, oidc_token_hash, status, expires_at, created_at
+        ) VALUES (
+          ${input.id}, ${input.identity.issuer}, ${input.identity.subject}, ${input.identity.email},
+          ${input.identity.displayName}, ${this.sql.array(groups)}, ${input.organizationId}, ${input.projectId},
+          ${input.tokenHash}, ${input.csrfHash}, ${input.identity.tokenHash}, 'active',
+          ${input.expiresAt.toISOString()}, ${input.createdAt.toISOString()}
+        )`;
+        await this.insertAuditEventWith(transaction, input.auditEvent);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "23505") {
+          throw new Error("oidc_token_already_exchanged");
+        }
+        throw error;
+      }
+      return adminSession({
+        id: input.id,
+        issuer: input.identity.issuer,
+        subject: input.identity.subject,
+        email: input.identity.email,
+        display_name: input.identity.displayName,
+        organization_id: input.organizationId,
+        project_id: input.projectId,
+        organization_roles: organizationRoles,
+        project_roles: projectRoles,
+        csrf_hash: input.csrfHash,
+        status: "active",
+        organization_status: selected.organization_status,
+        project_status: selected.project_status,
+        created_at: input.createdAt,
+        expires_at: input.expiresAt,
+      });
+    });
+  }
+
+  async findAdminSession(tokenHash: string): Promise<AdminSessionRecord | undefined> {
+    const rows = await this.sql`SELECT s.*, o.status AS organization_status, p.status AS project_status,
+      ARRAY(
+        SELECT DISTINCT om.role FROM organization_memberships om
+        WHERE om.organization_id=s.organization_id AND (
+          (om.subject_type='oidc_user' AND om.subject_id=s.subject) OR
+          (om.subject_type='oidc_group' AND om.subject_id=ANY(s.oidc_groups))
+        ) ORDER BY om.role
+      ) AS organization_roles,
+      ARRAY(
+        SELECT DISTINCT pm.role FROM project_memberships pm
+        WHERE pm.organization_id=s.organization_id AND pm.project_id=s.project_id AND (
+          (pm.subject_type='oidc_user' AND pm.subject_id=s.subject) OR
+          (pm.subject_type='oidc_group' AND pm.subject_id=ANY(s.oidc_groups))
+        ) ORDER BY pm.role
+      ) AS project_roles
+      FROM admin_sessions s
+      JOIN organizations o ON o.id=s.organization_id
+      JOIN projects p ON p.id=s.project_id AND p.organization_id=s.organization_id
+      WHERE s.token_hash=${tokenHash}
+      LIMIT 1`;
+    return rows[0] ? adminSession(rows[0] as Record<string, unknown>) : undefined;
+  }
+
+  async touchAdminSession(sessionId: string, usedAt: Date): Promise<void> {
+    await this.sql`UPDATE admin_sessions SET last_seen_at=${usedAt.toISOString()}
+      WHERE id=${sessionId} AND status='active'
+        AND (last_seen_at IS NULL OR last_seen_at < ${new Date(usedAt.getTime() - 5 * 60 * 1000).toISOString()})`;
+  }
+
+  async revokeAdminSession(sessionId: string, revokedAt: Date, auditEvent: AuditEventInput): Promise<boolean> {
+    return this.sql.begin(async (transaction) => {
+      const rows = await transaction`UPDATE admin_sessions
+        SET status='revoked', revoked_at=${revokedAt.toISOString()}
+        WHERE id=${sessionId} AND status='active' RETURNING id`;
+      if (rows.length === 0) return false;
+      await this.insertAuditEventWith(transaction, auditEvent);
+      return true;
+    });
+  }
+
+  private async insertAuditEventWith(sql: SqlClient | TransactionClient, event: AuditEventInput): Promise<void> {
+    await sql`INSERT INTO audit_events (
+      id, actor_type, actor_id, api_key_id, organization_id, project_id, action,
+      resource_type, resource_id, outcome, reason_code, source_ip, user_agent,
+      request_id, trace_id, purpose, details, signature, created_at
+    ) VALUES (
+      ${event.id}, ${event.actorType}, ${event.actorId ?? null}, ${event.apiKeyId ?? null},
+      ${event.organizationId ?? null}, ${event.projectId ?? null}, ${event.action},
+      ${event.resourceType ?? null}, ${event.resourceId ?? null}, ${event.outcome},
+      ${event.reasonCode ?? null}, ${event.sourceIp ?? null}, ${event.userAgent ?? null},
+      ${event.requestId}, ${event.traceId ?? null}, ${event.purpose ?? null},
+      ${JSON.stringify(event.details ?? {})}, ${event.signature}, ${event.createdAt.toISOString()}
+    )`;
   }
 }
