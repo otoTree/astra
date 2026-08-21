@@ -132,6 +132,10 @@ describe("Admin API OIDC and session HTTP contract", () => {
       "regions",
       "inventory",
       "audit-events",
+      "aliases",
+      "policies",
+      "policy-previews",
+      "release-approvals",
     ];
     for (const path of paths) {
       const response = await fetch(`${adminApiUrl}/admin/v1/${path}?limit=2`, { headers: { cookie: admin.cookie } });
@@ -155,6 +159,100 @@ describe("Admin API OIDC and session HTTP contract", () => {
     }
     expect((await fetch(`${adminApiUrl}/admin/v1/cost-summary`, { headers: { cookie: admin.cookie } })).status).toBe(
       200,
+    );
+  });
+
+  integrationTest("enforces CSRF, idempotency and version preconditions for Release management", async () => {
+    const admin = await exchange(await issueToken());
+    expect(admin.response.status).toBe(201);
+    const suffix = randomUUID().replaceAll("-", "");
+    const key = `create-model-${suffix}`;
+    const modelBody = {
+      alias: `managed-video-${suffix}`,
+      modality: "video",
+      description: "HTTP management contract",
+      reason: "Create model through management contract",
+    };
+    const withoutCsrf = await fetch(`${adminApiUrl}/admin/v1/models`, {
+      method: "POST",
+      headers: { cookie: admin.cookie, "content-type": "application/json", "idempotency-key": key },
+      body: JSON.stringify(modelBody),
+    });
+    expect(withoutCsrf.status).toBe(403);
+    const headers = {
+      cookie: admin.cookie,
+      "content-type": "application/json",
+      "x-csrf-token": String(admin.body.csrf_token),
+    };
+    const created = await fetch(`${adminApiUrl}/admin/v1/models`, {
+      method: "POST",
+      headers: { ...headers, "idempotency-key": key },
+      body: JSON.stringify(modelBody),
+    });
+    expect(created.status).toBe(201);
+    expect(created.headers.get("idempotency-replayed")).toBe("false");
+    const model = (await created.json()) as { id: string; alias: string };
+    const replay = await fetch(`${adminApiUrl}/admin/v1/models`, {
+      method: "POST",
+      headers: { ...headers, "idempotency-key": key },
+      body: JSON.stringify(modelBody),
+    });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(((await replay.json()) as { id: string }).id).toBe(model.id);
+
+    const failedPrecondition = await fetch(`${adminApiUrl}/admin/v1/models/${model.id}`, {
+      method: "PATCH",
+      headers: { ...headers, "idempotency-key": `update-model-${suffix}`, "if-match": '"2"' },
+      body: JSON.stringify({
+        expected_version: 1,
+        status: "active",
+        description: "changed",
+        reason: "Update model description",
+      }),
+    });
+    expect(failedPrecondition.status).toBe(409);
+
+    const release = await fetch(`${adminApiUrl}/admin/v1/releases`, {
+      method: "POST",
+      headers: { ...headers, "idempotency-key": `release-${suffix}` },
+      body: JSON.stringify({
+        model_id: model.id,
+        source_image: "registry-reference:5000/astra/model-app:local",
+        workflow_hash: "a".repeat(64),
+        maturity: "candidate",
+        manifest: {
+          worker_contract_version: "v1",
+          modalities: ["video"],
+          operations: ["generation"],
+          capabilities: { durations: [15] },
+          parameter_schema: { type: "object", additionalProperties: false },
+          output_contract: { media_types: ["video/mp4"], preserve_original_bytes: true },
+          resource_requirements: { gpu_skus: ["rtx5090"], gpu_memory_bytes: 34359738368, concurrency: 1 },
+          components: [{ name: "model-app", commit: "1234567" }],
+          weights: [{ logical_name: "video-model", sha256: "b".repeat(64), size_bytes: 1 }],
+        },
+        reason: "Resolve and register candidate image",
+      }),
+    });
+    expect(release.status).toBe(201);
+    const releaseBody = (await release.json()) as {
+      id: string;
+      source_image: string;
+      image_digest: string;
+      status: string;
+    };
+    expect(releaseBody.source_image).toBe("registry-reference:5000/astra/model-app:local");
+    expect(releaseBody.image_digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(releaseBody.status).toBe("draft");
+    const approval = await fetch(`${adminApiUrl}/admin/v1/releases/${releaseBody.id}/approval`, {
+      method: "POST",
+      headers: { ...headers, "idempotency-key": `approve-${suffix}`, "if-match": '"1"' },
+      body: JSON.stringify({ expected_version: 1, decision: "approve", reason: "Approve verified contract image" }),
+    });
+    expect(approval.status).toBe(200);
+    expect(await approval.json()).toEqual(
+      expect.objectContaining({ id: releaseBody.id, status: "approved", version: 2 }),
     );
   });
 });

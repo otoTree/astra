@@ -34,6 +34,11 @@ export const adminApiConfigSchema = environmentSchema.extend({
   OIDC_JWKS_URL: requiredUrl,
   OIDC_CLOCK_SKEW_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
   ADMIN_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(28800),
+  OCI_REGISTRY_ALLOW_PLAIN_HTTP: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  OCI_REGISTRY_BEARER_TOKEN: z.string().min(16).optional(),
 });
 
 export const workerControlApiConfigSchema = environmentSchema.extend({

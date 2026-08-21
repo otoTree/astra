@@ -8,6 +8,7 @@ export * from "./file-repository.ts";
 export * from "./asset-expiration.ts";
 export * from "./identity-repository.ts";
 export * from "./admin-query-service.ts";
+export * from "./admin-management-service.ts";
 
 export function createDatabase(databaseUrl: string) {
   const client = postgres(databaseUrl, { prepare: false });

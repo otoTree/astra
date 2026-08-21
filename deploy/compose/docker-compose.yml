@@ -152,6 +152,21 @@ services:
       timeout: 5s
       retries: 20
 
+  registry-reference:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/registry-reference/src/main.ts"]
+    environment:
+      ASTRA_ENV: local
+      REGISTRY_REFERENCE_PORT: 5000
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5000/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   model-app:
     build:
       context: ../..
@@ -253,10 +268,12 @@ services:
       OIDC_JWKS_URL: http://identity-reference:4180/jwks
       OIDC_CLOCK_SKEW_SECONDS: 60
       ADMIN_SESSION_TTL_SECONDS: 28800
+      OCI_REGISTRY_ALLOW_PLAIN_HTTP: "true"
     ports: ["${ASTRA_LOCAL_ADMIN_API_PORT:?set in .env.local}:4101"]
     depends_on:
       database-migrate: { condition: service_completed_successfully }
       identity-reference: { condition: service_healthy }
+      registry-reference: { condition: service_healthy }
     networks: [astra-local-network]
 
   worker-control-api:

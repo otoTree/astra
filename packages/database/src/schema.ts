@@ -212,13 +212,21 @@ export const leases = pgTable("leases", {
 
 export const modelReleases = pgTable("model_releases", {
   id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
   modelId: text("model_id").notNull(),
   alias: text("alias").notNull(),
   maturity: text("maturity").notNull(),
+  sourceImage: text("source_image").notNull(),
   imageDigest: text("image_digest").notNull(),
   workflowHash: text("workflow_hash").notNull(),
   manifest: jsonb("manifest").notNull(),
+  manifestDigest: text("manifest_digest").notNull(),
+  manifestMediaType: text("manifest_media_type").notNull(),
+  configDigest: text("config_digest").notNull(),
+  status: text("status").notNull(),
+  version: integer("version").notNull(),
   acceptNewTasks: boolean("accept_new_tasks").notNull().default(false),
+  createdBy: text("created_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 
@@ -289,9 +297,12 @@ export const taskFiles = pgTable("task_files", {
 
 export const models = pgTable("models", {
   id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
   alias: text("alias").notNull().unique(),
   modality: text("modality").notNull(),
+  description: text("description").notNull(),
   status: text("status").notNull(),
+  version: integer("version").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
@@ -323,6 +334,7 @@ export const providerInventory = pgTable("provider_inventory", {
 
 export const modelPools = pgTable("model_pools", {
   id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
   releaseId: text("release_id").notNull(),
   provider: text("provider").notNull(),
   regionId: text("region_id").notNull(),
@@ -330,8 +342,81 @@ export const modelPools = pgTable("model_pools", {
   executionMode: text("execution_mode").notNull(),
   status: text("status").notNull(),
   version: integer("version").notNull(),
+  createdBy: text("created_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const adminIdempotencyRecords = pgTable(
+  "admin_idempotency_records",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    endpoint: text("endpoint").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id").notNull(),
+    responseStatus: integer("response_status").notNull(),
+    responseBody: jsonb("response_body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("admin_idempotency_project_endpoint_key").on(table.projectId, table.endpoint, table.idempotencyKey),
+  ],
+);
+
+export const modelAliasVersions = pgTable("model_alias_versions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  alias: text("alias").notNull(),
+  modelId: text("model_id").notNull(),
+  releaseId: text("release_id").notNull(),
+  version: integer("version").notNull(),
+  status: text("status").notNull(),
+  reason: text("reason").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const releaseApprovals = pgTable("release_approvals", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  releaseId: text("release_id").notNull(),
+  releaseVersion: integer("release_version").notNull(),
+  decision: text("decision").notNull(),
+  reason: text("reason").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const policyVersions = pgTable("policy_versions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  poolId: text("pool_id").notNull(),
+  policyType: text("policy_type").notNull(),
+  version: integer("version").notNull(),
+  status: text("status").notNull(),
+  configuration: jsonb("configuration").notNull(),
+  validation: jsonb("validation").notNull(),
+  reason: text("reason").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+});
+
+export const policyImpactPreviews = pgTable("policy_impact_previews", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  policyVersionId: text("policy_version_id").notNull(),
+  policyVersion: integer("policy_version").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  impact: jsonb("impact").notNull(),
+  reason: text("reason").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
 export const replicas = pgTable("replicas", {
@@ -367,6 +452,7 @@ export const workers = pgTable("workers", {
 
 export const providerOperations = pgTable("provider_operations", {
   id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
   provider: text("provider").notNull(),
   operationKey: text("operation_key").notNull().unique(),
   operationType: text("operation_type").notNull(),

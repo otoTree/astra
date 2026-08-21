@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import "./styles.css";
 
 type Row = Record<string, unknown>;
@@ -11,6 +11,37 @@ const api = async <T,>(path: string): Promise<T> => {
   const response = await fetch(path, { credentials: "include", headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(response.status === 401 ? "session_required" : `request_failed:${response.status}`);
   return (await response.json()) as T;
+};
+const cookie = (name: string): string => {
+  const prefix = `${name}=`;
+  const value = document.cookie
+    .split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : "";
+};
+const mutate = async <T,>(
+  path: string,
+  method: "POST" | "PATCH",
+  body: unknown,
+  idempotencyKey: string,
+  version?: number,
+): Promise<T> => {
+  const response = await fetch(path, {
+    method,
+    credentials: "include",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "idempotency-key": idempotencyKey,
+      "x-csrf-token": cookie("astra_admin_csrf") || cookie("__Host-astra_admin_csrf"),
+      ...(version === undefined ? {} : { "if-match": `"${version}"` }),
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = (await response.json().catch(() => ({}))) as T & { error?: { code?: string } };
+  if (!response.ok) throw new Error(payload.error?.code ?? `request_failed:${response.status}`);
+  return payload;
 };
 const text = (value: unknown, fallback = "-"): string =>
   value === null || value === undefined || value === "" ? fallback : String(value);
@@ -237,6 +268,495 @@ function Overview() {
   );
 }
 
+const workflowHash = "0".repeat(64);
+const weightHash = "0".repeat(64);
+const releaseManifest = JSON.stringify(
+  {
+    worker_contract_version: "v1",
+    modalities: ["video"],
+    operations: ["generation"],
+    capabilities: { durations: [4, 6, 10, 15] },
+    parameter_schema: { type: "object", additionalProperties: false },
+    output_contract: { media_types: ["video/mp4"], preserve_original_bytes: true },
+    resource_requirements: { gpu_skus: ["rtx5090"], gpu_memory_bytes: 34359738368, concurrency: 1 },
+    components: [],
+    weights: [{ logical_name: "model", sha256: weightHash, size_bytes: 1 }],
+  },
+  null,
+  2,
+);
+
+function ManagementWorkbench() {
+  const [result, setResult] = useState<Row | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (operation: () => Promise<Row>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await operation());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "operation_failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const submitModel = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    void run(() =>
+      mutate<Row>(
+        "/admin/v1/models",
+        "POST",
+        {
+          alias: values.get("alias"),
+          modality: values.get("modality"),
+          description: values.get("description"),
+          reason: values.get("reason"),
+        },
+        crypto.randomUUID(),
+      ),
+    );
+  };
+  const submitRelease = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    void run(() =>
+      mutate<Row>(
+        "/admin/v1/releases",
+        "POST",
+        {
+          model_id: values.get("model_id"),
+          source_image: values.get("source_image"),
+          workflow_hash: values.get("workflow_hash"),
+          maturity: values.get("maturity"),
+          manifest: JSON.parse(String(values.get("manifest"))),
+          reason: values.get("reason"),
+        },
+        crypto.randomUUID(),
+      ),
+    );
+  };
+  const submitPool = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    void run(() =>
+      mutate<Row>(
+        "/admin/v1/pools",
+        "POST",
+        {
+          release_id: values.get("release_id"),
+          provider: values.get("provider"),
+          region_id: values.get("region_id"),
+          gpu_sku: values.get("gpu_sku"),
+          execution_mode: values.get("execution_mode"),
+          reason: values.get("reason"),
+        },
+        crypto.randomUUID(),
+      ),
+    );
+  };
+  const submitPolicy = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    void run(() =>
+      mutate<Row>(
+        "/admin/v1/policies/validate",
+        "POST",
+        {
+          policy_type: values.get("policy_type"),
+          pool_id: values.get("pool_id"),
+          configuration: JSON.parse(String(values.get("configuration"))),
+          reason: values.get("reason"),
+        },
+        crypto.randomUUID(),
+      ),
+    );
+  };
+  const submitVersionChange = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const resource = String(values.get("resource"));
+    const resourceId = String(values.get("resource_id"));
+    const version = Number(values.get("expected_version"));
+    const reason = values.get("reason");
+    const body =
+      resource === "models"
+        ? {
+            expected_version: version,
+            status: values.get("status"),
+            description: values.get("description"),
+            reason,
+          }
+        : { expected_version: version, status: values.get("status"), reason };
+    void run(() => mutate<Row>(`/admin/v1/${resource}/${resourceId}`, "PATCH", body, crypto.randomUUID(), version));
+  };
+  const submitApproval = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const version = Number(values.get("expected_version"));
+    void run(() =>
+      mutate<Row>(
+        `/admin/v1/releases/${String(values.get("release_id"))}/approval`,
+        "POST",
+        { expected_version: version, decision: values.get("decision"), reason: values.get("reason") },
+        crypto.randomUUID(),
+        version,
+      ),
+    );
+  };
+  const submitAlias = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const version = Number(values.get("expected_version"));
+    void run(() =>
+      mutate<Row>(
+        `/admin/v1/aliases/${String(values.get("alias"))}/switch`,
+        "POST",
+        {
+          model_id: values.get("model_id"),
+          release_id: values.get("release_id"),
+          expected_version: version,
+          reason: values.get("reason"),
+        },
+        crypto.randomUUID(),
+        version,
+      ),
+    );
+  };
+  const submitRollback = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const version = Number(values.get("expected_current_version"));
+    void run(() =>
+      mutate<Row>(
+        `/admin/v1/pools/${String(values.get("pool_id"))}/policies/${String(values.get("policy_type"))}/rollback`,
+        "POST",
+        {
+          expected_current_version: version,
+          target_policy_id: values.get("target_policy_id"),
+          reason: values.get("reason"),
+        },
+        crypto.randomUUID(),
+        version,
+      ),
+    );
+  };
+  const preview = () => {
+    if (result?.object !== "policy.version") return;
+    void run(() =>
+      mutate<Row>(
+        `/admin/v1/policies/${text(result.id)}/impact-previews`,
+        "POST",
+        {
+          expected_policy_version: Number(result.version),
+          horizon_seconds: 3600,
+          reason: "Preview validated policy impact",
+        },
+        crypto.randomUUID(),
+        Number(result.version),
+      ),
+    );
+  };
+  const publish = () => {
+    if (result?.object !== "policy.impact_preview") return;
+    void run(() =>
+      mutate<Row>(
+        `/admin/v1/policies/${text(result.policy_version_id)}/publish`,
+        "POST",
+        {
+          expected_policy_version: Number(result.policy_version),
+          preview_id: result.id,
+          reason: "Publish reviewed policy version",
+        },
+        crypto.randomUUID(),
+        Number(result.policy_version),
+      ),
+    );
+  };
+  return (
+    <section className="band">
+      <div className="section-title">
+        <h2>控制面配置</h2>
+      </div>
+      <div className="form-grid">
+        <form onSubmit={submitModel}>
+          <h3>Model</h3>
+          <label>
+            Alias
+            <input required name="alias" />
+          </label>
+          <label>
+            模态
+            <select name="modality">
+              <option value="video">video</option>
+              <option value="image">image</option>
+            </select>
+          </label>
+          <label>
+            描述
+            <input name="description" />
+          </label>
+          <label>
+            变更原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            创建
+          </button>
+        </form>
+        <form onSubmit={submitRelease}>
+          <h3>Release</h3>
+          <label>
+            Model ID
+            <input required name="model_id" />
+          </label>
+          <label>
+            镜像地址
+            <input required name="source_image" placeholder="registry/team/model:tag" />
+          </label>
+          <label>
+            工作流 SHA-256
+            <input required name="workflow_hash" defaultValue={workflowHash} />
+          </label>
+          <label>
+            成熟度
+            <select name="maturity">
+              <option value="candidate">candidate</option>
+              <option value="stable">stable</option>
+            </select>
+          </label>
+          <label className="wide">
+            Manifest
+            <textarea required name="manifest" defaultValue={releaseManifest} />
+          </label>
+          <label>
+            变更原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            解析并创建
+          </button>
+        </form>
+        <form onSubmit={submitPool}>
+          <h3>Pool</h3>
+          <label>
+            Release ID
+            <input required name="release_id" />
+          </label>
+          <label>
+            Provider
+            <input required name="provider" defaultValue="reference" />
+          </label>
+          <label>
+            区域
+            <input required name="region_id" defaultValue="region_local" />
+          </label>
+          <label>
+            GPU SKU
+            <input required name="gpu_sku" defaultValue="rtx5090" />
+          </label>
+          <label>
+            模式
+            <select name="execution_mode">
+              <option value="deployment">deployment</option>
+              <option value="batch">batch</option>
+            </select>
+          </label>
+          <label>
+            变更原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            创建
+          </button>
+        </form>
+        <form onSubmit={submitPolicy}>
+          <h3>Policy</h3>
+          <label>
+            Pool ID
+            <input required name="pool_id" />
+          </label>
+          <label>
+            类型
+            <select name="policy_type">
+              <option value="capacity">capacity</option>
+              <option value="budget">budget</option>
+              <option value="region">region</option>
+              <option value="retry">retry</option>
+            </select>
+          </label>
+          <label className="wide">
+            配置
+            <textarea
+              required
+              name="configuration"
+              defaultValue={JSON.stringify(
+                {
+                  min_replicas: 0,
+                  max_replicas: 10,
+                  queue_target_seconds: 60,
+                  target_utilization_percent: 75,
+                  scale_up_step: 2,
+                  scale_down_step_percent: 10,
+                  idle_window_seconds: 900,
+                  scale_down_cooldown_seconds: 1200,
+                  hysteresis_percent: 10,
+                },
+                null,
+                2,
+              )}
+            />
+          </label>
+          <label>
+            变更原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            校验
+          </button>
+        </form>
+        <form onSubmit={submitVersionChange}>
+          <h3>资源状态</h3>
+          <label>
+            资源
+            <select name="resource">
+              <option value="models">Model</option>
+              <option value="pools">Pool</option>
+            </select>
+          </label>
+          <label>
+            资源 ID
+            <input required name="resource_id" />
+          </label>
+          <label>
+            当前版本
+            <input required name="expected_version" type="number" min="1" defaultValue="1" />
+          </label>
+          <label>
+            状态
+            <select name="status">
+              <option value="active">active</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label>
+            描述
+            <input name="description" />
+          </label>
+          <label>
+            变更原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            更新
+          </button>
+        </form>
+        <form onSubmit={submitApproval}>
+          <h3>Release 审批</h3>
+          <label>
+            Release ID
+            <input required name="release_id" />
+          </label>
+          <label>
+            当前版本
+            <input required name="expected_version" type="number" min="1" defaultValue="1" />
+          </label>
+          <label>
+            决定
+            <select name="decision">
+              <option value="approve">approve</option>
+              <option value="reject">reject</option>
+            </select>
+          </label>
+          <label>
+            审批原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            提交审批
+          </button>
+        </form>
+        <form onSubmit={submitAlias}>
+          <h3>Alias</h3>
+          <label>
+            Alias
+            <input required name="alias" />
+          </label>
+          <label>
+            Model ID
+            <input required name="model_id" />
+          </label>
+          <label>
+            Release ID
+            <input required name="release_id" />
+          </label>
+          <label>
+            当前版本
+            <input required name="expected_version" type="number" min="0" defaultValue="0" />
+          </label>
+          <label>
+            切换原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            切换
+          </button>
+        </form>
+        <form onSubmit={submitRollback}>
+          <h3>Policy 回滚</h3>
+          <label>
+            Pool ID
+            <input required name="pool_id" />
+          </label>
+          <label>
+            类型
+            <select name="policy_type">
+              <option value="capacity">capacity</option>
+              <option value="budget">budget</option>
+              <option value="region">region</option>
+              <option value="retry">retry</option>
+            </select>
+          </label>
+          <label>
+            当前版本
+            <input required name="expected_current_version" type="number" min="1" />
+          </label>
+          <label>
+            目标 Policy ID
+            <input required name="target_policy_id" />
+          </label>
+          <label>
+            回滚原因
+            <input required minLength={8} name="reason" />
+          </label>
+          <button className="primary" disabled={busy} type="submit">
+            回滚
+          </button>
+        </form>
+      </div>
+      {(result || error) && (
+        <div className={`operation-result ${error ? "operation-error" : ""}`}>
+          <div className="section-title">
+            <h2>{error ? "操作失败" : "操作结果"}</h2>
+          </div>
+          {error ? <code>{error}</code> : <pre>{JSON.stringify(result, null, 2)}</pre>}
+          {result?.object === "policy.version" && (
+            <button type="button" className="secondary" onClick={preview}>
+              影响预览
+            </button>
+          )}
+          {result?.object === "policy.impact_preview" && (
+            <button type="button" className="primary" onClick={publish}>
+              发布策略
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authError, setAuthError] = useState(false);
@@ -353,6 +873,7 @@ function App() {
         )}
         {view === "releases" && (
           <>
+            {session.permissions.includes("releases:write") && <ManagementWorkbench />}
             <ResourceTable
               title="Release"
               path="/admin/v1/releases"
@@ -379,7 +900,9 @@ function App() {
 }
 const root = document.getElementById("root");
 if (!root) throw new Error("admin_web_root_missing");
-createRoot(root).render(
+const reactRoot: Root = import.meta.hot?.data.reactRoot ?? createRoot(root);
+if (import.meta.hot) import.meta.hot.data.reactRoot = reactRoot;
+reactRoot.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,

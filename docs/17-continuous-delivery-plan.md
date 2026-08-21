@@ -17,8 +17,8 @@
 | 1 | Public API 完整实现 | 完成 | 0 |
 | 2 | API Key、配额、限流、审计 | 完成 | 1 |
 | 3 | Admin API 与管理台只读能力 | 完成 | 2 |
-| 4 | Model/Release/Pool/Policy 写能力 | 未开始 | 3 |
-| 5 | Outbox、Kafka、Redis 重建 | 未开始 | 4 |
+| 4 | Model/Release/Pool/Policy 写能力 | 完成 | 3 |
+| 5 | Outbox、Kafka、Redis 重建 | 进行中 | 4 |
 | 6 | 最小确定性调度与租约 | 未开始 | 5 |
 | 7 | Worker Control 与 Agent 执行环 | 未开始 | 6 |
 | 8 | 共绩 Transport 与只读快照 | 未开始 | 7 |
@@ -112,6 +112,18 @@
 交付：Model、Release、Alias、Pool、区域/预算/容量策略；镜像 tag 解析固定 digest；Release Manifest/Schema/权重/工作流/资源合同；`validate -> impact_preview -> publish`；审批与一键回滚。
 
 退出条件：mutable tag 不改变既有 Release；缺策略版本不能接流量；所有写操作有 CAS、幂等、RBAC、审计和管理台差异预览。
+
+阶段 4 完成证据（2026-08-21）：
+
+- Admin Contract 与实现已覆盖 Model、Release、审批、Pool、四类策略、影响预览、发布、回滚和 Alias 切换；写请求统一要求管理权限、CSRF、`Idempotency-Key`、原因和适用的 `If-Match` 版本条件。
+- Release 创建通过 OCI Distribution API 解析 tag，并校验 `Docker-Content-Digest` 与 Manifest 原始字节 SHA-256 一致后固定 digest；幂等重放直接返回首次结果，不再次解析 mutable tag。
+- PostgreSQL 保存 source image、固定 digest、Manifest/Config digest、审批、Alias 版本、策略版本、不可变影响预览和管理幂等响应。数据库触发器禁止改写 Release 元数据、策略配置、审批、预览、Alias 历史和幂等历史。
+- Pool 默认 disabled；Release 必须审批后才能建池，四类策略必须完成 `validate -> impact_preview -> publish` 后 Pool/Alias 才能激活生产流量。
+- 本地 Registry Contract 提供标准 OCI Manifest 与 Config 响应，不包含镜像 layer、模型运行时或任何权重文件；Release Manifest 只登记权重逻辑名、大小和哈希元数据。
+- Admin Web 已提供镜像地址输入、digest 结果、Model/Release/Pool、资源状态、审批、策略预览/发布/回滚和 Alias 切换操作面。桌面和 390px 浏览器验收无页面级横向溢出，管理写入成功，复查期控制台无错误。
+- 验收通过 strict TypeScript、Biome、OpenAPI、迁移 checksum、OCI 摘要单元测试、22 项 PostgreSQL 集成测试与 8 项真实 HTTP 安全/管理合同测试。
+
+本阶段新增并已应用迁移 `0008_admin_management.sql`（checksum `dc83e986c987430ef18cdb399742bfabb0e09abfc008053abce97acb207b4c21`）与 `0009_admin_history_guards.sql`（checksum `95f1ce786db6bc601480ba970dcb5290891d3361b7e1ab4534437ba2a3a5acb3`），后续禁止修改。回滚采用应用回滚：新增表和不可变历史继续保留，旧应用忽略新增字段；不得通过降级迁移删除审批、策略、Alias、幂等或审计历史。
 
 ## 4. 执行与 Provider 阶段
 

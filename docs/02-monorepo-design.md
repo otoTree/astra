@@ -23,7 +23,8 @@ astra/
 │   ├── provider-controller/   # Provider Reconcile、镜像 Rollout 与共绩 API
 │   ├── event-relay/           # PostgreSQL Outbox -> Kafka/Redis
 │   ├── worker-agent/          # 部署到 GPU 实例的标准出站代理
-│   └── admin-web/             # React 运维管理台
+│   ├── admin-web/             # React 运维管理台
+│   └── registry-reference/    # 仅本地 OCI Distribution 合同参考服务
 ├── packages/
 │   ├── contracts/             # 公共、内部、Worker、Provider Schema
 │   ├── database/              # Drizzle schema、迁移和事务 helper
@@ -108,6 +109,12 @@ astra/
 - 模型发布表单以镜像地址为主要输入，展示平台解析后的 digest、Manifest、目标池和逐机进度。
 - 高风险操作显示当前版本、目标版本和影响范围。
 - Task 原始请求的查看属于敏感操作，必须单独权限并产生审计事件。
+
+### `apps/registry-reference`
+
+- 只在 local/test 环境启动，提供标准 OCI Manifest 与 Config 查询响应，用于验证 tag 到 digest 的固定流程。
+- 不提供模型镜像 layer，不包含或下载模型、VAE、LoRA、文本编码器权重，也不执行模型推理。
+- 生产环境必须连接受信任的企业 OCI Registry，并验证认证、签名、Manifest 原始字节摘要和固定 digest。
 
 ## 4. 包边界与依赖规则
 

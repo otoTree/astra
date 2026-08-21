@@ -78,6 +78,14 @@
         "@astra/provider-core": "workspace:*",
       },
     },
+    "apps/registry-reference": {
+      "name": "@astra/registry-reference",
+      "version": "0.1.0",
+      "dependencies": {
+        "hono": "^4.7.2",
+        "zod": "^3.25.76",
+      },
+    },
     "apps/scheduler": {
       "name": "@astra/scheduler",
       "version": "0.1.0",
@@ -198,6 +206,8 @@
     "@astra/queue": ["@astra/queue@workspace:packages/queue"],
 
     "@astra/reference-model-app": ["@astra/reference-model-app@workspace:model-workers/reference"],
+
+    "@astra/registry-reference": ["@astra/registry-reference@workspace:apps/registry-reference"],
 
     "@astra/scheduler": ["@astra/scheduler@workspace:apps/scheduler"],
 

@@ -14,16 +14,36 @@ import {
   errorResponse,
   adminSessionExchangeSchema,
   adminListQuerySchema,
+  aliasSwitchSchema,
+  budgetPolicyConfigurationSchema,
+  capacityPolicyConfigurationSchema,
   fileUploadRequestSchema,
   imageEditSchema,
   imageGenerationSchema,
   modelListQuerySchema,
+  modelCreateSchema,
+  modelUpdateSchema,
+  policyImpactPreviewSchema,
+  policyPublishSchema,
+  policyRollbackSchema,
+  policyValidationSchema,
+  poolCreateSchema,
+  poolUpdateSchema,
+  regionPolicyConfigurationSchema,
+  releaseApprovalSchema,
+  releaseCreateSchema,
+  retryPolicyConfigurationSchema,
   taskListQuerySchema,
   taskStatusSchema,
   videoEditSchema,
   videoGenerationSchema,
 } from "@astra/contracts";
-import type { AdminQueryService, TaskService } from "@astra/database";
+import {
+  AdminManagementError,
+  type AdminManagementService,
+  type AdminQueryService,
+  type TaskService,
+} from "@astra/database";
 import { Counter, Histogram, createMetricRegistry, metricResponse } from "@astra/observability";
 import { RateLimiterUnavailableError, type PublicApiRateLimiter, type RateLimitCategory } from "@astra/queue";
 import { matchedRoutes } from "hono/route";
@@ -82,6 +102,15 @@ function serviceError(request: Request, error: unknown): Response {
       error.status === 503,
       undefined,
       error.status === 401 ? { "WWW-Authenticate": 'Bearer realm="astra-admin"' } : undefined,
+    );
+  }
+  if (error instanceof AdminManagementError) {
+    return errorResponse(
+      requestId(request),
+      error.status,
+      error.code,
+      error.code.replaceAll("_", " "),
+      error.retryable,
     );
   }
   if (error instanceof AuthenticationError) {
@@ -168,7 +197,7 @@ function serviceError(request: Request, error: unknown): Response {
 function parseJson<S extends z.ZodTypeAny>(
   schema: S,
   request: Request,
-): Promise<{ value?: z.output<S>; response?: Response }> {
+): Promise<{ value: z.output<S>; response: undefined } | { value: undefined; response: Response }> {
   return request
     .json()
     .then((body: unknown) => {
@@ -179,6 +208,7 @@ function parseJson<S extends z.ZodTypeAny>(
           const key = unknown.keys[0];
           const path = [...unknown.path, key ?? "unknown"].join(".");
           return {
+            value: undefined,
             response: errorResponse(
               requestId(request),
               422,
@@ -191,6 +221,7 @@ function parseJson<S extends z.ZodTypeAny>(
         }
         const issue = parsed.error.issues[0];
         return {
+          value: undefined,
           response: errorResponse(
             requestId(request),
             422,
@@ -201,9 +232,10 @@ function parseJson<S extends z.ZodTypeAny>(
           ),
         };
       }
-      return { value: parsed.data };
+      return { value: parsed.data, response: undefined };
     })
     .catch(() => ({
+      value: undefined,
       response: errorResponse(requestId(request), 400, "invalid_json", "Request body must be valid JSON"),
     }));
 }
@@ -613,6 +645,7 @@ export function createAdminApi(
   security?: AdminApiSecurity,
   taskService?: AdminTaskUseCases,
   queryService?: AdminQueryService,
+  managementService?: AdminManagementService,
 ): Hono {
   const app = new Hono();
   attachRequestId(app);
@@ -643,6 +676,86 @@ export function createAdminApi(
     } catch (error) {
       return serviceError(request, error);
     }
+  };
+
+  const mutationContext = async (
+    request: Request,
+    permission: AdminPermission,
+  ): Promise<
+    | Readonly<{
+        actor: AdminContext;
+        key: string;
+        metadata: { requestId: string; sourceIp?: string; userAgent?: string; traceId?: string };
+      }>
+    | Response
+  > => {
+    if (!managementService) {
+      return errorResponse(
+        requestId(request),
+        503,
+        "admin_management_service_unavailable",
+        "Management service unavailable",
+        true,
+      );
+    }
+    const actor = await authorize(request, permission);
+    if (actor instanceof Response) return actor;
+    try {
+      await security.sessions.verifyCsrf(actor, request, requestId(request));
+    } catch (error) {
+      return serviceError(request, error);
+    }
+    const key = request.headers.get("idempotency-key")?.trim() ?? "";
+    if (!idempotencyKeySchema.safeParse(key).success) {
+      return errorResponse(
+        requestId(request),
+        400,
+        "invalid_idempotency_key",
+        "Idempotency-Key must contain 8 to 128 visible characters",
+        false,
+        "Idempotency-Key",
+      );
+    }
+    const sourceIp =
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || undefined;
+    const userAgent = request.headers.get("user-agent") ?? undefined;
+    const traceId = request.headers.get("traceparent") ?? undefined;
+    return {
+      actor,
+      key,
+      metadata: {
+        requestId: requestId(request),
+        ...(sourceIp ? { sourceIp } : {}),
+        ...(userAgent ? { userAgent } : {}),
+        ...(traceId ? { traceId } : {}),
+      },
+    };
+  };
+  const requireVersion = (request: Request, expected: number): Response | undefined => {
+    const raw = request.headers.get("if-match")?.trim() ?? "";
+    const value = raw.match(/^(?:W\/)?"?(\d+)"?$/)?.[1];
+    if (!value || Number(value) !== expected) {
+      return errorResponse(
+        requestId(request),
+        409,
+        "version_precondition_failed",
+        "If-Match must equal expected_version",
+        false,
+        "If-Match",
+      );
+    }
+    return undefined;
+  };
+  const managementResponse = (
+    result: Readonly<{ status: number; body: Record<string, unknown>; replayed: boolean }>,
+  ): Response =>
+    new Response(JSON.stringify(result.body), {
+      status: result.status,
+      headers: { "content-type": "application/json; charset=UTF-8", "Idempotency-Replayed": String(result.replayed) },
+    });
+  const management = (): AdminManagementService => {
+    if (!managementService) throw new AdminManagementError("admin_management_service_unavailable", 503, true);
+    return managementService;
   };
 
   app.post("/admin/v1/sessions/exchange", async (c) => {
@@ -774,6 +887,225 @@ export function createAdminApi(
   listRoute("/admin/v1/audit-events", "audit_events", "audit:read");
   listRoute("/admin/v1/regions", "regions");
   listRoute("/admin/v1/inventory", "inventory");
+  listRoute("/admin/v1/aliases", "aliases");
+  listRoute("/admin/v1/policies", "policies");
+  listRoute("/admin/v1/policy-previews", "policy_previews");
+  listRoute("/admin/v1/release-approvals", "release_approvals");
+
+  app.post("/admin/v1/models", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "releases:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(modelCreateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return managementResponse(
+        await management().createModel(mutation.actor, mutation.metadata, mutation.key, parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.patch("/admin/v1/models/:id", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "releases:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(modelUpdateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().updateModel(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("id"),
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/releases", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "releases:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(releaseCreateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return managementResponse(
+        await management().createRelease(mutation.actor, mutation.metadata, mutation.key, parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/releases/:id/approval", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "releases:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(releaseApprovalSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().approveRelease(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("id"),
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/pools", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "policies:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(poolCreateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return managementResponse(
+        await management().createPool(mutation.actor, mutation.metadata, mutation.key, parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.patch("/admin/v1/pools/:id", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "policies:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(poolUpdateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().updatePool(mutation.actor, mutation.metadata, mutation.key, c.req.param("id"), parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/policies/validate", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "policies:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(policyValidationSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const schemaByType = {
+      capacity: capacityPolicyConfigurationSchema,
+      budget: budgetPolicyConfigurationSchema,
+      region: regionPolicyConfigurationSchema,
+      retry: retryPolicyConfigurationSchema,
+    } as const;
+    const configuration = schemaByType[parsed.value.policy_type].safeParse(parsed.value.configuration);
+    if (!configuration.success)
+      return errorResponse(
+        requestId(c.req.raw),
+        422,
+        "invalid_policy_configuration",
+        "Policy configuration failed schema validation",
+      );
+    try {
+      return managementResponse(
+        await management().validatePolicy(mutation.actor, mutation.metadata, mutation.key, {
+          ...parsed.value,
+          configuration: configuration.data,
+        }),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/policies/:id/impact-previews", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "policies:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(policyImpactPreviewSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_policy_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().previewPolicy(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("id"),
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/policies/:id/publish", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "policies:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(policyPublishSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_policy_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().publishPolicy(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("id"),
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/pools/:poolId/policies/:policyType/rollback", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "policies:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(policyRollbackSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_current_version);
+    if (precondition) return precondition;
+    const policyType = c.req.param("policyType");
+    if (!["capacity", "budget", "region", "retry"].includes(policyType))
+      return errorResponse(requestId(c.req.raw), 404, "policy_not_found", "Policy not found");
+    try {
+      return managementResponse(
+        await management().rollbackPolicy(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("poolId"),
+          policyType,
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/aliases/:alias/switch", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "rollouts:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(aliasSwitchSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().switchAlias(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("alias"),
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
   app.get("/admin/v1/cost-summary", async (c) => {
     if (!queryService)
       return errorResponse(

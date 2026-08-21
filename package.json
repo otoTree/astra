@@ -14,6 +14,7 @@
     "dev:model-app": "bun run model-workers/reference/src/server.ts",
     "dev:media-validator": "bun run apps/api/src/media-validator.ts",
     "dev:admin-web": "bun run --cwd apps/admin-web dev",
+    "dev:registry-reference": "bun run apps/registry-reference/src/main.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",

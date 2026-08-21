@@ -14,7 +14,11 @@ export type AdminResource =
   | "provider_operations"
   | "audit_events"
   | "regions"
-  | "inventory";
+  | "inventory"
+  | "aliases"
+  | "policies"
+  | "policy_previews"
+  | "release_approvals";
 export type AdminListResource = Exclude<AdminResource, "tasks">;
 
 export type AdminListResult = Readonly<{
@@ -33,6 +37,10 @@ const tableByResource: Readonly<Record<Exclude<AdminResource, "tasks" | "regions
   replicas: "replicas",
   provider_operations: "provider_operations",
   audit_events: "audit_events",
+  aliases: "model_alias_versions",
+  policies: "policy_versions",
+  policy_previews: "policy_impact_previews",
+  release_approvals: "release_approvals",
 };
 
 const unix = (value: unknown): number | null =>
@@ -124,14 +132,42 @@ export class AdminQueryService {
         WHERE organization_id=${context.organizationId} AND project_id=${context.projectId}
           AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (created_at, id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
         ORDER BY created_at DESC, id DESC LIMIT ${limit + 1}`;
-    } else {
+    } else if (
+      [
+        "models",
+        "releases",
+        "pools",
+        "provider_operations",
+        "aliases",
+        "policies",
+        "policy_previews",
+        "release_approvals",
+      ].includes(resource)
+    ) {
       const table = tableByResource[resource];
       rows = (await this.sql.unsafe(
         `SELECT * FROM ${table}
-         WHERE ($1::timestamptz IS NULL OR (created_at, id) < ($1::timestamptz, $2))
-         ORDER BY created_at DESC, id DESC LIMIT $3`,
-        [cursor?.createdAt ?? null, cursor?.id ?? "", limit + 1],
+         WHERE project_id=$1
+           AND ($2::timestamptz IS NULL OR (created_at, id) < ($2::timestamptz, $3))
+         ORDER BY created_at DESC, id DESC LIMIT $4`,
+        [context.projectId, cursor?.createdAt ?? null, cursor?.id ?? "", limit + 1],
       )) as readonly Record<string, unknown>[];
+    } else if (resource === "rollouts") {
+      rows = await this.sql`SELECT r.* FROM model_rollouts r JOIN model_pools p ON p.id=r.pool_id
+        WHERE p.project_id=${context.projectId}
+          AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (r.created_at, r.id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY r.created_at DESC, r.id DESC LIMIT ${limit + 1}`;
+    } else if (resource === "replicas") {
+      rows = await this.sql`SELECT r.* FROM replicas r JOIN model_pools p ON p.id=r.pool_id
+        WHERE p.project_id=${context.projectId}
+          AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (r.created_at, r.id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY r.created_at DESC, r.id DESC LIMIT ${limit + 1}`;
+    } else {
+      rows = await this.sql`SELECT w.* FROM workers w
+        JOIN replicas r ON r.id=w.replica_id JOIN model_pools p ON p.id=r.pool_id
+        WHERE p.project_id=${context.projectId}
+          AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (w.created_at, w.id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY w.created_at DESC, w.id DESC LIMIT ${limit + 1}`;
     }
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit).map(jsonRecord);

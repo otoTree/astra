@@ -93,8 +93,30 @@ paths:
       operationId: createAdminModel
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelCreate' }
       responses:
         '201': { description: Model created }
+        default: { $ref: '#/components/responses/Error' }
+  /models/{model_id}:
+    patch:
+      operationId: updateAdminModel
+      parameters:
+        - $ref: '#/components/parameters/ModelId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelUpdate' }
+      responses:
+        '200': { description: Model version advanced }
         default: { $ref: '#/components/responses/Error' }
   /releases:
     get:
@@ -105,13 +127,30 @@ paths:
       operationId: createRelease
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ReleaseCreate' }
       responses:
-        '202': { description: Image digest resolution started }
+        '201': { description: OCI tag resolved once and immutable Release created }
+        default: { $ref: '#/components/responses/Error' }
+  /releases/{release_id}/approval:
+    post:
+      operationId: approveOrRejectRelease
+      parameters:
+        - $ref: '#/components/parameters/ReleaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseApproval' }
+      responses:
+        '200': { description: Immutable approval recorded }
         default: { $ref: '#/components/responses/Error' }
   /pools:
     get:
@@ -122,38 +161,109 @@ paths:
       operationId: createPool
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PoolCreate' }
       responses:
         '201': { description: Pool created }
+        default: { $ref: '#/components/responses/Error' }
+  /pools/{pool_id}:
+    patch:
+      operationId: updatePool
+      parameters:
+        - $ref: '#/components/parameters/PoolId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PoolUpdate' }
+      responses:
+        '200': { description: Pool version advanced }
         default: { $ref: '#/components/responses/Error' }
   /policies/validate:
     post:
       operationId: validatePolicy
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PolicyValidation' }
       responses:
-        '200': { description: Validation result }
+        '201': { description: Immutable validated policy version }
         default: { $ref: '#/components/responses/Error' }
-  /policies/impact-preview:
+  /policies/{policy_id}/impact-previews:
     post:
       operationId: previewPolicyImpact
+      parameters:
+        - $ref: '#/components/parameters/PolicyId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PolicyValidation' }
+            schema: { $ref: '#/components/schemas/PolicyImpactPreview' }
       responses:
         '201': { description: Immutable impact preview }
         default: { $ref: '#/components/responses/Error' }
-  /policies/publish:
+  /policies/{policy_id}/publish:
     post:
       operationId: publishPolicy
       parameters:
+        - $ref: '#/components/parameters/PolicyId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyPublish' }
       responses:
-        '201': { description: Policy version published }
+        '200': { description: Validated policy version published }
+        default: { $ref: '#/components/responses/Error' }
+  /pools/{pool_id}/policies/{policy_type}/rollback:
+    post:
+      operationId: rollbackPolicy
+      parameters:
+        - $ref: '#/components/parameters/PoolId'
+        - $ref: '#/components/parameters/PolicyType'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyRollback' }
+      responses:
+        '201': { description: New published version copied from historical policy }
+        default: { $ref: '#/components/responses/Error' }
+  /aliases/{alias}/switch:
+    post:
+      operationId: switchModelAlias
+      parameters:
+        - $ref: '#/components/parameters/Alias'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AliasSwitch' }
+      responses:
+        '200': { description: Alias version created }
         default: { $ref: '#/components/responses/Error' }
   /rollouts:
     get:
@@ -248,6 +358,34 @@ paths:
       operationId: listAuditEvents
       responses:
         '200': { description: Audit event list }
+  /aliases:
+    get:
+      operationId: listAliasVersions
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/After' }]
+      responses:
+        '200': { description: Alias version list }
+        default: { $ref: '#/components/responses/Error' }
+  /policies:
+    get:
+      operationId: listPolicyVersions
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/After' }]
+      responses:
+        '200': { description: Policy version list }
+        default: { $ref: '#/components/responses/Error' }
+  /policy-previews:
+    get:
+      operationId: listPolicyImpactPreviews
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/After' }]
+      responses:
+        '200': { description: Immutable policy impact preview list }
+        default: { $ref: '#/components/responses/Error' }
+  /release-approvals:
+    get:
+      operationId: listReleaseApprovals
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/After' }]
+      responses:
+        '200': { description: Immutable Release approval list }
+        default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     oidc:
@@ -276,6 +414,36 @@ components:
       in: path
       required: true
       schema: { type: string }
+    ModelId:
+      name: model_id
+      in: path
+      required: true
+      schema: { type: string }
+    ReleaseId:
+      name: release_id
+      in: path
+      required: true
+      schema: { type: string }
+    PoolId:
+      name: pool_id
+      in: path
+      required: true
+      schema: { type: string }
+    PolicyId:
+      name: policy_id
+      in: path
+      required: true
+      schema: { type: string }
+    PolicyType:
+      name: policy_type
+      in: path
+      required: true
+      schema: { type: string, enum: [capacity, budget, region, retry] }
+    Alias:
+      name: alias
+      in: path
+      required: true
+      schema: { type: string }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -286,6 +454,12 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 32, maxLength: 256 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Decimal current resource version, optionally quoted or weakly quoted.
+      schema: { type: string }
     AccessPurpose:
       name: X-Access-Purpose
       in: header
@@ -331,24 +505,146 @@ components:
         task_id: { type: string }
         request: { type: object, additionalProperties: true }
         accessed_at: { type: integer, minimum: 0 }
+    ModelCreate:
+      type: object
+      additionalProperties: false
+      required: [alias, modality, reason]
+      properties:
+        alias: { type: string, minLength: 3, maxLength: 128 }
+        modality: { type: string, enum: [video, image] }
+        description: { type: string, maxLength: 2000, default: '' }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ModelUpdate:
+      type: object
+      additionalProperties: false
+      required: [expected_version, status, description, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        status: { type: string, enum: [active, disabled] }
+        description: { type: string, maxLength: 2000 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
     ReleaseCreate:
       type: object
       additionalProperties: false
       required: [model_id, source_image, workflow_hash, manifest, reason]
       properties:
         model_id: { type: string }
-        source_image: { type: string }
+        source_image: { type: string, minLength: 3, maxLength: 2048 }
         workflow_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
-        manifest: { type: object, additionalProperties: true }
+        maturity: { type: string, enum: [candidate, stable, deprecated], default: candidate }
+        manifest: { $ref: '#/components/schemas/ReleaseManifest' }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ReleaseManifest:
+      type: object
+      additionalProperties: false
+      required: [worker_contract_version, modalities, operations, capabilities, parameter_schema, output_contract, resource_requirements, components, weights]
+      properties:
+        worker_contract_version: { type: string, const: v1 }
+        modalities: { type: array, minItems: 1, maxItems: 2, items: { type: string, enum: [video, image] } }
+        operations: { type: array, minItems: 1, maxItems: 2, items: { type: string, enum: [generation, edit] } }
+        capabilities: { type: object, additionalProperties: true }
+        parameter_schema: { type: object, additionalProperties: true }
+        output_contract: { type: object, additionalProperties: true }
+        resource_requirements:
+          type: object
+          additionalProperties: false
+          required: [gpu_skus, gpu_memory_bytes]
+          properties:
+            gpu_skus: { type: array, minItems: 1, maxItems: 32, items: { type: string } }
+            gpu_memory_bytes: { type: integer, minimum: 1 }
+            concurrency: { type: integer, minimum: 1, maximum: 16, default: 1 }
+        components:
+          type: array
+          maxItems: 128
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, commit]
+            properties:
+              name: { type: string }
+              commit: { type: string, minLength: 7, maxLength: 128 }
+        weights:
+          type: array
+          maxItems: 256
+          description: Hash metadata only. Astra never downloads weight binaries.
+          items:
+            type: object
+            additionalProperties: false
+            required: [logical_name, sha256, size_bytes]
+            properties:
+              logical_name: { type: string }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+              size_bytes: { type: integer, minimum: 1 }
+              source_uri: { type: string, format: uri }
+    ReleaseApproval:
+      type: object
+      additionalProperties: false
+      required: [expected_version, decision, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        decision: { type: string, enum: [approve, reject] }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    PoolCreate:
+      type: object
+      additionalProperties: false
+      required: [release_id, provider, region_id, gpu_sku, execution_mode, reason]
+      properties:
+        release_id: { type: string }
+        provider: { type: string }
+        region_id: { type: string }
+        gpu_sku: { type: string }
+        execution_mode: { type: string, enum: [deployment, batch] }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    PoolUpdate:
+      type: object
+      additionalProperties: false
+      required: [expected_version, status, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        status: { type: string, enum: [active, disabled, degraded] }
         reason: { type: string, minLength: 8, maxLength: 1000 }
     PolicyValidation:
       type: object
       additionalProperties: false
-      required: [policy_type, pool_id, configuration]
+      required: [policy_type, pool_id, configuration, reason]
       properties:
         policy_type: { type: string, enum: [capacity, budget, region, retry] }
         pool_id: { type: string }
         configuration: { type: object, additionalProperties: true }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    PolicyImpactPreview:
+      type: object
+      additionalProperties: false
+      required: [expected_policy_version, horizon_seconds, reason]
+      properties:
+        expected_policy_version: { type: integer, minimum: 1 }
+        horizon_seconds: { type: integer, minimum: 300, maximum: 86400 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    PolicyPublish:
+      type: object
+      additionalProperties: false
+      required: [expected_policy_version, preview_id, reason]
+      properties:
+        expected_policy_version: { type: integer, minimum: 1 }
+        preview_id: { type: string }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    PolicyRollback:
+      type: object
+      additionalProperties: false
+      required: [expected_current_version, target_policy_id, reason]
+      properties:
+        expected_current_version: { type: integer, minimum: 1 }
+        target_policy_id: { type: string }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    AliasSwitch:
+      type: object
+      additionalProperties: false
+      required: [model_id, release_id, expected_version, reason]
+      properties:
+        model_id: { type: string }
+        release_id: { type: string }
+        expected_version: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
     RolloutCreate:
       type: object
       additionalProperties: false

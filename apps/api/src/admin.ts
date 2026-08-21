@@ -1,7 +1,15 @@
 import { loadAdminApiConfig } from "@astra/config";
 import { AdminSessionManager, RemoteOidcTokenVerifier } from "@astra/auth";
-import { AdminQueryService, createDatabase, DatabaseHealth, IdentityRepository, TaskService } from "@astra/database";
+import {
+  AdminManagementService,
+  AdminQueryService,
+  createDatabase,
+  DatabaseHealth,
+  IdentityRepository,
+  TaskService,
+} from "@astra/database";
 import { createAdminApi, withErrorHandling } from "./app.ts";
+import { DistributionOciImageResolver } from "./oci-image-resolver.ts";
 import { serve } from "./server.ts";
 
 const config = loadAdminApiConfig();
@@ -29,6 +37,14 @@ const taskService = new TaskService(database.client, {
   enforceAdmission: false,
 });
 const queryService = new AdminQueryService(database.client, config.ASTRA_REQUEST_ENCRYPTION_KEY);
+const managementService = new AdminManagementService(
+  database.client,
+  new DistributionOciImageResolver({
+    allowPlainHttp: config.OCI_REGISTRY_ALLOW_PLAIN_HTTP,
+    ...(config.OCI_REGISTRY_BEARER_TOKEN ? { bearerToken: config.OCI_REGISTRY_BEARER_TOKEN } : {}),
+  }),
+  config.ASTRA_AUDIT_SIGNING_KEY,
+);
 serve(
   withErrorHandling(
     createAdminApi(
@@ -42,6 +58,7 @@ serve(
       },
       taskService,
       queryService,
+      managementService,
     ),
   ),
   config.ADMIN_API_PORT,
