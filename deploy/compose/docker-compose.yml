@@ -193,12 +193,16 @@ services:
       dockerfile: model-workers/reference/Dockerfile
     environment:
       MODEL_APP_PORT: 9000
-      MODEL_APP_RELEASE: local-reference-release
+      MODEL_APP_RELEASE: release_local_reference
       MODEL_APP_VIDEO_FIXTURE: /app/fixtures/sample.mp4
     ports: ["${ASTRA_LOCAL_MODEL_APP_PORT:?set in .env.local}:9000"]
-    tmpfs:
-      - /work:uid=1000,gid=1000,mode=0700
+    volumes: ["astra-local-worker-work:/work"]
     networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9000/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   media-validator:
     build:
@@ -376,8 +380,80 @@ services:
     environment:
       WORKER_CONTROL_API_PORT: 4102
       DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      ASTRA_REQUEST_ENCRYPTION_KEY: ${ASTRA_LOCAL_REQUEST_ENCRYPTION_KEY:?set in .env.local}
+      WORKER_TOKEN_PEPPER: ${ASTRA_LOCAL_WORKER_TOKEN_PEPPER:?set in .env.local}
+      WORKER_SESSION_TTL_SECONDS: 1800
+      WORKER_TOKEN_ROTATE_BEFORE_SECONDS: 600
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: 10
+      WORKER_LEASE_DURATION_SECONDS: 30
+      WORKER_HEARTBEAT_TIMEOUT_SECONDS: 45
+      WORKER_ORPHAN_GRACE_PERIOD_SECONDS: 180
+      WORKER_RECONCILE_INTERVAL_SECONDS: 10
+      WORKER_RECONCILE_BATCH_SIZE: 100
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${ASTRA_LOCAL_S3_BUCKET:?set in .env.local}
+      S3_ACCESS_KEY: ${ASTRA_LOCAL_S3_ACCESS_KEY:?set in .env.local}
+      S3_SECRET_KEY: ${ASTRA_LOCAL_S3_SECRET_KEY:?set in .env.local}
+      MEDIA_VALIDATOR_URL: http://media-validator:4113
+      MEDIA_VALIDATOR_TOKEN: ${ASTRA_LOCAL_MEDIA_VALIDATOR_TOKEN:?set in .env.local}
+      MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: 610
     ports: ["${ASTRA_LOCAL_WORKER_CONTROL_API_PORT:?set in .env.local}:4102"]
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+      media-validator: { condition: service_healthy }
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4102/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker-bootstrap:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "scripts/bootstrap-local-worker.ts"]
+    environment:
+      ASTRA_ENV: local
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      WORKER_BOOTSTRAP_TOKEN: ${ASTRA_LOCAL_WORKER_BOOTSTRAP_TOKEN:?set in .env.local}
+      WORKER_TOKEN_PEPPER: ${ASTRA_LOCAL_WORKER_TOKEN_PEPPER:?set in .env.local}
+      WORKER_REPLICA_ID: replica_local_reference
+      WORKER_PROVIDER_INSTANCE_ID: instance_local_reference
     depends_on: { database-migrate: { condition: service_completed_successfully } }
+    networks: [astra-local-network]
+    restart: "no"
+
+  worker-agent:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/worker-agent/src/main.ts"]
+    environment:
+      ASTRA_ENV: local
+      MODEL_APP_URL: http://model-app:9000
+      WORKER_CONTROL_URL: http://worker-control-api:4102
+      WORKER_BOOTSTRAP_TOKEN: ${ASTRA_LOCAL_WORKER_BOOTSTRAP_TOKEN:?set in .env.local}
+      WORKER_PROVIDER: reference
+      WORKER_REGION: region_local
+      WORKER_PROVIDER_INSTANCE_ID: instance_local_reference
+      WORKER_REPLICA_ID: replica_local_reference
+      WORKER_POOL_ID: pool_local_reference
+      WORKER_RELEASE_ID: release_local_reference
+      WORKER_INSTANCE_FINGERPRINT: astra-local-reference-instance-v1
+      WORKER_GPU_SKU: reference-gpu
+      WORKER_GPU_COUNT: 1
+      WORKER_GPU_MEMORY_BYTES: 34359738368
+      WORKER_WORK_ROOT: /work/tasks
+      WORKER_CONTROL_TIMEOUT_SECONDS: 30
+      WORKER_IDLE_POLL_MS: 500
+    volumes: ["astra-local-worker-work:/work"]
+    depends_on:
+      worker-bootstrap: { condition: service_completed_successfully }
+      worker-control-api: { condition: service_healthy }
+      model-app: { condition: service_healthy }
     networks: [astra-local-network]
 
 networks:
@@ -404,3 +480,5 @@ volumes:
     name: astra-local-redpanda
   astra-local-minio:
     name: astra-local-minio
+  astra-local-worker-work:
+    name: astra-local-worker-work

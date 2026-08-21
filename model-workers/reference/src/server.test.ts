@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createReferenceModelApp } from "./server.ts";
+import { createReferenceModelApp, deterministicPng } from "./server.ts";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -26,6 +27,15 @@ async function request(type: "image" | "video", executionId: string): Promise<Re
 }
 
 describe("reference Model App contract", () => {
+  test("produces deterministic PNG bytes with the requested dimensions", () => {
+    const first = deterministicPng(608, 352);
+    const second = deterministicPng(608, 352);
+    expect(first.equals(second)).toBe(true);
+    expect(first.readUInt32BE(16)).toBe(608);
+    expect(first.readUInt32BE(20)).toBe(352);
+    expect(createHash("sha256").update(first).digest("hex")).toBe(createHash("sha256").update(second).digest("hex"));
+  });
+
   test("rejects a release mismatch", async () => {
     const app = createReferenceModelApp({
       release: "release_reference",

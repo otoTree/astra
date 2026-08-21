@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { loadModelAppConfig } from "@astra/config";
 import {
   capabilitiesSchema,
-  inferenceRequestSchema,
-  outputManifestSchema,
   type ExecutionView,
   type InferenceRequest,
+  inferenceRequestSchema,
   type OutputManifest,
+  outputManifestSchema,
 } from "@astra/contracts";
 
 type StoredExecution = ExecutionView & {
@@ -24,10 +25,64 @@ export type ReferenceModelAppOptions = Readonly<{
   delayMs: number;
 }>;
 
-const imageFixture = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-  "base64",
-);
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+const crcTable = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  return value >>> 0;
+});
+
+const crc32 = (bytes: Uint8Array): number => {
+  let value = 0xffffffff;
+  for (const byte of bytes) value = (value >>> 8) ^ (crcTable[(value ^ byte) & 0xff] ?? 0);
+  return (value ^ 0xffffffff) >>> 0;
+};
+
+const pngChunk = (type: string, data: Uint8Array): Buffer => {
+  const name = Buffer.from(type, "ascii");
+  const length = Buffer.allocUnsafe(4);
+  length.writeUInt32BE(data.byteLength);
+  const checksum = Buffer.allocUnsafe(4);
+  checksum.writeUInt32BE(crc32(Buffer.concat([name, data])));
+  return Buffer.concat([length, name, data, checksum]);
+};
+
+export const deterministicPng = (width: number, height: number): Buffer => {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 16_777_216) {
+    throw new Error("invalid_reference_image_dimensions");
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const scanline = width * 3 + 1;
+  const pixels = Buffer.alloc(scanline * height);
+  for (let row = 0; row < height; row += 1) {
+    const offset = row * scanline;
+    pixels[offset] = 0;
+    for (let column = 0; column < width; column += 1) {
+      const pixel = offset + 1 + column * 3;
+      pixels[pixel] = column % 256;
+      pixels[pixel + 1] = row % 256;
+      pixels[pixel + 2] = (column + row) % 256;
+    }
+  }
+  return Buffer.concat([
+    pngSignature,
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(pixels, { level: 9 })),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+};
+
+const requestedImageDimensions = (request: InferenceRequest): Readonly<{ width: number; height: number }> => {
+  const size = request.request.size;
+  const match = typeof size === "string" ? size.match(/^(\d+)x(\d+)$/) : undefined;
+  if (!match?.[1] || !match[2]) throw new Error("unsupported_reference_image_size");
+  return { width: Number(match[1]), height: Number(match[2]) };
+};
 
 const canonicalize = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -156,7 +211,10 @@ export function createReferenceModelApp(options: ReferenceModelAppOptions): (req
     const isVideo = item.request.type === "video";
     const outputPath = join(item.request.output_dir, isVideo ? "result.mp4" : "result.png");
     if (isVideo) await copyFile(options.videoFixture, outputPath);
-    else await writeFile(outputPath, imageFixture, { flag: "wx" });
+    const imageDimensions = isVideo ? undefined : requestedImageDimensions(item.request);
+    if (imageDimensions) {
+      await writeFile(outputPath, deterministicPng(imageDimensions.width, imageDimensions.height), { flag: "wx" });
+    }
     const bytes = await Bun.file(outputPath).arrayBuffer();
     const sha256 = createHash("sha256").update(Buffer.from(bytes)).digest("hex");
     const sizeBytes = (await stat(outputPath)).size;
@@ -176,11 +234,35 @@ export function createReferenceModelApp(options: ReferenceModelAppOptions): (req
           sha256,
           size_bytes: sizeBytes,
           media: isVideo
-            ? { container: "mp4", width: 320, height: 180, fps: 24, duration: 1 }
-            : { width: 1, height: 1, color_type: "grayscale_alpha" },
+            ? {
+                media_type: "video",
+                container: "mov,mp4,m4a,3gp,3g2,mj2",
+                width: 320,
+                height: 180,
+                duration_seconds: 1,
+                fps: 24,
+                video_codec: "h264",
+                audio_codec: "aac",
+                audio_sample_rate: 44100,
+                audio_channels: 2,
+              }
+            : {
+                media_type: "image",
+                container: "png_pipe",
+                width: imageDimensions?.width,
+                height: imageDimensions?.height,
+                fps: 25,
+                video_codec: "png",
+              },
           provenance: { producer: "model_app", transformations: [] },
         },
       ],
+      usage: {
+        inference_time_ms: options.delayMs * 10,
+        post_processing_time_ms: 0,
+        gpu_seconds: 0,
+        peak_gpu_memory_mb: 0,
+      },
     });
   }
 

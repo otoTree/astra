@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type postgres from "postgres";
 import Ajv from "ajv";
 import {
@@ -12,6 +12,7 @@ import {
   type VideoEditRequest,
   type VideoGenerationRequest,
 } from "@astra/contracts";
+import { RequestCipher } from "./request-cipher.ts";
 
 type SqlClient = ReturnType<typeof postgres>;
 type TaskRequest = VideoGenerationRequest | VideoEditRequest | ImageGenerationRequest | ImageEditRequest;
@@ -143,6 +144,7 @@ function taskView(row: Record<string, unknown>, snapshot: TaskSnapshot, model: s
 
 export class TaskService {
   private readonly encryptionKey: Buffer;
+  private readonly requestCipher: RequestCipher;
   private readonly ajv = new Ajv({ allErrors: true, strict: true });
   private readonly now: () => Date;
   private readonly createId: (prefix: string) => string;
@@ -154,6 +156,7 @@ export class TaskService {
     options: TaskServiceOptions,
   ) {
     this.encryptionKey = createHash("sha256").update(options.requestEncryptionKey).digest();
+    this.requestCipher = new RequestCipher(options.requestEncryptionKey);
     this.now = options.now ?? systemNow;
     this.createId = options.createId ?? systemId;
     this.createSeed = options.createSeed ?? secureRandomSeed;
@@ -161,25 +164,11 @@ export class TaskService {
   }
 
   private seal(value: unknown): string {
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
-    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
-    return [
-      "v1",
-      iv.toString("base64url"),
-      cipher.getAuthTag().toString("base64url"),
-      ciphertext.toString("base64url"),
-    ].join(".");
+    return this.requestCipher.seal(value);
   }
 
   private open<T>(sealed: string): T {
-    const [version, ivValue, tagValue, ciphertextValue] = sealed.split(".");
-    if (version !== "v1" || !ivValue || !tagValue || !ciphertextValue) throw new Error("request_decryption_failed");
-    const decipher = createDecipheriv("aes-256-gcm", this.encryptionKey, Buffer.from(ivValue, "base64url"));
-    decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
-    return JSON.parse(
-      Buffer.concat([decipher.update(Buffer.from(ciphertextValue, "base64url")), decipher.final()]).toString("utf8"),
-    ) as T;
+    return this.requestCipher.open<T>(sealed);
   }
 
   private encodeCursor(payload: Readonly<{ createdAt: string; id: string; filterHash: string }>): string {

@@ -35,20 +35,30 @@ import {
   retryPolicyConfigurationSchema,
   taskListQuerySchema,
   taskStatusSchema,
+  completeAttemptSchema,
+  completeOutputsSchema,
+  drainedWorkerSchema,
+  failAttemptSchema,
+  prepareOutputsSchema,
   videoEditSchema,
   videoGenerationSchema,
+  workerHeartbeatSchema,
+  workerLeaseRequestSchema,
+  workerRegistrationSchema,
 } from "@astra/contracts";
 import {
   AdminManagementError,
   type AdminManagementService,
   type AdminQueryService,
   type TaskService,
+  WorkerControlError,
 } from "@astra/database";
 import { Counter, Histogram, createMetricRegistry, metricResponse } from "@astra/observability";
 import { RateLimiterUnavailableError, type PublicApiRateLimiter, type RateLimitCategory } from "@astra/queue";
 import { matchedRoutes } from "hono/route";
 import type { FileService } from "./file-service.ts";
 import { MediaValidatorError } from "./media-validator-client.ts";
+import type { WorkerControlService } from "./worker-control-service.ts";
 
 export type ApiTrustDomain = "public" | "admin" | "worker-control";
 export type PublicTaskUseCases = Pick<TaskService, "ready" | "create" | "list" | "get" | "cancel" | "listModels">;
@@ -66,6 +76,18 @@ export type AdminApiSecurity = Readonly<{
   secureCookies: boolean;
   sessionTtlSeconds: number;
 }>;
+export type WorkerControlUseCases = Pick<
+  WorkerControlService,
+  | "register"
+  | "authenticate"
+  | "lease"
+  | "heartbeat"
+  | "prepareOutputs"
+  | "completeOutputs"
+  | "complete"
+  | "fail"
+  | "drained"
+>;
 
 const generatedRequestIds = new WeakMap<Request, string>();
 const requestId = (request: Request): string => {
@@ -1219,9 +1241,44 @@ export function createAdminApi(
   return app;
 }
 
-export function createWorkerControlApi(readiness: ReadinessProbe): Hono {
+export function createWorkerControlApi(readiness: ReadinessProbe, service: WorkerControlUseCases): Hono {
   const app = new Hono();
   attachRequestId(app);
+  const bearer = (request: Request): string | undefined => {
+    const value = request.headers.get("authorization");
+    if (!value?.startsWith("Bearer ")) return undefined;
+    const token = value.slice(7);
+    return token.length > 0 ? token : undefined;
+  };
+  const workerError = (request: Request, error: unknown): Response => {
+    if (error instanceof WorkerControlError) {
+      return errorResponse(
+        requestId(request),
+        error.status,
+        error.code,
+        error.code.replaceAll("_", " "),
+        error.retryable,
+        undefined,
+        error.status === 401 ? { "WWW-Authenticate": 'Bearer realm="astra-worker"' } : undefined,
+      );
+    }
+    if (error instanceof MediaValidatorError) {
+      return errorResponse(
+        requestId(request),
+        error.kind === "rejected" ? 422 : 503,
+        error.kind === "rejected" ? "output_validation_failed" : "media_validator_unavailable",
+        error.kind === "rejected" ? "Output failed strict validation" : "Media validation is unavailable",
+        error.retryable,
+      );
+    }
+    return serviceError(request, error);
+  };
+  const authorizeWorker = async (request: Request, workerId?: string) => {
+    const token = bearer(request);
+    if (!token) throw new WorkerControlError("invalid_worker_token", 401);
+    return service.authenticate(token, workerId);
+  };
+
   app.get("/health/live", (c) => c.json({ status: "ok", trust_domain: "worker-control" }));
   app.get("/health/ready", async (c) => {
     const ready = await readiness.ready();
@@ -1229,6 +1286,88 @@ export function createWorkerControlApi(readiness: ReadinessProbe): Hono {
       { status: ready ? "ready" : "not_ready", database: ready ? "ready" : "unavailable" },
       ready ? 200 : 503,
     );
+  });
+  app.post("/internal/v1/workers/register", async (c) => {
+    const token = bearer(c.req.raw);
+    if (!token) return errorResponse(requestId(c.req.raw), 401, "invalid_bootstrap_token", "Invalid bootstrap token");
+    const parsed = await parseJson(workerRegistrationSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return c.json(await service.register(parsed.value, token), 201);
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/workers/:worker_id/lease", async (c) => {
+    const parsed = await parseJson(workerLeaseRequestSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw, c.req.param("worker_id"));
+      const lease = await service.lease(identity, parsed.value);
+      return lease ? c.json(lease) : c.body(null, 204);
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/workers/:worker_id/heartbeat", async (c) => {
+    const parsed = await parseJson(workerHeartbeatSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw, c.req.param("worker_id"));
+      return c.json(await service.heartbeat(identity, parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/workers/:worker_id/drained", async (c) => {
+    const parsed = await parseJson(drainedWorkerSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw, c.req.param("worker_id"));
+      return c.json(await service.drained(identity, parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/attempts/:attempt_id/prepare-outputs", async (c) => {
+    const parsed = await parseJson(prepareOutputsSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw);
+      return c.json(await service.prepareOutputs(identity, c.req.param("attempt_id"), parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/attempts/:attempt_id/complete-outputs", async (c) => {
+    const parsed = await parseJson(completeOutputsSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw);
+      return c.json(await service.completeOutputs(identity, c.req.param("attempt_id"), parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/attempts/:attempt_id/complete", async (c) => {
+    const parsed = await parseJson(completeAttemptSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw);
+      return c.json(await service.complete(identity, c.req.param("attempt_id"), parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
+  });
+  app.post("/internal/v1/attempts/:attempt_id/fail", async (c) => {
+    const parsed = await parseJson(failAttemptSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const identity = await authorizeWorker(c.req.raw);
+      return c.json(await service.fail(identity, c.req.param("attempt_id"), parsed.value));
+    } catch (error) {
+      return workerError(c.req.raw, error);
+    }
   });
   return app;
 }

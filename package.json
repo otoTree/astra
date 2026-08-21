@@ -31,6 +31,7 @@
     "db:migrate": "bun run packages/database/src/migrate.ts",
     "db:migrate:check": "bun run scripts/check-migrations.ts",
     "auth:bootstrap-local": "bun run scripts/bootstrap-local-identity.ts",
+    "worker:bootstrap-local": "bun run scripts/bootstrap-local-worker.ts",
     "contracts:check": "bun run scripts/check-contracts.ts",
     "dependencies:check": "bun run scripts/check-dependencies.ts",
     "compose:check": "docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml config --quiet",

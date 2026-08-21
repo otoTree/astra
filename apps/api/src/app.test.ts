@@ -1,15 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { taskSchema } from "@astra/contracts";
+import { capabilitiesSchema, taskSchema } from "@astra/contracts";
 import { z } from "zod";
 import { parse } from "yaml";
 import {
   createPublicApi,
+  createWorkerControlApi,
   type PublicApiSecurity,
   type PublicFileUseCases,
   type PublicTaskUseCases,
+  type WorkerControlUseCases,
   withErrorHandling,
 } from "./app.ts";
 import { MediaValidatorError } from "./media-validator-client.ts";
+import { WorkerControlError } from "@astra/database";
 
 const unavailable = (): never => {
   throw new Error("dependency_unavailable");
@@ -211,5 +214,142 @@ describe("public API", () => {
     expect(response.status).toBe(202);
     expect(operation).toBe("video:edit");
     expect(taskSchema.safeParse(await response.json()).success).toBe(true);
+  });
+});
+
+describe("worker control API", () => {
+  const identity = {
+    workerId: "worker_test",
+    replicaId: "replica_test",
+    releaseId: "release_test",
+    poolId: "pool_test",
+    instanceFingerprint: "fingerprint_worker_test",
+    sessionId: "session_test",
+    sessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const service: WorkerControlUseCases = {
+    register: async () => ({
+      worker_id: identity.workerId,
+      worker_token: "worker_token_with_at_least_thirty_two_characters",
+      token_expires_at: Math.floor(Date.now() / 1000) + 60,
+      heartbeat_interval_seconds: 10,
+      lease_duration_seconds: 30,
+      orphan_grace_period_seconds: 180,
+    }),
+    authenticate: async (token, workerId) => {
+      if (token !== "worker-session-token" || (workerId && workerId !== identity.workerId)) {
+        throw new WorkerControlError("invalid_worker_token", 401);
+      }
+      return identity;
+    },
+    lease: async () => undefined,
+    heartbeat: async (_identity, input) => ({
+      accepted_sequence: input.sequence,
+      leases: [],
+      desired_state: "run",
+    }),
+    prepareOutputs: async () => unavailable(),
+    completeOutputs: async () => unavailable(),
+    complete: async () => unavailable(),
+    fail: async () => unavailable(),
+    drained: async () => ({ accepted: true, reclaim_token: "reclaim_token_with_at_least_thirty_two_chars" }),
+  };
+  const app = withErrorHandling(createWorkerControlApi({ ready: async () => true }, service));
+
+  test("implements every Worker OpenAPI operation", async () => {
+    const source = await Bun.file("packages/contracts/openapi-worker.yaml").text();
+    const document = z
+      .object({ paths: z.record(z.string(), z.record(z.string(), z.unknown())) })
+      .parse(parse(source) as unknown);
+    const normalize = (path: string): string =>
+      path.replace("{worker_id}", ":worker_id").replace("{attempt_id}", ":attempt_id");
+    const declared = new Set<string>();
+    for (const [path, item] of Object.entries(document.paths)) {
+      for (const method of Object.keys(item)) {
+        if (["get", "post", "put", "patch", "delete"].includes(method)) {
+          declared.add(`${method.toUpperCase()} /internal/v1${normalize(path)}`);
+        }
+      }
+    }
+    const implemented = new Set(
+      app.routes
+        .filter((route) => route.path.startsWith("/internal/v1/") && route.method !== "ALL")
+        .map((route) => `${route.method.toUpperCase()} ${route.path}`),
+    );
+    expect(implemented).toEqual(declared);
+  });
+
+  test("keeps bootstrap and Worker session authentication in the Worker trust domain", async () => {
+    const registration = await app.request("http://localhost/internal/v1/workers/register", {
+      method: "POST",
+      headers: { authorization: "Bearer bootstrap-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "reference",
+        region: "region_test",
+        provider_instance_id: "instance_test",
+        replica_id: "replica_test",
+        pool_id: "pool_test",
+        release_id: "release_test",
+        instance_fingerprint: "fingerprint_worker_test",
+        hardware: { gpu_sku: "gpu_test", gpu_count: 1, gpu_memory_bytes: 1 },
+        capabilities: capabilitiesSchema.parse({
+          contract_version: "1.0",
+          app: { name: "test", version: "1", build: "test" },
+          model_release: "release_test",
+          modalities: ["video"],
+          operations: ["generation"],
+          max_concurrency: 1,
+          capabilities: {
+            aspect_ratios: ["16:9"],
+            resolutions: ["0.2mp"],
+            resolution_matrix: { "16:9/0.2mp": { width: 608, height: 352 } },
+            durations: [15],
+            fps: [24],
+            input_types: ["image", "video", "audio"],
+            input_roles: ["reference_image"],
+            audio_modes: ["native"],
+            supports_cancel: true,
+            supports_progress: true,
+            supports_resume: false,
+          },
+          artifacts: {
+            output_artifacts: [{ role: "result", content_types: ["video/mp4"] }],
+            max_outputs: 1,
+            sidecar_manifest_allowed: false,
+            post_processing: "model_app_only",
+          },
+        }),
+      }),
+    });
+    expect(registration.status).toBe(201);
+    const unauthenticatedLease = await app.request("http://localhost/internal/v1/workers/worker_test/lease", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sequence: 1,
+        max_concurrency: 1,
+        running_slots: 0,
+        reserved_slots: 0,
+        available_slots: 1,
+        capabilities_hash: "a".repeat(64),
+      }),
+    });
+    expect(unauthenticatedLease.status).toBe(401);
+    expect(((await unauthenticatedLease.json()) as { error: { code: string } }).error.code).toBe(
+      "invalid_worker_token",
+    );
+    const emptyLease = await app.request("http://localhost/internal/v1/workers/worker_test/lease", {
+      method: "POST",
+      headers: { authorization: "Bearer worker-session-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        sequence: 1,
+        max_concurrency: 1,
+        running_slots: 0,
+        reserved_slots: 0,
+        available_slots: 1,
+        capabilities_hash: "a".repeat(64),
+      }),
+    });
+    expect(emptyLease.status).toBe(204);
   });
 });

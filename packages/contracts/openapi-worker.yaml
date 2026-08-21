@@ -2,156 +2,229 @@ openapi: 3.1.0
 info:
   title: Astra Worker Control API
   version: 1.0.0
-  description: Outbound Worker Agent control contract. Workers may only lease pre-assigned attempts.
+  description: Outbound Worker Agent contract. A Worker can only lease an Attempt pre-assigned to its Replica and Release.
 servers:
   - url: https://astra-worker.internal.example/internal/v1
 paths:
   /workers/register:
     post:
       operationId: registerWorker
-      security:
-        - bootstrapToken: []
+      security: [{ bootstrapToken: [] }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WorkerRegistration' }
+          application/json: { schema: { $ref: '#/components/schemas/WorkerRegistration' } }
       responses:
-        '201': { description: Worker identity and short-lived token }
+        '201':
+          description: Registered Worker and short-lived identity
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/WorkerRegistrationResponse' } }
         default: { $ref: '#/components/responses/Error' }
   /workers/{worker_id}/lease:
     post:
       operationId: leaseAssignedAttempt
-      security:
-        - workerToken: []
-      parameters:
-        - $ref: '#/components/parameters/WorkerId'
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/WorkerId' }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WorkerLeaseRequest' }
+          application/json: { schema: { $ref: '#/components/schemas/WorkerLeaseRequest' } }
       responses:
-        '200': { description: Pre-assigned attempt and PostgreSQL lease }
-        '204': { description: No assigned attempt }
+        '200':
+          description: Pre-assigned Attempt, local inference request and signed input downloads
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/LeasedAttempt' } }
+        '204': { description: No pre-assigned Attempt }
         default: { $ref: '#/components/responses/Error' }
   /workers/{worker_id}/heartbeat:
     post:
       operationId: heartbeatWorker
-      security:
-        - workerToken: []
-      parameters:
-        - $ref: '#/components/parameters/WorkerId'
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/WorkerId' }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WorkerHeartbeat' }
+          application/json: { schema: { $ref: '#/components/schemas/WorkerHeartbeat' } }
       responses:
-        '200': { description: "Accepted sequence, lease extension and desired state" }
+        '200':
+          description: Accepted sequence, renewed lease, desired state and optional rotated token
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/WorkerHeartbeatResponse' } }
         default: { $ref: '#/components/responses/Error' }
   /workers/{worker_id}/drained:
     post:
       operationId: reportWorkerDrained
-      security:
-        - workerToken: []
-      parameters:
-        - $ref: '#/components/parameters/WorkerId'
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/WorkerId' }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/DrainedWorker' }
+          application/json: { schema: { $ref: '#/components/schemas/DrainedWorker' } }
       responses:
-        '200': { description: Drained state accepted and reclaim token issued }
+        '200':
+          description: Drained state accepted and reclaim token issued
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/DrainedWorkerResponse' } }
         '409': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
   /attempts/{attempt_id}/prepare-outputs:
     post:
       operationId: prepareAttemptOutputs
-      security:
-        - workerToken: []
-      parameters:
-        - $ref: '#/components/parameters/AttemptId'
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/AttemptId' }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PrepareOutputs' }
+          application/json: { schema: { $ref: '#/components/schemas/PrepareOutputs' } }
       responses:
-        '200': { description: Output file reservations and signed upload requests }
+        '200':
+          description: Idempotent output reservations and signed upload requests
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/PrepareOutputsResponse' } }
         default: { $ref: '#/components/responses/Error' }
   /attempts/{attempt_id}/complete-outputs:
     post:
       operationId: completeAttemptOutputs
-      security:
-        - workerToken: []
-      parameters:
-        - $ref: '#/components/parameters/AttemptId'
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/AttemptId' }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CompleteOutputs' }
+          application/json: { schema: { $ref: '#/components/schemas/CompleteOutputs' } }
       responses:
-        '200': { description: Uploaded output integrity confirmed }
+        '200':
+          description: Uploaded output identity and integrity confirmed
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/CompleteOutputsResponse' } }
         default: { $ref: '#/components/responses/Error' }
   /attempts/{attempt_id}/complete:
     post:
       operationId: completeAttempt
-      security:
-        - workerToken: []
-      parameters:
-        - $ref: '#/components/parameters/AttemptId'
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/AttemptId' }]
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CompleteAttempt' }
+          application/json: { schema: { $ref: '#/components/schemas/CompleteAttempt' } }
       responses:
-        '200': { description: "Attempt, lease and task completed atomically" }
+        '200':
+          description: Attempt, Lease, Task and usage committed atomically
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/AttemptMutationResponse' } }
+        default: { $ref: '#/components/responses/Error' }
+  /attempts/{attempt_id}/fail:
+    post:
+      operationId: failAttempt
+      security: [{ workerToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/AttemptId' }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/FailAttempt' } }
+      responses:
+        '200':
+          description: Attempt failure and Task outcome committed atomically
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/AttemptMutationResponse' } }
         default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     bootstrapToken: { type: http, scheme: bearer }
     workerToken: { type: http, scheme: bearer }
   parameters:
-    WorkerId:
-      name: worker_id
-      in: path
-      required: true
-      schema: { type: string }
-    AttemptId:
-      name: attempt_id
-      in: path
-      required: true
-      schema: { type: string }
+    WorkerId: { name: worker_id, in: path, required: true, schema: { type: string, minLength: 1 } }
+    AttemptId: { name: attempt_id, in: path, required: true, schema: { type: string, minLength: 1 } }
   schemas:
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [contract_version, app, model_release, modalities, operations, max_concurrency, capabilities, artifacts]
+      properties:
+        contract_version: { type: string, const: '1.0' }
+        app:
+          type: object
+          additionalProperties: false
+          required: [name, version, build]
+          properties:
+            name: { type: string }
+            version: { type: string }
+            build: { type: string }
+        model_release: { type: string }
+        modalities: { type: array, items: { enum: [image, video] } }
+        operations: { type: array, items: { type: string } }
+        max_concurrency: { type: integer, minimum: 1 }
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [aspect_ratios, resolutions, resolution_matrix, durations, fps, input_types, input_roles, audio_modes, supports_cancel, supports_progress, supports_resume]
+          properties:
+            aspect_ratios: { type: array, items: { type: string } }
+            resolutions: { type: array, items: { type: string } }
+            resolution_matrix: { type: object, additionalProperties: { $ref: '#/components/schemas/Dimensions' } }
+            durations: { type: array, items: { type: number } }
+            fps: { type: array, items: { type: number } }
+            input_types: { type: array, items: { enum: [image, video, audio] } }
+            input_roles: { type: array, items: { type: string } }
+            audio_modes: { type: array, items: { type: string } }
+            supports_cancel: { type: boolean }
+            supports_progress: { type: boolean }
+            supports_resume: { type: boolean }
+        artifacts:
+          type: object
+          additionalProperties: false
+          required: [output_artifacts, max_outputs, sidecar_manifest_allowed, post_processing]
+          properties:
+            output_artifacts:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [role, content_types]
+                properties:
+                  role: { type: string }
+                  content_types: { type: array, items: { type: string } }
+            max_outputs: { type: integer, minimum: 1 }
+            sidecar_manifest_allowed: { type: boolean }
+            post_processing: { const: model_app_only }
+    Dimensions:
+      type: object
+      additionalProperties: false
+      required: [width, height]
+      properties:
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
     WorkerRegistration:
       type: object
       additionalProperties: false
       required: [provider, region, provider_instance_id, replica_id, pool_id, release_id, instance_fingerprint, hardware, capabilities]
       properties:
-        provider: { type: string }
-        region: { type: string }
-        provider_instance_id: { type: string }
-        replica_id: { type: string }
-        pool_id: { type: string }
-        release_id: { type: string }
-        instance_fingerprint: { type: string }
-        hardware: { type: object, additionalProperties: false }
-        capabilities: { type: object, additionalProperties: false }
-    DrainedWorker:
+        provider: { type: string, minLength: 1 }
+        region: { type: string, minLength: 1 }
+        provider_instance_id: { type: string, minLength: 1 }
+        replica_id: { type: string, minLength: 1 }
+        pool_id: { type: string, minLength: 1 }
+        release_id: { type: string, minLength: 1 }
+        instance_fingerprint: { type: string, minLength: 16 }
+        hardware:
+          type: object
+          additionalProperties: false
+          required: [gpu_sku, gpu_count, gpu_memory_bytes]
+          properties:
+            gpu_sku: { type: string }
+            gpu_count: { type: integer, minimum: 1 }
+            gpu_memory_bytes: { type: integer, minimum: 1 }
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+    WorkerRegistrationResponse:
       type: object
       additionalProperties: false
-      required: [sequence, release_id, running_slots, reserved_slots, active_attempt_ids, drain_reason, observed_at]
+      required: [worker_id, worker_token, token_expires_at, heartbeat_interval_seconds, lease_duration_seconds, orphan_grace_period_seconds]
       properties:
-        sequence: { type: integer, minimum: 0 }
-        release_id: { type: string }
-        running_slots: { const: 0 }
-        reserved_slots: { const: 0 }
-        active_attempt_ids: { type: array, maxItems: 0 }
-        drain_reason: { type: string }
-        observed_at: { type: string, format: date-time }
+        worker_id: { type: string }
+        worker_token: { type: string, minLength: 32 }
+        token_expires_at: { type: integer, minimum: 1 }
+        heartbeat_interval_seconds: { type: integer, minimum: 1 }
+        lease_duration_seconds: { type: integer, minimum: 1 }
+        orphan_grace_period_seconds: { type: integer, minimum: 0 }
     WorkerLeaseRequest:
       type: object
       additionalProperties: false
@@ -163,6 +236,63 @@ components:
         reserved_slots: { type: integer, minimum: 0 }
         available_slots: { type: integer, minimum: 0 }
         capabilities_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ExecutionInput:
+      type: object
+      additionalProperties: false
+      required: [file_id, type, role, path, content_type, size_bytes, sha256]
+      properties:
+        file_id: { type: string }
+        type: { enum: [image, video, audio] }
+        role: { type: string }
+        path: { type: string, pattern: '^/work/tasks/[a-zA-Z0-9._-]+/inputs/[a-zA-Z0-9._-]+$' }
+        content_type: { type: string }
+        size_bytes: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    InferenceRequest:
+      type: object
+      additionalProperties: false
+      required: [execution_id, task_id, type, operation, model_release, request, inputs, output_dir, deadline_at]
+      properties:
+        execution_id: { type: string }
+        task_id: { type: string }
+        type: { enum: [video, image] }
+        operation: { enum: [generation, edit] }
+        model_release: { type: string }
+        request: { type: object, additionalProperties: true }
+        inputs: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/ExecutionInput' } }
+        output_dir: { type: string, pattern: '^/work/tasks/[a-zA-Z0-9._-]+/outputs$' }
+        deadline_at: { type: integer, minimum: 1 }
+    InputDownload:
+      type: object
+      additionalProperties: false
+      required: [file_id, url, headers, expires_at]
+      properties:
+        file_id: { type: string }
+        url: { type: string, format: uri }
+        headers: { type: object, additionalProperties: { type: string } }
+        expires_at: { type: integer, minimum: 1 }
+    LeasedAttempt:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, lease_id, lease_version, lease_expires_at, execution_key, inference, input_downloads]
+      properties:
+        attempt_id: { type: string }
+        lease_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        lease_expires_at: { type: integer, minimum: 1 }
+        execution_key: { type: string }
+        inference: { $ref: '#/components/schemas/InferenceRequest' }
+        input_downloads: { type: array, items: { $ref: '#/components/schemas/InputDownload' } }
+    ExecutionHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, lease_id, lease_version, status, progress]
+      properties:
+        attempt_id: { type: string }
+        lease_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        status: { enum: [accepted, running, post_processing, completed, failed, canceling, canceled] }
+        progress: { oneOf: [{ type: number, minimum: 0, maximum: 100 }, { type: 'null' }] }
     WorkerHeartbeat:
       type: object
       additionalProperties: false
@@ -172,8 +302,82 @@ components:
         observed_at: { type: string, format: date-time }
         running_slots: { type: integer, minimum: 0 }
         reserved_slots: { type: integer, minimum: 0 }
-        executions: { type: array, items: { type: object, additionalProperties: false } }
-        health: { type: object, additionalProperties: false }
+        executions: { type: array, items: { $ref: '#/components/schemas/ExecutionHeartbeat' } }
+        health:
+          type: object
+          additionalProperties: false
+          required: [model_app_ready, disk_available_bytes, gpu_memory_used_bytes]
+          properties:
+            model_app_ready: { type: boolean }
+            disk_available_bytes: { type: integer, minimum: 0 }
+            gpu_memory_used_bytes: { type: integer, minimum: 0 }
+    WorkerHeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [accepted_sequence, leases, desired_state]
+      properties:
+        accepted_sequence: { type: integer, minimum: 0 }
+        leases:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [attempt_id, lease_id, lease_version, lease_expires_at, cancel_requested]
+            properties:
+              attempt_id: { type: string }
+              lease_id: { type: string }
+              lease_version: { type: integer, minimum: 0 }
+              lease_expires_at: { type: integer, minimum: 1 }
+              cancel_requested: { type: boolean }
+        desired_state: { enum: [run, cancel, drain, shutdown] }
+        worker_token: { type: string, minLength: 32 }
+        token_expires_at: { type: integer, minimum: 1 }
+    OutputManifest:
+      type: object
+      additionalProperties: false
+      required: [execution_id, status, outputs, usage]
+      properties:
+        execution_id: { type: string }
+        status: { const: completed }
+        outputs:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items: { $ref: '#/components/schemas/OutputArtifact' }
+        usage: { type: object, additionalProperties: { type: number, minimum: 0 } }
+    OutputArtifact:
+      type: object
+      additionalProperties: false
+      required: [role, path, content_type, sha256, size_bytes, media, provenance]
+      properties:
+        role: { type: string }
+        path: { type: string }
+        content_type: { enum: [image/png, image/jpeg, image/webp, video/mp4, video/quicktime] }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        size_bytes: { type: integer, minimum: 1 }
+        media: { $ref: '#/components/schemas/MediaMetadata' }
+        provenance:
+          type: object
+          additionalProperties: false
+          required: [producer, transformations]
+          properties:
+            producer: { const: model_app }
+            transformations: { type: array, items: { type: string } }
+    MediaMetadata:
+      type: object
+      additionalProperties: false
+      required: [media_type, container]
+      properties:
+        media_type: { enum: [image, video, audio] }
+        container: { type: string, minLength: 1 }
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        duration_seconds: { type: number, exclusiveMinimum: 0 }
+        fps: { type: number, exclusiveMinimum: 0 }
+        video_codec: { type: string, minLength: 1 }
+        audio_codec: { type: string, minLength: 1 }
+        audio_sample_rate: { type: integer, minimum: 1 }
+        audio_channels: { type: integer, minimum: 1 }
     PrepareOutputs:
       type: object
       additionalProperties: false
@@ -181,7 +385,26 @@ components:
       properties:
         lease_id: { type: string }
         lease_version: { type: integer, minimum: 0 }
-        manifest: { type: object, additionalProperties: false }
+        manifest: { $ref: '#/components/schemas/OutputManifest' }
+    OutputUpload:
+      type: object
+      additionalProperties: false
+      required: [output_index, file_id, method, url, headers, expires_at]
+      properties:
+        output_index: { type: integer, minimum: 0 }
+        file_id: { type: string }
+        method: { const: PUT }
+        url: { type: string, format: uri }
+        headers: { type: object, additionalProperties: { type: string } }
+        expires_at: { type: integer, minimum: 1 }
+    PrepareOutputsResponse:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, lease_version, uploads]
+      properties:
+        attempt_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        uploads: { type: array, items: { $ref: '#/components/schemas/OutputUpload' } }
     CompleteOutputs:
       type: object
       additionalProperties: false
@@ -189,7 +412,26 @@ components:
       properties:
         lease_id: { type: string }
         lease_version: { type: integer, minimum: 0 }
-        files: { type: array, minItems: 1, items: { type: object, additionalProperties: false } }
+        files:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [file_id, sha256, size_bytes]
+            properties:
+              file_id: { type: string }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+              size_bytes: { type: integer, minimum: 1 }
+    CompleteOutputsResponse:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, status, file_ids, lease_version]
+      properties:
+        attempt_id: { type: string }
+        status: { const: outputs_committed }
+        file_ids: { type: array, minItems: 1, items: { type: string } }
+        lease_version: { type: integer, minimum: 0 }
     CompleteAttempt:
       type: object
       additionalProperties: false
@@ -200,12 +442,62 @@ components:
         execution_id: { type: string }
         completed_at: { type: string, format: date-time }
         usage: { type: object, additionalProperties: { type: number, minimum: 0 } }
+    FailAttempt:
+      type: object
+      additionalProperties: false
+      required: [lease_id, lease_version, execution_id, failed_at, error, usage]
+      properties:
+        lease_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        execution_id: { type: string }
+        failed_at: { type: string, format: date-time }
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, retryable]
+          properties:
+            code: { type: string }
+            message: { type: string, maxLength: 1000 }
+            retryable: { type: boolean }
+            stage: { type: string }
+        usage: { type: object, additionalProperties: { type: number, minimum: 0 } }
+    AttemptMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, task_id, attempt_status, task_status, lease_version]
+      properties:
+        attempt_id: { type: string }
+        task_id: { type: string }
+        attempt_status: { enum: [completed, failed, canceled] }
+        task_status: { enum: [completed, failed, canceled] }
+        lease_version: { type: integer, minimum: 0 }
+    DrainedWorker:
+      type: object
+      additionalProperties: false
+      required: [sequence, release_id, running_slots, reserved_slots, active_attempt_ids, drain_reason, observed_at]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        release_id: { type: string }
+        running_slots: { const: 0 }
+        reserved_slots: { const: 0 }
+        active_attempt_ids: { type: array, maxItems: 0, items: { type: string } }
+        drain_reason: { type: string }
+        observed_at: { type: string, format: date-time }
+    DrainedWorkerResponse:
+      type: object
+      additionalProperties: false
+      required: [accepted, reclaim_token]
+      properties:
+        accepted: { const: true }
+        reclaim_token: { type: string, minLength: 32 }
     ErrorEnvelope:
       type: object
+      additionalProperties: false
       required: [error]
       properties:
         error:
           type: object
+          additionalProperties: false
           required: [type, code, message, retryable, request_id]
           properties:
             type: { type: string }
@@ -213,9 +505,9 @@ components:
             message: { type: string }
             retryable: { type: boolean }
             request_id: { type: string }
+            param: { type: [string, 'null'] }
   responses:
     Error:
       description: Error envelope
       content:
-        application/json:
-          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } }

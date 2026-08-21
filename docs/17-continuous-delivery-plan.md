@@ -20,8 +20,8 @@
 | 4 | Model/Release/Pool/Policy 写能力 | 完成 | 3 |
 | 5 | Outbox、Kafka、Redis 重建 | 完成 | 4 |
 | 6 | 最小确定性调度与租约 | 完成 | 5 |
-| 7 | Worker Control 与 Agent 执行环 | 进行中 | 6 |
-| 8 | 共绩 Transport 与只读快照 | 未开始 | 7 |
+| 7 | Worker Control 与 Agent 执行环 | 完成 | 6 |
+| 8 | 共绩 Transport 与只读快照 | 进行中 | 7 |
 | 9 | 共绩资源操作与 Reconcile | 未开始 | 8 |
 | 10 | 预热、滚动发布、排空、回滚 | 未开始 | 9 |
 | 11 | WFQ、耗时预测、Retry Policy | 未开始 | 10 |
@@ -192,6 +192,28 @@
 交付：注册、Token、预分配领取、心跳、续租、进度、取消、输出三阶段提交、`drain/drained`、失联 unknown/orphan grace；Agent 下载输入、调用 localhost、验证并原字节上传。
 
 退出条件：语言无关黑盒合同、崩溃恢复、迟到结果、重复执行、运行中排空和上传失败测试通过。
+
+阶段 7 完成证据（2026-08-22）：
+
+- Worker Contract v1 已覆盖一次性 Bootstrap、短期 Session、Token 轮换、预分配领取、心跳续租、取消、
+  `drain/drained`、三阶段输出提交和严格 Manifest；Worker OpenAPI 与实际路由差异检查通过。
+- PostgreSQL 使用 CAS 绑定 Worker/Replica/Release/Attempt/Lease，支持 `unknown -> orphan grace -> requeue`、
+  迟到结果拒绝、确定性不可执行 Task 收敛和并发 Session 轮换。迁移
+  `0012_worker_execution_control.sql` checksum 固定为
+  `0bbf37643ea050cecef114ad86129d7c0f5a1c6048d5810bdd1abaa0015589b1`。
+- Worker Agent 已完成 Session 持久化、输入流式校验、localhost Model App、后台心跳、原始输出校验与上传、
+  有限重试和终态回报。黑盒测试覆盖重启恢复、模型失败、控制面取消和运行任务排空；文件测试覆盖
+  MIME/hash/size、部分文件清理、符号链接逃逸和临时存储故障。
+- 本地真实链路完成 `Public API -> PostgreSQL -> Scheduler -> Worker -> Model App -> MinIO -> FFmpeg -> Task`。
+  验收 Task `task_01a02542-6da0-7000-b22d-4d34d87ccab1` 为 `completed`，最终 Attempt 为
+  `completed`、Lease 为 `released`、File 为 `available`；Worker 文件、S3 下载与 Manifest 的 SHA-256 均为
+  `bffd27f216a33c487664b443b116c6d090974e7f663897728a23cdc161eb062f`，证明未发生平台转码或字节改写。
+- `bun run check` 通过 65 项常规测试；完整本地门通过 27 项 PostgreSQL、6 项 MinIO/严格媒体、7 项
+  Redis Cluster/Redpanda 和 8 项 HTTP 集成测试。Token 轮换外键顺序和 unknown 恢复门控均由回归测试固定。
+
+回滚采用应用回滚并停止 Worker Agent/Worker Control；保留 `0012` 新增的 Session、Receipt、输出与状态历史，
+不删除已上传对象或改写 Attempt。恢复本阶段应用后，仍在宽限期内的 Worker 通过原 Session/Attempt 恢复，
+超出宽限期的 Attempt 由 Reconciler 回队。
 
 ### 阶段 8：共绩只读接入
 

@@ -197,6 +197,13 @@ export const attempts = pgTable(
     decisionId: text("decision_id"),
     taskVersionAtAssignment: integer("task_version_at_assignment"),
     reservationExpiresAt: timestamp("reservation_expires_at", { withTimezone: true }),
+    stage: text("stage"),
+    progress: integer("progress"),
+    outputManifest: jsonb("output_manifest"),
+    outputManifestHash: text("output_manifest_hash"),
+    outputsStatus: text("outputs_status").notNull().default("none"),
+    usage: jsonb("usage"),
+    failureCode: text("failure_code"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     error: jsonb("error"),
@@ -537,9 +544,68 @@ export const workers = pgTable("workers", {
   status: text("status").notNull(),
   capabilities: jsonb("capabilities").notNull(),
   currentAttemptId: text("current_attempt_id"),
+  provider: text("provider"),
+  regionId: text("region_id"),
+  providerInstanceId: text("provider_instance_id"),
+  poolId: text("pool_id"),
+  instanceFingerprint: text("instance_fingerprint"),
+  hardware: jsonb("hardware"),
+  capabilitiesHash: text("capabilities_hash"),
+  desiredState: text("desired_state").notNull().default("run"),
+  lastSequence: bigint("last_sequence", { mode: "number" }).notNull().default(0),
+  unknownSince: timestamp("unknown_since", { withTimezone: true }),
+  drainedAt: timestamp("drained_at", { withTimezone: true }),
+  reclaimTokenHash: text("reclaim_token_hash"),
   lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const workerBootstrapTokens = pgTable("worker_bootstrap_tokens", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  replicaId: text("replica_id").notNull(),
+  releaseId: text("release_id").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const workerSessions = pgTable("worker_sessions", {
+  id: text("id").primaryKey(),
+  workerId: text("worker_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  instanceFingerprint: text("instance_fingerprint").notNull(),
+  status: text("status").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  replacedById: text("replaced_by_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+});
+
+export const workerRequestReceipts = pgTable("worker_request_receipts", {
+  workerId: text("worker_id").notNull(),
+  operation: text("operation").notNull(),
+  sequence: bigint("sequence", { mode: "number" }).notNull(),
+  requestHash: text("request_hash").notNull(),
+  responseStatus: integer("response_status").notNull(),
+  responseBody: jsonb("response_body"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const attemptOutputFiles = pgTable("attempt_output_files", {
+  attemptId: text("attempt_id").notNull(),
+  outputIndex: integer("output_index").notNull(),
+  fileId: text("file_id").notNull().unique(),
+  role: text("role").notNull(),
+  contentType: text("content_type").notNull(),
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+  sha256: text("sha256").notNull(),
+  media: jsonb("media").notNull(),
+  provenance: jsonb("provenance").notNull(),
+  status: text("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  committedAt: timestamp("committed_at", { withTimezone: true }),
 });
 
 export const providerOperations = pgTable("provider_operations", {

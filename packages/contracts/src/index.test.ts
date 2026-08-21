@@ -5,6 +5,7 @@ import {
   imageEditSchema,
   imageGenerationSchema,
   inputMediaTypeForContentType,
+  outputManifestSchema,
   resolveVideoGenerationRequest,
   videoEditSchema,
   videoGenerationSchema,
@@ -211,6 +212,26 @@ describe("contracts", () => {
         size_bytes: 1,
         sha256: "0".repeat(64),
         url: "https://example.invalid/a.png",
+      }),
+    ).toThrow();
+  });
+
+  test("requires output provenance and execution usage", () => {
+    expect(() =>
+      outputManifestSchema.parse({
+        execution_id: "execution_1",
+        status: "completed",
+        outputs: [
+          {
+            role: "result",
+            path: "/work/tasks/attempt_1/outputs/result.mp4",
+            content_type: "video/mp4",
+            sha256: "0".repeat(64),
+            size_bytes: 1,
+            media: {},
+            provenance: { producer: "model_app", transformations: ["platform_transcode"] },
+          },
+        ],
       }),
     ).toThrow();
   });

@@ -24,6 +24,7 @@ const configuration =
           "packages/database/src/admin-query.integration.test.ts",
           "packages/database/src/admin-management.integration.test.ts",
           "packages/database/src/scheduling-repository.integration.test.ts",
+          "packages/database/src/worker-control-repository.integration.test.ts",
         ],
         env: common,
       }

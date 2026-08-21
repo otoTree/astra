@@ -5,6 +5,7 @@ import {
   loadProviderControllerConfig,
   loadPublicApiConfig,
   loadSchedulerConfig,
+  loadWorkerControlApiConfig,
 } from "./index.ts";
 
 describe("service configuration", () => {
@@ -79,5 +80,21 @@ describe("service configuration", () => {
         SCHEDULER_RESERVATION_SECONDS: "31",
       }),
     ).toThrow();
+  });
+
+  test("worker control requires isolated identity, encryption and object storage boundaries", () => {
+    expect(() => loadWorkerControlApiConfig({ DATABASE_URL: "postgres://astra:astra@localhost:5432/astra" })).toThrow();
+    const config = loadWorkerControlApiConfig({
+      DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+      ASTRA_REQUEST_ENCRYPTION_KEY: "e".repeat(32),
+      WORKER_TOKEN_PEPPER: "w".repeat(32),
+      S3_ENDPOINT: "http://localhost:9000",
+      S3_BUCKET: "astra-local",
+      S3_ACCESS_KEY: "local",
+      S3_SECRET_KEY: "local-secret",
+      MEDIA_VALIDATOR_URL: "http://localhost:4113",
+      MEDIA_VALIDATOR_TOKEN: "m".repeat(32),
+    });
+    expect(config.WORKER_ORPHAN_GRACE_PERIOD_SECONDS).toBe(180);
   });
 });

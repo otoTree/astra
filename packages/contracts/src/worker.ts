@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mediaMetadataSchema } from "./media.ts";
 
 export const workerContractVersion = "1.0" as const;
 export const workerDesiredStateSchema = z.enum(["run", "cancel", "drain", "shutdown"]);
@@ -80,33 +81,45 @@ export const executionStatusSchema = z.enum([
 ]);
 export type ExecutionStatus = z.infer<typeof executionStatusSchema>;
 
-export const outputManifestSchema = z.object({
-  execution_id: z.string(),
-  status: z.literal("completed"),
-  outputs: z.array(
-    z.object({
-      role: z.string(),
-      path: z.string(),
-      content_type: z.string(),
-      sha256: z.string().regex(/^[0-9a-f]{64}$/),
-      size_bytes: z.number().int().positive(),
-      media: z.record(z.string(), z.unknown()),
-      provenance: z.object({ producer: z.literal("model_app"), transformations: z.array(z.string()) }),
-    }),
-  ),
-});
+export const outputManifestSchema = z
+  .object({
+    execution_id: z.string().min(1),
+    status: z.literal("completed"),
+    outputs: z
+      .array(
+        z
+          .object({
+            role: z.string().min(1),
+            path: z.string().min(1),
+            content_type: z.enum(["image/png", "image/jpeg", "image/webp", "video/mp4", "video/quicktime"]),
+            sha256: z.string().regex(/^[0-9a-f]{64}$/),
+            size_bytes: z.number().int().positive(),
+            media: mediaMetadataSchema,
+            provenance: z.object({ producer: z.literal("model_app"), transformations: z.array(z.string()) }).strict(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(16),
+    usage: z.record(z.string(), z.number().nonnegative()),
+  })
+  .strict();
 export type OutputManifest = z.infer<typeof outputManifestSchema>;
 
-export const executionViewSchema = z.object({
-  execution_id: z.string(),
-  status: executionStatusSchema,
-  stage: z.string().optional(),
-  progress: z.number().min(0).max(100).nullable().optional(),
-  message: z.string().optional(),
-  metrics: z.record(z.string(), z.number()).optional(),
-  error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }).optional(),
-});
+export const executionViewSchema = z
+  .object({
+    execution_id: z.string(),
+    status: executionStatusSchema,
+    stage: z.string().optional(),
+    progress: z.number().min(0).max(100).nullable().optional(),
+    message: z.string().optional(),
+    metrics: z.record(z.string(), z.number()).optional(),
+    error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }).strict().optional(),
+  })
+  .strict();
 export type ExecutionView = z.infer<typeof executionViewSchema>;
+export const modelExecutionViewSchema = z.union([outputManifestSchema, executionViewSchema]);
+export type ModelExecutionView = z.infer<typeof modelExecutionViewSchema>;
 
 export const workerRegistrationSchema = z
   .object({
@@ -139,6 +152,7 @@ export const workerRegistrationResponseSchema = z
     orphan_grace_period_seconds: z.number().int().nonnegative(),
   })
   .strict();
+export type WorkerRegistrationResponse = z.infer<typeof workerRegistrationResponseSchema>;
 
 export const workerLeaseRequestSchema = z
   .object({
@@ -155,6 +169,7 @@ export const workerLeaseRequestSchema = z
       context.addIssue({ code: z.ZodIssueCode.custom, message: "reported slots must equal max_concurrency" });
     }
   });
+export type WorkerLeaseRequest = z.infer<typeof workerLeaseRequestSchema>;
 
 export const leasedAttemptSchema = z
   .object({
@@ -164,8 +179,19 @@ export const leasedAttemptSchema = z
     lease_expires_at: z.number().int().positive(),
     execution_key: z.string().min(1),
     inference: inferenceRequestSchema,
+    input_downloads: z.array(
+      z
+        .object({
+          file_id: z.string().min(1),
+          url: z.string().url(),
+          headers: z.record(z.string(), z.string()),
+          expires_at: z.number().int().positive(),
+        })
+        .strict(),
+    ),
   })
   .strict();
+export type LeasedAttempt = z.infer<typeof leasedAttemptSchema>;
 
 export const workerHeartbeatSchema = z
   .object({
@@ -197,10 +223,24 @@ export const workerHeartbeatSchema = z
 export const workerHeartbeatResponseSchema = z
   .object({
     accepted_sequence: z.number().int().nonnegative(),
-    lease_expires_at: z.number().int().positive().nullable(),
+    leases: z.array(
+      z
+        .object({
+          attempt_id: z.string().min(1),
+          lease_id: z.string().min(1),
+          lease_version: z.number().int().nonnegative(),
+          lease_expires_at: z.number().int().positive(),
+          cancel_requested: z.boolean(),
+        })
+        .strict(),
+    ),
     desired_state: workerDesiredStateSchema,
+    worker_token: z.string().min(32).optional(),
+    token_expires_at: z.number().int().positive().optional(),
   })
   .strict();
+export type WorkerHeartbeat = z.infer<typeof workerHeartbeatSchema>;
+export type WorkerHeartbeatResponse = z.infer<typeof workerHeartbeatResponseSchema>;
 
 export const prepareOutputsSchema = z
   .object({
@@ -209,6 +249,27 @@ export const prepareOutputsSchema = z
     manifest: outputManifestSchema,
   })
   .strict();
+
+export const prepareOutputsResponseSchema = z
+  .object({
+    attempt_id: z.string().min(1),
+    lease_version: z.number().int().nonnegative(),
+    uploads: z.array(
+      z
+        .object({
+          output_index: z.number().int().nonnegative(),
+          file_id: z.string().min(1),
+          method: z.literal("PUT"),
+          url: z.string().url(),
+          headers: z.record(z.string(), z.string()),
+          expires_at: z.number().int().positive(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type PrepareOutputs = z.infer<typeof prepareOutputsSchema>;
+export type PrepareOutputsResponse = z.infer<typeof prepareOutputsResponseSchema>;
 
 export const completeOutputsSchema = z
   .object({
@@ -227,6 +288,17 @@ export const completeOutputsSchema = z
       .min(1),
   })
   .strict();
+export type CompleteOutputs = z.infer<typeof completeOutputsSchema>;
+
+export const completeOutputsResponseSchema = z
+  .object({
+    attempt_id: z.string().min(1),
+    status: z.literal("outputs_committed"),
+    file_ids: z.array(z.string().min(1)).min(1),
+    lease_version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CompleteOutputsResponse = z.infer<typeof completeOutputsResponseSchema>;
 
 export const completeAttemptSchema = z
   .object({
@@ -237,6 +309,37 @@ export const completeAttemptSchema = z
     usage: z.record(z.string(), z.number().nonnegative()),
   })
   .strict();
+export type CompleteAttempt = z.infer<typeof completeAttemptSchema>;
+
+export const failAttemptSchema = z
+  .object({
+    lease_id: z.string().min(1),
+    lease_version: z.number().int().nonnegative(),
+    execution_id: z.string().min(1),
+    failed_at: z.string().datetime({ offset: true }),
+    error: z
+      .object({
+        code: z.string().min(1),
+        message: z.string().min(1).max(1000),
+        retryable: z.boolean(),
+        stage: z.string().min(1).optional(),
+      })
+      .strict(),
+    usage: z.record(z.string(), z.number().nonnegative()).default({}),
+  })
+  .strict();
+export type FailAttempt = z.infer<typeof failAttemptSchema>;
+
+export const attemptMutationResponseSchema = z
+  .object({
+    attempt_id: z.string().min(1),
+    task_id: z.string().min(1),
+    attempt_status: z.enum(["completed", "failed", "canceled"]),
+    task_status: z.enum(["completed", "failed", "canceled"]),
+    lease_version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AttemptMutationResponse = z.infer<typeof attemptMutationResponseSchema>;
 
 export const drainedWorkerSchema = z
   .object({
@@ -249,3 +352,8 @@ export const drainedWorkerSchema = z
     observed_at: z.string().datetime({ offset: true }),
   })
   .strict();
+
+export const drainedWorkerResponseSchema = z
+  .object({ accepted: z.literal(true), reclaim_token: z.string().min(32) })
+  .strict();
+export type DrainedWorker = z.infer<typeof drainedWorkerSchema>;

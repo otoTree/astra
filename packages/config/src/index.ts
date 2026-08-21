@@ -44,6 +44,24 @@ export const adminApiConfigSchema = environmentSchema.extend({
 export const workerControlApiConfigSchema = environmentSchema.extend({
   WORKER_CONTROL_API_PORT: port(4102),
   DATABASE_URL: requiredUrl,
+  ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
+  WORKER_TOKEN_PEPPER: z.string().min(32),
+  WORKER_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(3600).default(1800),
+  WORKER_TOKEN_ROTATE_BEFORE_SECONDS: z.coerce.number().int().min(60).max(1800).default(600),
+  WORKER_HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().min(2).max(60).default(10),
+  WORKER_LEASE_DURATION_SECONDS: z.coerce.number().int().min(10).max(300).default(30),
+  WORKER_HEARTBEAT_TIMEOUT_SECONDS: z.coerce.number().int().min(15).max(600).default(45),
+  WORKER_ORPHAN_GRACE_PERIOD_SECONDS: z.coerce.number().int().min(30).max(3600).default(180),
+  WORKER_RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().min(2).max(60).default(10),
+  WORKER_RECONCILE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+  S3_ENDPOINT: requiredUrl,
+  S3_PUBLIC_ENDPOINT: requiredUrl.optional(),
+  S3_BUCKET: z.string().min(3),
+  S3_ACCESS_KEY: z.string().min(1),
+  S3_SECRET_KEY: z.string().min(8),
+  MEDIA_VALIDATOR_URL: requiredUrl,
+  MEDIA_VALIDATOR_TOKEN: z.string().min(32),
+  MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(610),
 });
 
 export const schedulerConfigSchema = environmentSchema.extend({
@@ -96,6 +114,22 @@ export const workerAgentConfigSchema = environmentSchema.extend({
   MODEL_APP_URL: requiredUrl.default("http://127.0.0.1:9000"),
   WORKER_CONTROL_URL: requiredUrl,
   WORKER_BOOTSTRAP_TOKEN: z.string().min(32),
+  WORKER_PROVIDER: z.string().min(1),
+  WORKER_REGION: z.string().min(1),
+  WORKER_PROVIDER_INSTANCE_ID: z.string().min(1),
+  WORKER_REPLICA_ID: z.string().min(1),
+  WORKER_POOL_ID: z.string().min(1),
+  WORKER_RELEASE_ID: z.string().min(1),
+  WORKER_INSTANCE_FINGERPRINT: z.string().min(16),
+  WORKER_GPU_SKU: z.string().min(1),
+  WORKER_GPU_COUNT: z.coerce.number().int().positive(),
+  WORKER_GPU_MEMORY_BYTES: z.coerce.number().int().positive(),
+  WORKER_WORK_ROOT: z
+    .string()
+    .regex(/^\/work(?:\/.*)?$/)
+    .default("/work/tasks"),
+  WORKER_CONTROL_TIMEOUT_SECONDS: z.coerce.number().int().min(5).max(120).default(30),
+  WORKER_IDLE_POLL_MS: z.coerce.number().int().min(100).max(30000).default(1000),
 });
 
 export const modelAppConfigSchema = environmentSchema.extend({

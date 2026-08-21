@@ -11,6 +11,8 @@ export * from "./admin-query-service.ts";
 export * from "./admin-management-service.ts";
 export * from "./event-repository.ts";
 export * from "./scheduling-repository.ts";
+export * from "./request-cipher.ts";
+export * from "./worker-control-repository.ts";
 
 export function createDatabase(databaseUrl: string) {
   const client = postgres(databaseUrl, { prepare: false });
