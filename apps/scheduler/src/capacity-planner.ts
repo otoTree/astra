@@ -26,6 +26,15 @@ const policyFromDatabase = (value: Record<string, unknown>): CapacityPolicy => (
   waitValueMinorPerMinute: Math.max(0, Number(value.wait_value_minor_per_minute ?? 0)),
   sloPenaltyMinorPerMinute: Math.max(0, Number(value.slo_penalty_minor_per_minute ?? 0)),
   batchMinSharePercent: Math.min(100, Math.max(0, Number(value.batch_min_share_percent ?? 10))),
+  ...(Array.isArray(value.allowed_providers)
+    ? { allowedProviders: value.allowed_providers.filter((item): item is string => typeof item === "string") }
+    : {}),
+  ...(Array.isArray(value.allowed_regions)
+    ? { allowedRegions: value.allowed_regions.filter((item): item is string => typeof item === "string") }
+    : {}),
+  ...(value.max_price_per_gpu_hour_minor === undefined
+    ? {}
+    : { maxPricePerGpuHourMinor: Math.max(0, Number(value.max_price_per_gpu_hour_minor)) }),
 });
 
 const toCapacitySnapshot = (

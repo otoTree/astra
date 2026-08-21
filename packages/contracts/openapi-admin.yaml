@@ -694,6 +694,19 @@ components:
         aging_seconds: { type: integer, minimum: 60, maximum: 86400, default: 1800 }
         prediction_min_samples: { type: integer, minimum: 1, maximum: 10000, default: 30 }
         ewma_alpha_basis_points: { type: integer, minimum: 1, maximum: 10000, default: 2000 }
+    RegionPolicyConfiguration:
+      type: object
+      additionalProperties: false
+      required: [allowed_regions, max_price_per_gpu_hour_minor, completion_weight, cost_weight, failure_weight, cold_start_weight, transfer_weight]
+      properties:
+        allowed_regions: { type: array, minItems: 1, maxItems: 64, items: { type: string, minLength: 3, maxLength: 128, pattern: '^[a-z0-9][a-z0-9_.-]*$' } }
+        allowed_providers: { type: array, minItems: 1, maxItems: 64, items: { type: string, minLength: 3, maxLength: 128, pattern: '^[a-z0-9][a-z0-9_.-]*$' } }
+        max_price_per_gpu_hour_minor: { type: integer, minimum: 0 }
+        completion_weight: { type: integer, minimum: 0, maximum: 1000 }
+        cost_weight: { type: integer, minimum: 0, maximum: 1000 }
+        failure_weight: { type: integer, minimum: 0, maximum: 1000 }
+        cold_start_weight: { type: integer, minimum: 0, maximum: 1000 }
+        transfer_weight: { type: integer, minimum: 0, maximum: 1000 }
     PolicyValidation:
       type: object
       additionalProperties: false
@@ -701,7 +714,7 @@ components:
       properties:
         policy_type: { type: string, enum: [capacity, budget, region, retry] }
         pool_id: { type: string }
-        configuration: { oneOf: [{ $ref: '#/components/schemas/CapacityPolicyConfiguration' }, { type: object, additionalProperties: true }] }
+        configuration: { oneOf: [{ $ref: '#/components/schemas/CapacityPolicyConfiguration' }, { $ref: '#/components/schemas/RegionPolicyConfiguration' }, { type: object, additionalProperties: true }] }
         reason: { type: string, minLength: 8, maxLength: 1000 }
     PolicyImpactPreview:
       type: object

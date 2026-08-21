@@ -86,6 +86,51 @@ describe("capacity planning", () => {
     expect(result.admissionControl).toBe(false);
   });
 
+  test("selects an allowed cross-provider region when it is cheaper and faster", () => {
+    const result = planCapacity(
+      snapshot({
+        offers: [
+          {
+            provider: "reference",
+            regionId: "region_a",
+            gpuSku: "rtx5090",
+            availableReplicas: 20,
+            pricePerGpuHourMinor: 500,
+            coldStartSeconds: 600,
+            failureRateBasisPoints: 300,
+            transferCostMinorPerTask: 50,
+            healthy: true,
+            snapshotFresh: true,
+          },
+          {
+            provider: "gongji",
+            regionId: "region_b",
+            gpuSku: "rtx5090",
+            availableReplicas: 20,
+            pricePerGpuHourMinor: 250,
+            coldStartSeconds: 90,
+            failureRateBasisPoints: 25,
+            transferCostMinorPerTask: 5,
+            healthy: true,
+            snapshotFresh: true,
+          },
+        ],
+      }),
+      {
+        ...policy,
+        allowedProviders: ["gongji"],
+        allowedRegions: ["region_b"],
+        maxPricePerGpuHourMinor: 300,
+      },
+    );
+
+    expect(result.placement?.provider).toBe("gongji");
+    expect(result.placement?.regionId).toBe("region_b");
+    expect(result.placement?.reasons).toContain("provider_policy_filtered");
+    expect(result.placement?.reasons).toContain("price_policy_filtered");
+    expect(result.placement?.reasons).toContain("region_policy_filtered");
+  });
+
   test("suppresses expansion on stale inventory, budget, or rollout and never drains busy replicas", () => {
     expect(planCapacity(snapshot({ offers: [], currentDesiredReplicas: 1 }), policy).suppressedBy).toBe("inventory");
     expect(planCapacity(snapshot({ budgetRemainingMinor: 1, currentDesiredReplicas: 1 }), policy).suppressedBy).toBe(

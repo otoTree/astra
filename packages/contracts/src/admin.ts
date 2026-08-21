@@ -218,6 +218,7 @@ export const budgetPolicyConfigurationSchema = z
 export const regionPolicyConfigurationSchema = z
   .object({
     allowed_regions: z.array(resourceIdSchema).min(1).max(64),
+    allowed_providers: z.array(resourceIdSchema).min(1).max(64).optional(),
     max_price_per_gpu_hour_minor: z.number().int().nonnegative(),
     completion_weight: z.number().int().min(0).max(1000),
     cost_weight: z.number().int().min(0).max(1000),

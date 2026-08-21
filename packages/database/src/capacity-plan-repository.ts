@@ -58,7 +58,7 @@ export class CapacityPlanRepository {
     const timestamp = this.now();
     const pools = await this.sql`SELECT p.id, p.project_id, p.release_id, p.provider, p.region_id, p.gpu_sku,
         p.status, p.version, mr.manifest,
-        pv.id AS policy_version_id, pv.configuration,
+        pv.id AS policy_version_id, pv.configuration, rp.configuration AS region_configuration,
         (SELECT count(*)::int FROM replicas r WHERE r.pool_id=p.id AND r.observed_state IN ('ready','busy')) AS ready_replicas,
         (SELECT count(*)::int FROM replicas r WHERE r.pool_id=p.id AND r.desired_state<>'terminated') AS desired_replicas
       FROM model_pools p JOIN model_releases mr ON mr.id=p.release_id
@@ -67,6 +67,11 @@ export class CapacityPlanRepository {
         WHERE pool_id=p.id AND policy_type='capacity' AND status='published'
         ORDER BY version DESC LIMIT 1
       ) pv ON true
+      LEFT JOIN LATERAL (
+        SELECT configuration FROM policy_versions
+        WHERE pool_id=p.id AND policy_type='region' AND status='published'
+        ORDER BY version DESC LIMIT 1
+      ) rp ON true
       WHERE p.status IN ('active','degraded') AND pv.id IS NOT NULL
       ORDER BY p.id LIMIT ${Math.min(Math.max(limit, 1), 500)}`;
     const snapshots: CapacityPoolSnapshot[] = [];
@@ -90,9 +95,20 @@ export class CapacityPlanRepository {
         FROM attempts a WHERE a.pool_id=${poolId} AND a.status IN ('leased','running') ORDER BY a.id LIMIT 2000`;
       const offers = await this.sql`SELECT provider, region_id, gpu_sku, available_replicas,
           price_per_gpu_hour_minor, observed_at FROM provider_inventory
-        WHERE provider=${String(pool.provider)} AND gpu_sku=${String(pool.gpu_sku)}
-        ORDER BY region_id`;
-      const policy = (pool.configuration ?? {}) as Record<string, unknown>;
+        WHERE gpu_sku=${String(pool.gpu_sku)}
+        ORDER BY provider, region_id`;
+      const capacityPolicy = (pool.configuration ?? {}) as Record<string, unknown>;
+      const regionPolicy = (pool.region_configuration ?? {}) as Record<string, unknown>;
+      const policy: Record<string, unknown> = {
+        ...capacityPolicy,
+        ...(Array.isArray(regionPolicy.allowed_providers)
+          ? { allowed_providers: regionPolicy.allowed_providers }
+          : { allowed_providers: [String(pool.provider)] }),
+        ...(Array.isArray(regionPolicy.allowed_regions) ? { allowed_regions: regionPolicy.allowed_regions } : {}),
+        ...(regionPolicy.max_price_per_gpu_hour_minor === undefined
+          ? {}
+          : { max_price_per_gpu_hour_minor: regionPolicy.max_price_per_gpu_hour_minor }),
+      };
       snapshots.push({
         projectId: String(pool.project_id),
         poolId,

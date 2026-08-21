@@ -67,6 +67,9 @@ export type CapacityPolicy = Readonly<{
   waitValueMinorPerMinute: number;
   sloPenaltyMinorPerMinute: number;
   batchMinSharePercent: number;
+  allowedProviders?: readonly string[];
+  allowedRegions?: readonly string[];
+  maxPricePerGpuHourMinor?: number;
 }>;
 
 export type CapacitySnapshot = Readonly<{
@@ -203,11 +206,13 @@ const placement = (
 ): PlacementDecision | undefined => {
   const candidates = snapshot.offers.filter(
     (offer) =>
-      offer.provider === snapshot.replicaProvider &&
       offer.gpuSku === snapshot.replicaGpuSku &&
       offer.healthy &&
       offer.snapshotFresh &&
-      offer.availableReplicas >= replicas,
+      offer.availableReplicas >= replicas &&
+      (policy.allowedProviders === undefined || policy.allowedProviders.includes(offer.provider)) &&
+      (policy.allowedRegions === undefined || policy.allowedRegions.includes(offer.regionId)) &&
+      (policy.maxPricePerGpuHourMinor === undefined || offer.pricePerGpuHourMinor <= policy.maxPricePerGpuHourMinor),
   );
   if (candidates.length === 0) return undefined;
   const maxCost = Math.max(...candidates.map((candidate) => candidate.pricePerGpuHourMinor));
@@ -238,7 +243,14 @@ const placement = (
     estimatedCompletionSeconds:
       winner.coldStartSeconds +
       simulateQueue(replicas, snapshot.approvedMaxConcurrency, snapshot.running, snapshot.queue).p95WaitSeconds,
-    reasons: ["hardware_compatible", "fresh_inventory", "budget_filtered", "deterministic_score"],
+    reasons: [
+      "hardware_compatible",
+      "fresh_inventory",
+      ...(policy.allowedProviders === undefined ? [] : ["provider_policy_filtered"]),
+      ...(policy.maxPricePerGpuHourMinor === undefined ? [] : ["price_policy_filtered"]),
+      ...(policy.allowedRegions === undefined ? [] : ["region_policy_filtered"]),
+      "deterministic_score",
+    ],
   };
 };
 
@@ -264,9 +276,6 @@ export function planCapacity(snapshot: CapacitySnapshot, policy: CapacityPolicy)
     snapshot.queue,
   );
   const selectedPlacement = placement(snapshot, policy, Math.max(0, bounded - current));
-  const hourlyPrice = selectedPlacement
-    ? selectedPlacement.estimatedCostMinor / Math.max(policy.backlogDrainSeconds / 3600, 1)
-    : 0;
   const costMinor = Math.max(0, selectedPlacement?.estimatedCostMinor ?? 0);
   const benefitMinor =
     Math.max(0, (currentSimulation.p95WaitSeconds - candidateSimulation.p95WaitSeconds) / 60) *
@@ -276,6 +285,12 @@ export function planCapacity(snapshot: CapacitySnapshot, policy: CapacityPolicy)
   const admissionControl =
     candidateSimulation.maximumWaitSeconds > policy.maxQueueEtaSeconds ||
     (snapshot.queue.length > 0 && bounded >= policy.maxReplicas);
+  const unitCostMinor =
+    selectedPlacement && bounded > current ? selectedPlacement.estimatedCostMinor / (bounded - current) : 0;
+  const affordableReplicas =
+    unitCostMinor > 0
+      ? Math.min(policy.maxReplicas, current + Math.floor(snapshot.budgetRemainingMinor / unitCostMinor))
+      : current;
   let desired = bounded;
   let suppressedBy: CapacityDecision["suppressedBy"];
   if (snapshot.rolloutInProgress && desired < current) {
@@ -336,9 +351,9 @@ export function planCapacity(snapshot: CapacitySnapshot, policy: CapacityPolicy)
     desiredReplicas: desired,
     workloadReplicas,
     queueSloReplicas,
-    affordableReplicas: snapshot.budgetRemainingMinor >= costMinor ? bounded : current,
+    affordableReplicas: Math.max(policy.minReplicas, affordableReplicas),
     queueEtaSeconds,
-    costMinor: Math.ceil(hourlyPrice * 0 + costMinor),
+    costMinor,
     benefitMinor: Math.floor(benefitMinor),
     netBenefitMinor,
     ...(selectedPlacement ? { placement: selectedPlacement } : {}),
