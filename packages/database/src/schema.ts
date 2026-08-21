@@ -1,4 +1,4 @@
-import { pgTable, text, integer, timestamp, jsonb, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, jsonb, boolean, index, uniqueIndex, bigint } from "drizzle-orm/pg-core";
 
 export const tasks = pgTable(
   "tasks",
@@ -57,7 +57,9 @@ export const leases = pgTable("leases", {
 
 export const modelReleases = pgTable("model_releases", {
   id: text("id").primaryKey(),
+  modelId: text("model_id").notNull(),
   alias: text("alias").notNull(),
+  maturity: text("maturity").notNull(),
   imageDigest: text("image_digest").notNull(),
   workflowHash: text("workflow_hash").notNull(),
   manifest: jsonb("manifest").notNull(),
@@ -81,11 +83,13 @@ export const files = pgTable("files", {
   filename: text("filename").notNull(),
   purpose: text("purpose").notNull(),
   contentType: text("content_type").notNull(),
-  sizeBytes: integer("size_bytes").notNull(),
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
   sha256: text("sha256").notNull(),
   objectKey: text("object_key").notNull().unique(),
   status: text("status").notNull(),
+  media: jsonb("media"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 

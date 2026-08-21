@@ -29,6 +29,7 @@ Provider Adapter 参考实现 + Worker Agent + Model App 参考实现
 - 启动前先检查 `docker compose -p astra-local ps` 和端口占用。只有确认端口属于本项目时，才允许 `docker compose -p astra-local down` 后重新启动；未知占用改端口，不执行全局 `docker compose down`、`docker system prune` 或 `docker volume prune`。
 - 允许 AI 在本地启动开发服务、Compose 依赖和测试进程，但必须使用可识别的 project name，并在交付说明中报告启动、停止和端口变更。
 - 真实 GPU/H3 profile 只能显式启用，不能成为默认 `dev`、合同测试或 CI 依赖；接口正确性由 Model App 合同参考实现、Worker Agent、Schema 和端到端 Task 流程证明。
+- 阶段 0-13 和默认本地开发不得下载模型、VAE、LoRA、文本编码器或其他权重，也不得把权重放入仓库、开发机缓存、Compose volume 或 CI artifact。阶段 14 的隔离拉取必须由用户显式授权，并执行来源、许可证、大小和 SHA-256 校验。
 - 组件、目录、脚本和文档采用正式领域名称；测试专用实现必须按具体技术特征或用途命名，不能让测试属性取代领域名称。
 
 ## 3. 代码组织和依赖方向

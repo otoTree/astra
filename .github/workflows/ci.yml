@@ -12,6 +12,34 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      ASTRA_LOCAL_POSTGRES_USER: astra_ci
+      ASTRA_LOCAL_POSTGRES_PASSWORD: astra_ci_ephemeral_password
+      ASTRA_LOCAL_POSTGRES_DB: astra_ci
+      ASTRA_LOCAL_POSTGRES_PORT: 55432
+      ASTRA_LOCAL_REDIS_PORT: 56379
+      ASTRA_LOCAL_KAFKA_PORT: 59092
+      ASTRA_LOCAL_S3_ACCESS_KEY: astra_ci
+      ASTRA_LOCAL_S3_SECRET_KEY: astra_ci_ephemeral_secret
+      ASTRA_LOCAL_S3_BUCKET: astra-local
+      ASTRA_LOCAL_S3_PORT: 59000
+      ASTRA_LOCAL_S3_CONSOLE_PORT: 59001
+      ASTRA_LOCAL_MODEL_APP_PORT: 49000
+      ASTRA_LOCAL_MEDIA_VALIDATOR_TOKEN: astra-ci-media-validator-token-value
+      ASTRA_LOCAL_MEDIA_VALIDATOR_PORT: 54103
+      ASTRA_LOCAL_REQUEST_ENCRYPTION_KEY: astra-ci-request-encryption-key-value
+      ASTRA_LOCAL_PUBLIC_API_PORT: 54100
+      ASTRA_LOCAL_ADMIN_API_PORT: 54101
+      ASTRA_LOCAL_WORKER_CONTROL_API_PORT: 54102
+      ASTRA_LOCAL_FILE_SWEEPER_METRICS_PORT: 54104
+      DATABASE_URL: postgres://astra_ci:astra_ci_ephemeral_password@127.0.0.1:55432/astra_ci
+      S3_ENDPOINT: http://127.0.0.1:59000
+      S3_PUBLIC_ENDPOINT: http://127.0.0.1:59000
+      S3_BUCKET: astra-local
+      S3_ACCESS_KEY: astra_ci
+      S3_SECRET_KEY: astra_ci_ephemeral_secret
+      MEDIA_VALIDATOR_URL: http://127.0.0.1:54103
+      MEDIA_VALIDATOR_TOKEN: astra-ci-media-validator-token-value
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -19,10 +47,11 @@ jobs:
           bun-version: 1.3.6
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun run compose:check
+      - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml config --quiet
       - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml up -d --wait postgres minio
       - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml run --rm database-migrate
       - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml run --rm minio-init
+      - run: docker compose -p astra-local -f deploy/compose/docker-compose.yml up -d --wait media-validator
       - run: bun run test:integration:local
       - if: always()
         run: docker compose -p astra-local -f deploy/compose/docker-compose.yml down

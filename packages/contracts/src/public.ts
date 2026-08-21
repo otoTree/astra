@@ -54,6 +54,46 @@ export const fileUploadRequestSchema = z
   .strict();
 export type FileUploadRequest = z.infer<typeof fileUploadRequestSchema>;
 
+export const fileStatusSchema = z.enum([
+  "pending_upload",
+  "validating",
+  "available",
+  "rejected",
+  "expiring",
+  "expired",
+]);
+
+export const fileSchema = z
+  .object({
+    id: z.string().min(1),
+    object: z.literal("file"),
+    status: fileStatusSchema,
+    filename: z.string().min(1),
+    content_type: fileUploadRequestSchema.shape.content_type,
+    size_bytes: z.number().int().positive(),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    purpose: z.literal("generation_input"),
+    created_at: z.number().int().nonnegative(),
+    expires_at: z.number().int().nonnegative(),
+    media: z
+      .object({
+        media_type: z.enum(["image", "video", "audio"]),
+        container: z.string().min(1),
+        width: z.number().int().positive().optional(),
+        height: z.number().int().positive().optional(),
+        duration_seconds: z.number().positive().optional(),
+        fps: z.number().positive().optional(),
+        video_codec: z.string().min(1).optional(),
+        audio_codec: z.string().min(1).optional(),
+        audio_sample_rate: z.number().int().positive().optional(),
+        audio_channels: z.number().int().positive().optional(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type File = z.infer<typeof fileSchema>;
+
 export const inputFileSchema = z
   .object({
     file_id: z.string().min(1),
@@ -184,9 +224,29 @@ export const videoGenerationSchema = baseGenerationSchema
           });
         }
       })
-      .optional(),
+      .default({ mode: "native" }),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    const roles = new Set(request.input_files.map((file) => file.role));
+    if (request.audio?.mode === "reference" && !roles.has("reference_audio") && !roles.has("reference_video_audio")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["audio", "mode"],
+        message: "reference audio mode requires reference audio input",
+      });
+    }
+    if (
+      (request.audio?.mode === "lock_source" || request.audio?.mode === "remix_source") &&
+      !roles.has("source_audio")
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["audio", "mode"],
+        message: "source audio mode requires source_audio input",
+      });
+    }
+  });
 export type VideoGenerationRequest = z.infer<typeof videoGenerationSchema>;
 
 export type VideoRuntimeProfile = Readonly<{
@@ -224,12 +284,18 @@ export function resolveVideoGenerationRequest(
 export const imageGenerationSchema = baseGenerationSchema
   .extend({
     size: z.string().regex(/^\d+x\d+$/),
-    quality: z.enum(["standard", "high"]).optional(),
+    quality: z.enum(["standard", "high"]).default("standard"),
     n: z.number().int().min(1).max(4).default(1),
     output_format: z.enum(["png", "jpeg", "webp"]).default("png"),
     input_files: z.array(imageReferenceSchema).max(16).default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    const ids = request.input_files.map((file) => file.file_id);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["input_files"], message: "duplicate file_id" });
+    }
+  });
 export type ImageGenerationRequest = z.infer<typeof imageGenerationSchema>;
 
 export const videoEditSchema = videoGenerationSchema.superRefine((request, context) => {
@@ -246,7 +312,7 @@ export type VideoEditRequest = z.infer<typeof videoEditSchema>;
 export const imageEditSchema = baseGenerationSchema
   .extend({
     size: z.string().regex(/^\d+x\d+$/),
-    quality: z.enum(["standard", "high"]).optional(),
+    quality: z.enum(["standard", "high"]).default("standard"),
     n: z.number().int().min(1).max(4).default(1),
     output_format: z.enum(["png", "jpeg", "webp"]).default("png"),
     input_files: z
@@ -271,6 +337,10 @@ export const imageEditSchema = baseGenerationSchema
         path: ["input_files"],
         message: "image edits accept at most one mask",
       });
+    }
+    const ids = request.input_files.map((file) => file.file_id);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["input_files"], message: "duplicate file_id" });
     }
   });
 export type ImageEditRequest = z.infer<typeof imageEditSchema>;
@@ -316,19 +386,32 @@ export const modelSchema = z
   })
   .strict();
 
-export const taskSchema = z.object({
-  id: z.string(),
-  object: z.literal("generation.task"),
-  type: z.enum(["video", "image"]),
-  operation: z.enum(["generation", "edit"]),
-  status: taskStatusSchema,
-  model: z.string(),
-  model_release: z.string(),
-  priority: z.enum(["online", "batch"]),
-  progress: z.number().int().min(0).max(100).nullable().optional(),
-  status_reason: z.string().nullable().optional(),
-  created_at: z.number().int(),
-  updated_at: z.number().int(),
-  output_file_ids: z.array(z.string()).default([]),
-});
+export const taskSchema = z
+  .object({
+    id: z.string(),
+    object: z.literal("generation.task"),
+    type: z.enum(["video", "image"]),
+    operation: z.enum(["generation", "edit"]),
+    status: taskStatusSchema,
+    model: z.string(),
+    model_release: z.string(),
+    priority: z.enum(["online", "batch"]),
+    request: z.union([videoGenerationSchema, imageGenerationSchema, videoEditSchema, imageEditSchema]),
+    resolved_parameters: z.union([
+      z
+        .object({ width: z.number().int().positive(), height: z.number().int().positive(), fps: z.number().positive() })
+        .strict(),
+      z.object({ width: z.number().int().positive(), height: z.number().int().positive() }).strict(),
+    ]),
+    progress: z.number().int().min(0).max(100).nullable(),
+    status_reason: z.string().nullable(),
+    output_file_ids: z.array(z.string()),
+    output: z.record(z.string(), z.unknown()).nullable(),
+    error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }).passthrough().nullable(),
+    created_at: z.number().int().nonnegative(),
+    updated_at: z.number().int().nonnegative(),
+    completed_at: z.number().int().nonnegative().nullable(),
+    expires_at: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
 export type Task = z.infer<typeof taskSchema>;

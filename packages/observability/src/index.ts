@@ -1,3 +1,5 @@
+import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from "prom-client";
+
 export type LogContext = Readonly<Record<string, string | number | boolean | undefined>>;
 
 export function createLogger(service: string) {
@@ -12,3 +14,18 @@ export function createLogger(service: string) {
     error: (message: string, context?: LogContext) => write("error", message, context),
   };
 }
+
+export function createMetricRegistry(service: string): Registry {
+  const registry = new Registry();
+  registry.setDefaultLabels({ service });
+  collectDefaultMetrics({ register: registry, prefix: "astra_process_" });
+  return registry;
+}
+
+export async function metricResponse(registry: Registry): Promise<Response> {
+  return new Response(await registry.metrics(), {
+    headers: { "content-type": registry.contentType, "cache-control": "no-store" },
+  });
+}
+
+export { Counter, Gauge, Histogram, Registry };

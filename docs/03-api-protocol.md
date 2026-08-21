@@ -119,9 +119,17 @@ API Key 绑定组织和默认项目。调用方可以传 `X-Project-Id` 选择�
 
 重复确认同一完整对象返回相同 File。对象不匹配时返回 `422 upload_integrity_mismatch` 并删除不可信对象。
 
+确认过程先以原子状态变更进入 `validating`，再由独立 Media Validator 从 S3 读取原始字节，执行文件签名、SHA-256、FFmpeg 完整解码和 FFprobe 元数据检查。确定性的内容错误进入 `rejected` 并删除对象；S3、网络或验证服务暂时故障保留 `validating`，允许调用方用同一完成接口重试，不得把基础设施故障伪装成素材错误。
+
 输入文件固定在 available 后 24 小时过期，不因被 Task 引用而续期。创建 Task 时每个输入必须至少剩余 1 小时有效期，否则返回 `422 input_ttl_too_short`，调用方需要重新上传。若 Task 在输入过期前仍未获得执行租约，则转为 `failed/input_asset_expired`；Worker 已完成下载并处于 running 时允许继续，但输入过期后不能再创建依赖该文件的新 Attempt。
 
-### 3.3 下载内容
+### 3.3 查询文件
+
+`GET /v1/files/{file_id}`
+
+返回 File 当前权威状态与元数据。调用方可以观察 `pending_upload | validating | available | rejected | expiring | expired`，但不能自行推进状态。`media` 只在严格验证成功后存在，包含检测出的媒体类型、容器、尺寸、时长、FPS 和音视频编码等可用字段。
+
+### 3.4 下载内容
 
 `GET /v1/files/{file_id}/content`
 
@@ -255,7 +263,7 @@ Model Release 可以在上述平台硬上限内进一步收紧。例如首个 10
   "size": "1024x1024",
   "quality": "high",
   "n": 4,
-  "format": "png",
+  "output_format": "png",
   "input_files": [],
   "model_options": {},
   "priority": "online",
@@ -270,7 +278,7 @@ Model Release 可以在上述平台硬上限内进一步收紧。例如首个 10
 | 字段 | 必填 | 规则 |
 | --- | --- | --- |
 | `n` | 否 | 默认 1，范围 1-模型能力上限；所有输出属于同一 Task |
-| `format` | 否 | `png | jpeg | webp`，默认 `png` |
+| `output_format` | 否 | `png | jpeg | webp`，默认 `png` |
 | `quality` | 否 | `draft | standard | high`，默认 `standard` |
 | `input_files` | 否 | Generation 只接受 `reference_image`；编辑接口另支持 `mask` |
 
@@ -338,6 +346,7 @@ Model Release 可以在上述平台硬上限内进一步收紧。例如首个 10
 规则：
 
 - `request` 是经默认值补全和 Alias 解析后的规范化永久快照；敏感读取受权限控制。
+- `resolved_parameters` 是 Release 能力解析后的实际尺寸；视频额外包含 FPS。它不包含系统 seed，也不能由调用方覆盖。
 - 系统 seed 保存在内部加密执行快照中，并传给 Worker/Model App；标准 Task 响应不返回 seed。幂等请求哈希只计算调用方公共请求，不包含尚未生成的系统 seed；首次事务生成后，同一 Task 的所有 Attempt 复用该 seed。
 - `progress` 为 0-100 整数，仅作展示，不承诺线性时间。未知进度返回 `null`。
 - `status_reason` 在资源不足时可为 `capacity_pending`，并由管理 API 额外返回 `estimated_start_at`；该时间是预测，不是 SLA 承诺。

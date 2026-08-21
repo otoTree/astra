@@ -68,6 +68,7 @@
 - [ADR-0004：通用 Provider Contract 与共绩适配器](./adr/0004-provider-adapter.md)
 - [ADR-0005：镜像地址驱动的逐机滚动发布](./adr/0005-image-driven-rolling-release.md)
 - [ADR-0006：模型输出字节保真与显式后处理](./adr/0006-model-output-byte-preservation.md)
+- [ADR-0007：独立媒体验证与文件过期协调](./adr/0007-isolated-media-validation-and-expiration.md)
 
 ## 核心术语
 

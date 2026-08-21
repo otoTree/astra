@@ -55,6 +55,7 @@ Deployment 基线：
 - 3 主节点 Redis Cluster，用于验证 slot、MOVED/ASK 和 hash tag。
 - Kafka 单 broker KRaft 模式。
 - MinIO 作为 S3。
+- 独立 Media Validator 与 File Sweeper，用于验证实际媒体字节和执行到期补偿。
 - OIDC 开发提供方。
 - public/admin/worker API、Scheduler、Provider Controller、Relay、Admin Web。
 - Provider Adapter 与 Model App 合同参考实现；真实 H3 可按需单独接入。
@@ -69,7 +70,7 @@ network: astra-local-net
 volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-local-minio
 ```
 
-端口由 `.env.local` 配置并在启动前检查。只有端口和容器确认属于 `astra-local` 时，才可以执行本项目范围的 `docker compose -p astra-local down` 后重启；不得停止未知项目、连接其他项目数据库或使用全局 volume 清理命令。默认开发流程启用 Model App 和 Provider Adapter 合同参考实现，不向共绩或其他真实 Provider 发请求。
+端口由 `.env.local` 配置并在启动前检查。只有端口和容器确认属于 `astra-local` 时，才可以执行本项目范围的 `docker compose -p astra-local down` 后重启；不得停止未知项目、连接其他项目数据库或使用全局 volume 清理命令。默认开发流程启用 Model App 和 Provider Adapter 合同参考实现，不向共绩或其他真实 Provider 发请求。Model App 的 `/work` 使用限定 UID/GID 的临时文件系统；任务中间文件在容器重建后丢失是预期行为，PostgreSQL 与 S3 才是本地权威持久层。
 
 ## 2. 网络边界
 

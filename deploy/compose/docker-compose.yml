@@ -4,16 +4,16 @@ services:
   postgres:
     image: postgres@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     environment:
-      POSTGRES_USER: astra
-      POSTGRES_PASSWORD: astra
-      POSTGRES_DB: astra
+      POSTGRES_USER: ${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}
+      POSTGRES_PASSWORD: ${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}
+      POSTGRES_DB: ${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
     ports:
-      - "55432:5432"
+      - "${ASTRA_LOCAL_POSTGRES_PORT:?set in .env.local}:5432"
     volumes:
       - astra-local-postgres:/var/lib/postgresql/data
     networks: [astra-local-network]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U astra -d astra"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -24,7 +24,7 @@ services:
       dockerfile: deploy/compose/Dockerfile.control-plane
     command: ["bun", "run", "packages/database/src/migrate.ts"]
     environment:
-      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
     depends_on: { postgres: { condition: service_healthy } }
     networks: [astra-local-network]
     restart: "no"
@@ -32,7 +32,7 @@ services:
   redis-node-1:
     image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
     command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
-    ports: ["56379:6379"]
+    ports: ["${ASTRA_LOCAL_REDIS_PORT:?set in .env.local}:6379"]
     volumes: ["astra-local-redis-1:/data"]
     networks: [astra-local-network]
   redis-node-2:
@@ -87,7 +87,7 @@ services:
       - --check=false
       - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:59092
-    ports: ["59092:19092"]
+    ports: ["${ASTRA_LOCAL_KAFKA_PORT:?set in .env.local}:19092"]
     volumes: ["astra-local-redpanda:/var/lib/redpanda/data"]
     networks: [astra-local-network]
 
@@ -95,11 +95,11 @@ services:
     image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER: astra
-      MINIO_ROOT_PASSWORD: astra-local-secret
+      MINIO_ROOT_USER: ${ASTRA_LOCAL_S3_ACCESS_KEY:?set in .env.local}
+      MINIO_ROOT_PASSWORD: ${ASTRA_LOCAL_S3_SECRET_KEY:?set in .env.local}
     ports:
-      - "59000:9000"
-      - "59001:9001"
+      - "${ASTRA_LOCAL_S3_PORT:?set in .env.local}:9000"
+      - "${ASTRA_LOCAL_S3_CONSOLE_PORT:?set in .env.local}:9001"
     volumes: ["astra-local-minio:/data"]
     networks: [astra-local-network]
     healthcheck:
@@ -111,7 +111,7 @@ services:
   minio-init:
     image: minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
     entrypoint: ["/bin/sh", "-c"]
-    command: ["mc alias set astra http://minio:9000 astra astra-local-secret && mc mb --ignore-existing astra/astra-local"]
+    command: ["mc alias set astra http://minio:9000 ${ASTRA_LOCAL_S3_ACCESS_KEY:?set in .env.local} ${ASTRA_LOCAL_S3_SECRET_KEY:?set in .env.local} && mc mb --ignore-existing astra/${ASTRA_LOCAL_S3_BUCKET:?set in .env.local}"]
     depends_on: { minio: { condition: service_healthy } }
     networks: [astra-local-network]
     restart: "no"
@@ -124,10 +124,33 @@ services:
       MODEL_APP_PORT: 9000
       MODEL_APP_RELEASE: local-reference-release
       MODEL_APP_VIDEO_FIXTURE: /app/fixtures/sample.mp4
-    ports: ["49000:9000"]
-    volumes:
-      - astra-local-model-work:/work
+    ports: ["${ASTRA_LOCAL_MODEL_APP_PORT:?set in .env.local}:9000"]
+    tmpfs:
+      - /work:uid=1000,gid=1000,mode=0700
     networks: [astra-local-network]
+
+  media-validator:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.media-validator
+    environment:
+      MEDIA_VALIDATOR_PORT: 4113
+      MEDIA_VALIDATOR_TOKEN: ${ASTRA_LOCAL_MEDIA_VALIDATOR_TOKEN:?set in .env.local}
+      MEDIA_VALIDATOR_MAX_BYTES: 5368709120
+      MEDIA_VALIDATOR_TIMEOUT_SECONDS: 600
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${ASTRA_LOCAL_S3_BUCKET:?set in .env.local}
+      S3_ACCESS_KEY: ${ASTRA_LOCAL_S3_ACCESS_KEY:?set in .env.local}
+      S3_SECRET_KEY: ${ASTRA_LOCAL_S3_SECRET_KEY:?set in .env.local}
+    ports: ["${ASTRA_LOCAL_MEDIA_VALIDATOR_PORT:?set in .env.local}:4113"]
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4113/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   public-api:
     build:
@@ -136,14 +159,39 @@ services:
     command: ["bun", "run", "apps/api/src/public.ts"]
     environment:
       PUBLIC_API_PORT: 4100
-      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
-      ASTRA_REQUEST_ENCRYPTION_KEY: astra-local-development-key-change-me
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      ASTRA_REQUEST_ENCRYPTION_KEY: ${ASTRA_LOCAL_REQUEST_ENCRYPTION_KEY:?set in .env.local}
       S3_ENDPOINT: http://minio:9000
-      S3_PUBLIC_ENDPOINT: http://127.0.0.1:59000
-      S3_BUCKET: astra-local
-      S3_ACCESS_KEY: astra
-      S3_SECRET_KEY: astra-local-secret
-    ports: ["54100:4100"]
+      S3_PUBLIC_ENDPOINT: http://127.0.0.1:${ASTRA_LOCAL_S3_PORT:?set in .env.local}
+      S3_BUCKET: ${ASTRA_LOCAL_S3_BUCKET:?set in .env.local}
+      S3_ACCESS_KEY: ${ASTRA_LOCAL_S3_ACCESS_KEY:?set in .env.local}
+      S3_SECRET_KEY: ${ASTRA_LOCAL_S3_SECRET_KEY:?set in .env.local}
+      MEDIA_VALIDATOR_URL: http://media-validator:4113
+      MEDIA_VALIDATOR_TOKEN: ${ASTRA_LOCAL_MEDIA_VALIDATOR_TOKEN:?set in .env.local}
+      MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: 610
+    ports: ["${ASTRA_LOCAL_PUBLIC_API_PORT:?set in .env.local}:4100"]
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+      media-validator: { condition: service_healthy }
+    networks: [astra-local-network]
+
+  file-sweeper:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/api/src/file-sweeper.ts"]
+    environment:
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${ASTRA_LOCAL_S3_BUCKET:?set in .env.local}
+      S3_ACCESS_KEY: ${ASTRA_LOCAL_S3_ACCESS_KEY:?set in .env.local}
+      S3_SECRET_KEY: ${ASTRA_LOCAL_S3_SECRET_KEY:?set in .env.local}
+      FILE_SWEEPER_INTERVAL_SECONDS: 60
+      FILE_SWEEPER_BATCH_SIZE: 100
+      FILE_VALIDATION_RECLAIM_SECONDS: 900
+      FILE_SWEEPER_METRICS_PORT: 4114
+    ports: ["${ASTRA_LOCAL_FILE_SWEEPER_METRICS_PORT:?set in .env.local}:4114"]
     depends_on:
       database-migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
@@ -156,8 +204,8 @@ services:
     command: ["bun", "run", "apps/api/src/admin.ts"]
     environment:
       ADMIN_API_PORT: 4101
-      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
-    ports: ["54101:4101"]
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+    ports: ["${ASTRA_LOCAL_ADMIN_API_PORT:?set in .env.local}:4101"]
     depends_on: { database-migrate: { condition: service_completed_successfully } }
     networks: [astra-local-network]
 
@@ -168,8 +216,8 @@ services:
     command: ["bun", "run", "apps/api/src/worker-control.ts"]
     environment:
       WORKER_CONTROL_API_PORT: 4102
-      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
-    ports: ["54102:4102"]
+      DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
+    ports: ["${ASTRA_LOCAL_WORKER_CONTROL_API_PORT:?set in .env.local}:4102"]
     depends_on: { database-migrate: { condition: service_completed_successfully } }
     networks: [astra-local-network]
 
@@ -197,5 +245,3 @@ volumes:
     name: astra-local-redpanda
   astra-local-minio:
     name: astra-local-minio
-  astra-local-model-work:
-    name: astra-local-model-work

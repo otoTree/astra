@@ -21,6 +21,7 @@
 - 本地接口正确性通过 Schema/OpenAPI、Worker Agent、Provider Adapter 合同参考实现、Model App 合同参考实现和最小端到端 Task 流程验证；“没有真实模型”不是跳过合同测试的理由。
 - 生产代码、组件、目录、脚本和开发文档必须采用正式领域名称；测试专用实现按具体技术特征或用途命名，例如 `InMemoryProviderAdapter`、`ManualClock` 和 `reference-model-app`。
 - 真实 H3 或其他 GPU 模型只能作为显式、隔离、非默认的可选 profile，不能成为 `bun run dev` 或普通 Compose 启动的隐式依赖。
+- 阶段 0-13 和默认本地开发禁止下载任何模型、VAE、LoRA、文本编码器或其他权重文件。不得把权重写入仓库、开发机缓存、Compose volume 或 CI artifact；阶段 14 的隔离拉取也必须由用户显式授权并校验来源与哈希。
 
 ## 架构硬边界
 

@@ -15,7 +15,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/FileUploadRequest' }
       responses:
-        '201': { description: Signed upload reservation }
+        '201':
+          description: Signed upload reservation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileUpload' }
         default: { $ref: '#/components/responses/Error' }
   /v1/files/{file_id}/complete:
     post:
@@ -28,7 +32,11 @@ paths:
           application/json:
             schema: { type: object, additionalProperties: false }
       responses:
-        '200': { description: Available file }
+        '200':
+          description: Available file
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/File' }
         default: { $ref: '#/components/responses/Error' }
   /v1/files/{file_id}/content:
     get:
@@ -37,6 +45,18 @@ paths:
         - $ref: '#/components/parameters/FileId'
       responses:
         '302': { description: Redirect to a short-lived signed object URL }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/files/{file_id}:
+    get:
+      operationId: getFile
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: File metadata and lifecycle state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/File' }
         default: { $ref: '#/components/responses/Error' }
   /v1/videos/generations:
     post:
@@ -52,6 +72,9 @@ paths:
       responses:
         '202':
           description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
         '409':
           $ref: '#/components/responses/Error'
   /v1/images/generations:
@@ -68,6 +91,9 @@ paths:
       responses:
         '202':
           description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
         default:
           $ref: '#/components/responses/Error'
   /v1/videos/edits:
@@ -79,9 +105,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/VideoGenerationRequest' }
+            schema: { $ref: '#/components/schemas/VideoEditRequest' }
       responses:
-        '202': { description: Task accepted }
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
         default: { $ref: '#/components/responses/Error' }
   /v1/images/edits:
     post:
@@ -94,7 +124,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ImageEditRequest' }
       responses:
-        '202': { description: Task accepted }
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
         default: { $ref: '#/components/responses/Error' }
   /v1/tasks:
     get:
@@ -109,7 +143,11 @@ paths:
         - { name: created_after, in: query, schema: { type: integer, minimum: 0 } }
         - { name: created_before, in: query, schema: { type: integer, minimum: 0 } }
       responses:
-        '200': { description: Cursor-paginated task list }
+        '200':
+          description: Cursor-paginated task list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskList' }
         default: { $ref: '#/components/responses/Error' }
   /v1/tasks/{task_id}:
     get:
@@ -119,6 +157,9 @@ paths:
       responses:
         '200':
           description: Task
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
         default:
           $ref: '#/components/responses/Error'
   /v1/tasks/{task_id}/cancel:
@@ -126,9 +167,17 @@ paths:
       operationId: cancelTask
       parameters:
         - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
       responses:
         '200':
           description: Task cancellation accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
         default:
           $ref: '#/components/responses/Error'
   /v1/models:
@@ -137,15 +186,19 @@ paths:
       parameters:
         - { name: type, in: query, schema: { type: string, enum: [video, image] } }
       responses:
-        '200': { description: Enabled models available to the authenticated project }
+        '200':
+          description: Enabled models available to the authenticated project
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelList' }
         default: { $ref: '#/components/responses/Error' }
 components:
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      required: true
-      schema: { type: string, minLength: 8, maxLength: 255 }
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128, pattern: '^[ -~]+$' }
     TaskId:
       name: task_id
       in: path
@@ -176,6 +229,62 @@ components:
         size_bytes: { type: integer, minimum: 1, maximum: 5368709120 }
         sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         purpose: { const: generation_input }
+    FileUpload:
+      type: object
+      additionalProperties: false
+      required: [id, object, status, upload, created_at]
+      properties:
+        id: { type: string }
+        object: { const: file.upload }
+        status: { const: pending_upload }
+        upload:
+          type: object
+          additionalProperties: false
+          required: [method, url, headers, expires_at]
+          properties:
+            method: { const: PUT }
+            url: { type: string, format: uri }
+            headers: { type: object, additionalProperties: { type: string } }
+            expires_at: { type: integer, minimum: 0 }
+        created_at: { type: integer, minimum: 0 }
+    MediaMetadata:
+      type: object
+      additionalProperties: false
+      required: [media_type, container]
+      properties:
+        media_type: { type: string, enum: [image, video, audio] }
+        container: { type: string }
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        duration_seconds: { type: number, exclusiveMinimum: 0 }
+        fps: { type: number, exclusiveMinimum: 0 }
+        video_codec: { type: string }
+        audio_codec: { type: string }
+        audio_sample_rate: { type: integer, minimum: 1 }
+        audio_channels: { type: integer, minimum: 1 }
+    File:
+      type: object
+      additionalProperties: false
+      required: [id, object, status, filename, content_type, size_bytes, sha256, purpose, created_at, expires_at, media]
+      properties:
+        id: { type: string }
+        object: { const: file }
+        status:
+          type: string
+          enum: [pending_upload, validating, available, rejected, expiring, expired]
+        filename: { type: string }
+        content_type:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, video/mp4, video/quicktime, audio/wav, audio/x-wav, audio/mpeg, audio/flac, audio/x-flac]
+        size_bytes: { type: integer, minimum: 1, maximum: 5368709120 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        purpose: { const: generation_input }
+        created_at: { type: integer, minimum: 0 }
+        expires_at: { type: integer, minimum: 0 }
+        media:
+          anyOf:
+            - $ref: '#/components/schemas/MediaMetadata'
+            - type: 'null'
     InputFile:
       type: object
       additionalProperties: false
@@ -193,7 +302,7 @@ components:
         aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1', '4:3', '3:4'] }
         resolution: { type: string, pattern: '^[0-9]+(?:\.[0-9]+)?mp$' }
         duration: { type: integer, minimum: 4, maximum: 15 }
-        input_files: { type: array, maxItems: 15, items: { $ref: '#/components/schemas/VideoInputFile' } }
+        input_files: { type: array, maxItems: 15, uniqueItems: true, items: { $ref: '#/components/schemas/VideoInputFile' } }
         audio:
           type: object
           additionalProperties: false
@@ -201,9 +310,25 @@ components:
           properties:
             mode: { type: string, enum: [native, none, reference, lock_source, remix_source] }
             source_mix: { type: number, minimum: 0, maximum: 1 }
-        model_options: { type: object, additionalProperties: true }
-        priority: { type: string, enum: [online, batch] }
-        metadata: { type: object, additionalProperties: { type: string } }
+        model_options: { type: object, additionalProperties: true, default: {} }
+        priority: { type: string, enum: [online, batch], default: online }
+        metadata: { type: object, maxProperties: 16, additionalProperties: { type: string, maxLength: 512 } }
+    VideoEditRequest:
+      allOf:
+        - $ref: '#/components/schemas/VideoGenerationRequest'
+        - type: object
+          required: [input_files]
+          properties:
+            input_files:
+              type: array
+              minItems: 1
+              maxItems: 15
+              contains:
+                type: object
+                required: [role]
+                properties: { role: { const: source_video } }
+              minContains: 1
+              maxContains: 1
     ImageGenerationRequest:
       type: object
       additionalProperties: false
@@ -212,13 +337,13 @@ components:
         model: { type: string }
         prompt: { type: string, minLength: 1, maxLength: 20000 }
         size: { type: string, pattern: '^[0-9]+x[0-9]+$' }
-        quality: { type: string, enum: [standard, high] }
-        n: { type: integer, minimum: 1, maximum: 4 }
-        output_format: { type: string, enum: [png, jpeg, webp] }
-        input_files: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/ImageReferenceInput' } }
-        model_options: { type: object, additionalProperties: true }
-        priority: { type: string, enum: [online, batch] }
-        metadata: { type: object, additionalProperties: { type: string } }
+        quality: { type: string, enum: [standard, high], default: standard }
+        n: { type: integer, minimum: 1, maximum: 4, default: 1 }
+        output_format: { type: string, enum: [png, jpeg, webp], default: png }
+        input_files: { type: array, maxItems: 16, uniqueItems: true, items: { $ref: '#/components/schemas/ImageReferenceInput' } }
+        model_options: { type: object, additionalProperties: true, default: {} }
+        priority: { type: string, enum: [online, batch], default: online }
+        metadata: { type: object, maxProperties: 16, additionalProperties: { type: string, maxLength: 512 } }
     ImageEditRequest:
       type: object
       additionalProperties: false
@@ -227,20 +352,21 @@ components:
         model: { type: string }
         prompt: { type: string, minLength: 1, maxLength: 20000 }
         size: { type: string, pattern: '^\d+x\d+$' }
-        quality: { type: string, enum: [standard, high] }
-        n: { type: integer, minimum: 1, maximum: 4 }
-        output_format: { type: string, enum: [png, jpeg, webp] }
+        quality: { type: string, enum: [standard, high], default: standard }
+        n: { type: integer, minimum: 1, maximum: 4, default: 1 }
+        output_format: { type: string, enum: [png, jpeg, webp], default: png }
         input_files:
           type: array
           minItems: 1
           maxItems: 17
+          uniqueItems: true
           items:
             oneOf:
               - $ref: '#/components/schemas/ImageReferenceInput'
               - $ref: '#/components/schemas/ImageMaskInput'
-        model_options: { type: object, additionalProperties: true }
-        priority: { type: string, enum: [online, batch] }
-        metadata: { type: object, additionalProperties: { type: string } }
+        model_options: { type: object, additionalProperties: true, default: {} }
+        priority: { type: string, enum: [online, batch], default: online }
+        metadata: { type: object, maxProperties: 16, additionalProperties: { type: string, maxLength: 512 } }
     ImageReferenceInput:
       type: object
       additionalProperties: false
@@ -257,12 +383,119 @@ components:
         file_id: { type: string }
         type: { const: image }
         role: { const: mask }
+    TaskError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+      additionalProperties: true
+    Task:
+      type: object
+      additionalProperties: false
+      required: [id, object, type, operation, status, model, model_release, priority, request, resolved_parameters, progress, status_reason, output_file_ids, output, error, created_at, updated_at, completed_at, expires_at]
+      properties:
+        id: { type: string }
+        object: { const: generation.task }
+        type: { type: string, enum: [video, image] }
+        operation: { type: string, enum: [generation, edit] }
+        status:
+          type: string
+          enum: [queued, scheduling, provisioning, running, post_processing, uploading, completed, failed, canceling, canceled, expired]
+        model: { type: string }
+        model_release: { type: string }
+        priority: { type: string, enum: [online, batch] }
+        request:
+          anyOf:
+            - $ref: '#/components/schemas/VideoGenerationRequest'
+            - $ref: '#/components/schemas/VideoEditRequest'
+            - $ref: '#/components/schemas/ImageGenerationRequest'
+            - $ref: '#/components/schemas/ImageEditRequest'
+        resolved_parameters:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [width, height, fps]
+              properties:
+                width: { type: integer, minimum: 1 }
+                height: { type: integer, minimum: 1 }
+                fps: { type: number, exclusiveMinimum: 0 }
+            - type: object
+              additionalProperties: false
+              required: [width, height]
+              properties:
+                width: { type: integer, minimum: 1 }
+                height: { type: integer, minimum: 1 }
+        progress:
+          anyOf:
+            - { type: integer, minimum: 0, maximum: 100 }
+            - { type: 'null' }
+        status_reason:
+          anyOf:
+            - { type: string }
+            - { type: 'null' }
+        output_file_ids: { type: array, items: { type: string } }
+        output:
+          anyOf:
+            - { type: object, additionalProperties: true }
+            - { type: 'null' }
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/TaskError'
+            - { type: 'null' }
+        created_at: { type: integer, minimum: 0 }
+        updated_at: { type: integer, minimum: 0 }
+        completed_at:
+          anyOf:
+            - { type: integer, minimum: 0 }
+            - { type: 'null' }
+        expires_at:
+          anyOf:
+            - { type: integer, minimum: 0 }
+            - { type: 'null' }
+    TaskList:
+      type: object
+      additionalProperties: false
+      required: [object, data, has_more, next_cursor]
+      properties:
+        object: { const: list }
+        data: { type: array, items: { $ref: '#/components/schemas/Task' } }
+        has_more: { type: boolean }
+        next_cursor:
+          anyOf:
+            - { type: string }
+            - { type: 'null' }
+    Model:
+      type: object
+      additionalProperties: false
+      required: [id, object, type, release, maturity, operations, capabilities, created_at]
+      properties:
+        id: { type: string }
+        object: { const: model }
+        type: { type: string, enum: [video, image] }
+        release: { type: string }
+        maturity: { type: string, enum: [candidate, stable, deprecated] }
+        operations: { type: array, items: { type: string, enum: [generation, edit] } }
+        capabilities: { type: object, additionalProperties: true }
+        created_at: { type: integer, minimum: 0 }
+    ModelList:
+      type: object
+      additionalProperties: false
+      required: [object, data, has_more, next_cursor]
+      properties:
+        object: { const: list }
+        data: { type: array, items: { $ref: '#/components/schemas/Model' } }
+        has_more: { const: false }
+        next_cursor: { type: 'null' }
     ErrorEnvelope:
       type: object
+      additionalProperties: false
       required: [error]
       properties:
         error:
           type: object
+          additionalProperties: false
           required: [type, code, message, retryable, request_id]
           properties:
             type: { type: string }
@@ -270,6 +503,8 @@ components:
             message: { type: string }
             retryable: { type: boolean }
             request_id: { type: string }
+            param: { type: string }
+            details: { type: object, additionalProperties: true }
     VideoInputFile:
       oneOf:
         - type: object

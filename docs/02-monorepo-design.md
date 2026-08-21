@@ -60,6 +60,8 @@ astra/
 - `admin-api`：OIDC、策略、模型、发布、成本与审计。
 - `worker-control-api`：Worker 注册、领取、心跳、状态和结果。
 
+`apps/api` 还生成两个不对调用方开放的独立进程：`media-validator` 只读 S3，执行签名、哈希、完整解码和元数据探测，不访问 PostgreSQL；`file-sweeper` 从 PostgreSQL 领取到期记录，幂等删除 S3 对象并事务性完成 File/Task 状态。它们使用独立 ServiceAccount、资源限制和网络策略，不与三个 API 信任域合并部署。
+
 共享业务用例，但端口、NetworkPolicy、认证中间件和扩缩容策略独立。禁止通过路由参数动态切换信任域。
 
 这里需要区分两个概念：`public-api`、`admin-api`、`worker-control-api` 都属于控制面的逻辑服务，但不合并为一个生产 Deployment。它们可以共享 `contracts`、数据库访问层和用例层，生产则分别使用 Service、ServiceAccount、NetworkPolicy、认证链路、限流桶和 HPA。这样 Worker 出站流量、管理台流量或公共业务流量的突发不会互相拖垮，也不会因为一个入口被攻破而直接获得另外两个信任域的权限。

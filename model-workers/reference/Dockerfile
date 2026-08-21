@@ -6,5 +6,7 @@ COPY packages ./packages
 COPY model-workers ./model-workers
 RUN bun install --frozen-lockfile
 COPY model-workers/reference/fixtures /app/fixtures
+RUN mkdir -p /work && chown bun:bun /work
 ENV NODE_ENV=development
+USER bun
 CMD ["bun", "run", "model-workers/reference/src/server.ts"]

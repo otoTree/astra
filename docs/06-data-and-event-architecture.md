@@ -243,8 +243,11 @@ astra-quarantine/{attempt_id}/{file_uuid}
 ```mermaid
 stateDiagram-v2
     [*] --> pending_upload
-    pending_upload --> available: complete + HEAD 校验
-    pending_upload --> upload_expired
+    pending_upload --> validating: complete + HEAD 校验
+    validating --> available: 签名/哈希/完整解码通过
+    validating --> rejected: 确定性内容错误
+    validating --> validating: 基础设施故障后重试
+    pending_upload --> expired: 上传窗口到期
     pending_upload --> rejected: 完整性失败
     available --> expiring
     expiring --> expired: S3 删除已确认
@@ -252,12 +255,12 @@ stateDiagram-v2
     quarantined --> expired
 ```
 
-输入与输出从 available 起 24 小时过期。S3 Lifecycle 是主要删除机制，数据库 Sweeper 是校验和补偿机制：
+输入与输出按 File 记录的 `expires_at` 过期。上传预留窗口首期为 15 分钟；严格验证成功进入 `available` 时，输入保留期重置为 24 小时。S3 Lifecycle 是兜底，数据库 Sweeper 是权威状态协调和主动删除机制：
 
 1. 到期前 File 标记 `expiring`，停止签发新下载 URL。
-2. Lifecycle 删除对象。
-3. Sweeper HEAD 确认不存在后标记 `expired`。
-4. 若对象仍存在，主动删除并重试。
+2. Sweeper 幂等删除对象；暂时失败时保持 `expiring`，在领取冷却后重试。
+3. 删除请求成功后在数据库事务中标记 `expired`。
+4. S3 Lifecycle 独立清理遗漏对象；其执行结果不能直接改变数据库状态。
 5. 数据库永久保留 key 的不可逆哈希、MIME、大小、SHA-256、媒体元数据和过期时间；不保留可下载 URL。
 
 Task 的完整请求永久保留 `file_id`、role 和当时元数据，但文件过期后不能复现二进制内容。
@@ -272,6 +275,14 @@ Task 的完整请求永久保留 `file_id`、role 和当时元数据，但文件
 - 禁止公共 bucket、ACL 和目录列表。
 - S3 访问日志进入独立安全日志存储。
 - Worker 只获得具体对象的短期 URL，不获得通用 S3 凭证。
+
+### 6.4 媒体验证隔离
+
+- Public API 拥有 File 状态机和 CAS；Media Validator 不访问 PostgreSQL。
+- Validator 只接受短期可轮换 Bearer 服务凭证，只读取配置 bucket 中请求指定的对象 key。
+- API 先用 HEAD 核对上传声明，Validator 再流式计算 SHA-256、检查魔数并执行严格完整解码。验证过程不改变对象字节。
+- 内容损坏、MIME 不匹配和哈希不匹配是确定性拒绝；S3 超时、验证服务不可用和工具进程异常是基础设施故障，两者使用不同错误码和重试策略。
+- Validator 临时目录在请求结束时清理，不作为二进制或状态真源。
 
 ## 7. 加密与敏感数据
 

@@ -6,6 +6,7 @@
 - 每阶段必须独立可部署、可观测、可回滚；未通过退出条件不得启动依赖阶段。
 - 每个合并批次必须包含合同、实现、迁移、正常/失败/幂等/恢复测试、指标和回滚说明。
 - 本地只运行真实 PostgreSQL、Redis Cluster、Kafka/Redpanda、MinIO 与合同参考实现，不调用 GPU、真实模型或共绩。
+- 阶段 0-13 不下载任何模型、VAE、LoRA 或文本编码器权重；阶段 14 也必须经显式授权后在隔离环境按哈希拉取，权重不进入开发机默认流程或 Git。
 - PostgreSQL 是状态真源，S3 是二进制真源；Redis、Kafka、供应商状态和 Worker 本地磁盘不得成为永久事实。
 
 ## 2. 阶段状态
@@ -13,7 +14,7 @@
 | 阶段 | 交付目标 | 状态 | 依赖 |
 | --- | --- | --- | --- |
 | 0 | 工程基线与 v1 合同 | 完成 | 无 |
-| 1 | Public API 完整实现 | 进行中 | 0 |
+| 1 | Public API 完整实现 | 完成 | 0 |
 | 2 | API Key、配额、限流、审计 | 未开始 | 1 |
 | 3 | Admin API 与管理台只读能力 | 未开始 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 未开始 | 3 |
@@ -46,6 +47,13 @@
 失败与恢复：上传不匹配删除对象并拒绝；重复确认返回同一 File；同幂等键不同请求返回 409；取消幂等；过期素材阻止新 Attempt；S3 暂时故障不得伪造完成。
 
 退出条件：OpenAPI 与路由差异检查、PostgreSQL+MinIO 端到端、并发幂等、分页、取消、过期和错误 Envelope 测试全部通过。
+
+阶段 1 验收证据（2026-08-21）：
+
+- `bun run check` 通过：格式、lint、strict TypeScript、依赖边界、三份 OpenAPI、迁移 checksum、32 个常规测试和生产构建全部成功。
+- `bun run test:integration:local` 通过：10 个 PostgreSQL 集成测试与 6 个 MinIO/严格媒体集成测试成功，覆盖并发幂等、Release/File/TTL、游标、取消、过期、Lease 保护、字节保真和验证故障分类。
+- `bun run compose:check`、迁移重复执行、第一方容器非 root、Model App `/work` 权限及 Public API/Media Validator/File Sweeper 指标端点检查通过。
+- 实际 HTTP 冒烟完成视频创建、幂等重放、统一查询、过滤列表和取消；每个 Task 响应通过共享 Schema，`resolved_parameters` 为 Release 解析值且未暴露系统 seed。
 
 ### 阶段 2：鉴权、配额与审计
 

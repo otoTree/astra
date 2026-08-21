@@ -1,12 +1,25 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { errorResponse, fileUploadRequestSchema, imageGenerationSchema, videoGenerationSchema } from "@astra/contracts";
+import {
+  errorResponse,
+  fileUploadRequestSchema,
+  imageEditSchema,
+  imageGenerationSchema,
+  modelListQuerySchema,
+  taskListQuerySchema,
+  taskStatusSchema,
+  videoEditSchema,
+  videoGenerationSchema,
+} from "@astra/contracts";
 import type { TaskService } from "@astra/database";
+import { Counter, Histogram, createMetricRegistry, metricResponse } from "@astra/observability";
+import { matchedRoutes } from "hono/route";
 import type { FileService } from "./file-service.ts";
+import { MediaValidatorError } from "./media-validator-client.ts";
 
 export type ApiTrustDomain = "public" | "admin" | "worker-control";
-export type PublicTaskUseCases = Pick<TaskService, "ready" | "create" | "list" | "get" | "cancel">;
-export type PublicFileUseCases = Pick<FileService, "reserve" | "complete" | "contentUrl">;
+export type PublicTaskUseCases = Pick<TaskService, "ready" | "create" | "list" | "get" | "cancel" | "listModels">;
+export type PublicFileUseCases = Pick<FileService, "reserve" | "complete" | "get" | "contentUrl">;
 export type ReadinessProbe = Readonly<{ ready(): Promise<boolean> }>;
 
 const generatedRequestIds = new WeakMap<Request, string>();
@@ -27,20 +40,12 @@ const attachRequestId = (app: Hono): void => {
     context.header("X-Request-Id", id);
   });
 };
-const taskListQuerySchema = z
-  .object({
-    limit: z.coerce.number().int().min(1).max(200).default(50),
-    after: z.string().min(1).optional(),
-    type: z.enum(["video", "image"]).optional(),
-    status: z.string().optional(),
-    model: z.string().min(1).optional(),
-  })
-  .strict();
 const idempotencyKeySchema = z
   .string()
   .min(8)
   .max(128)
   .regex(/^[\x20-\x7e]+$/);
+const emptyObjectSchema = z.object({}).strict();
 
 function context(request: Request): { organizationId: string; projectId: string } {
   return {
@@ -50,6 +55,16 @@ function context(request: Request): { organizationId: string; projectId: string 
 }
 
 function serviceError(request: Request, error: unknown): Response {
+  if (error instanceof MediaValidatorError) {
+    const rejected = error.kind === "rejected";
+    return errorResponse(
+      requestId(request),
+      rejected ? 422 : 503,
+      rejected ? "media_validation_failed" : "media_validator_unavailable",
+      rejected ? "Media failed strict validation" : "Media validation is temporarily unavailable",
+      rejected ? false : error.retryable,
+    );
+  }
   const candidate = error instanceof Error ? error.message : "internal_error";
   const statuses: Record<string, number> = {
     idempotency_conflict: 409,
@@ -66,8 +81,11 @@ function serviceError(request: Request, error: unknown): Response {
     upload_expired: 410,
     asset_expired: 410,
     upload_not_found: 422,
+    media_validation_failed: 422,
+    media_validator_unavailable: 503,
   };
   const code = statuses[candidate] === undefined ? "internal_error" : candidate;
+  const retryable = code === "internal_error" || code === "media_validator_unavailable";
   if (code === "internal_error")
     console.error(
       JSON.stringify({
@@ -82,7 +100,7 @@ function serviceError(request: Request, error: unknown): Response {
     statuses[code] ?? 500,
     code,
     code === "internal_error" ? "An internal error occurred" : code.replaceAll("_", " "),
-    code === "internal_error",
+    retryable,
   );
 }
 
@@ -131,7 +149,28 @@ function parseJson<S extends z.ZodTypeAny>(
 
 export function createPublicApi(taskService: PublicTaskUseCases, fileService: PublicFileUseCases): Hono {
   const app = new Hono();
+  const metrics = createMetricRegistry("public-api");
+  const requests = new Counter({
+    name: "astra_public_api_requests_total",
+    help: "Public API requests by route and status",
+    labelNames: ["method", "route", "status"] as const,
+    registers: [metrics],
+  });
+  const requestDuration = new Histogram({
+    name: "astra_public_api_request_duration_seconds",
+    help: "Public API request duration by route",
+    labelNames: ["method", "route"] as const,
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    registers: [metrics],
+  });
   attachRequestId(app);
+  app.use("/v1/*", async (c, next) => {
+    const started = performance.now();
+    await next();
+    const labels = { method: c.req.method, route: matchedRoutes(c).at(-1)?.path ?? "unmatched" };
+    requests.inc({ ...labels, status: String(c.res.status) });
+    requestDuration.observe(labels, (performance.now() - started) / 1000);
+  });
   app.get("/health/live", (c) => c.json({ status: "ok" }));
   app.get("/health/ready", async (c) => {
     const ready = await taskService.ready();
@@ -140,6 +179,7 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
       ready ? 200 : 503,
     );
   });
+  app.get("/metrics", () => metricResponse(metrics));
 
   app.post("/v1/videos/generations", async (c) => {
     const parsed = await parseJson(videoGenerationSchema, c.req.raw);
@@ -157,7 +197,14 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
         "Idempotency-Key",
       );
     try {
-      const result = await taskService.create(context(c.req.raw), parsed.value, "video", "/v1/videos/generations", key);
+      const result = await taskService.create(
+        context(c.req.raw),
+        parsed.value,
+        "video",
+        "generation",
+        "/v1/videos/generations",
+        key,
+      );
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
       return serviceError(c.req.raw, error);
@@ -180,7 +227,74 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
         "Idempotency-Key",
       );
     try {
-      const result = await taskService.create(context(c.req.raw), parsed.value, "image", "/v1/images/generations", key);
+      const result = await taskService.create(
+        context(c.req.raw),
+        parsed.value,
+        "image",
+        "generation",
+        "/v1/images/generations",
+        key,
+      );
+      return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  app.post("/v1/videos/edits", async (c) => {
+    const parsed = await parseJson(videoEditSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    if (!parsed.value)
+      return errorResponse(requestId(c.req.raw), 422, "invalid_request", "Request body failed schema validation");
+    const key = c.req.header("Idempotency-Key");
+    if (key && !idempotencyKeySchema.safeParse(key).success)
+      return errorResponse(
+        requestId(c.req.raw),
+        400,
+        "invalid_idempotency_key",
+        "Idempotency-Key must be 8-128 printable ASCII characters",
+        false,
+        "Idempotency-Key",
+      );
+    try {
+      const result = await taskService.create(
+        context(c.req.raw),
+        parsed.value,
+        "video",
+        "edit",
+        "/v1/videos/edits",
+        key,
+      );
+      return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  app.post("/v1/images/edits", async (c) => {
+    const parsed = await parseJson(imageEditSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    if (!parsed.value)
+      return errorResponse(requestId(c.req.raw), 422, "invalid_request", "Request body failed schema validation");
+    const key = c.req.header("Idempotency-Key");
+    if (key && !idempotencyKeySchema.safeParse(key).success)
+      return errorResponse(
+        requestId(c.req.raw),
+        400,
+        "invalid_idempotency_key",
+        "Idempotency-Key must be 8-128 printable ASCII characters",
+        false,
+        "Idempotency-Key",
+      );
+    try {
+      const result = await taskService.create(
+        context(c.req.raw),
+        parsed.value,
+        "image",
+        "edit",
+        "/v1/images/edits",
+        key,
+      );
       return c.json(result.task, 202, result.replayed ? { "Idempotent-Replayed": "true" } : undefined);
     } catch (error) {
       return serviceError(c.req.raw, error);
@@ -199,6 +313,8 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
     }
   });
   app.post("/v1/files/:id/complete", async (c) => {
+    const parsed = await parseJson(emptyObjectSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
     try {
       return c.json(await fileService.complete(context(c.req.raw).projectId, c.req.param("id")));
     } catch (error) {
@@ -206,20 +322,62 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
     }
   });
   app.get("/v1/tasks", async (c) => {
-    const parsed = taskListQuerySchema.safeParse(c.req.query());
+    const url = new URL(c.req.url);
+    const rawStatus = url.searchParams
+      .getAll("status")
+      .flatMap((value) => value.split(","))
+      .filter(Boolean);
+    const query = Object.fromEntries(url.searchParams.entries());
+    if (rawStatus.length > 0) query.status = rawStatus.join(",");
+    const parsed = taskListQuerySchema.safeParse(query);
     if (!parsed.success)
       return errorResponse(requestId(c.req.raw), 400, "invalid_request", "Task filters failed schema validation");
+    const statuses = rawStatus.map((status) => taskStatusSchema.safeParse(status));
+    if (statuses.some((status) => !status.success)) {
+      return errorResponse(
+        requestId(c.req.raw),
+        400,
+        "invalid_request",
+        "Task status filter is invalid",
+        false,
+        "status",
+      );
+    }
     try {
-      const statuses = parsed.data.status?.split(",").filter(Boolean);
       return c.json(
         await taskService.list(context(c.req.raw), {
           limit: parsed.data.limit,
           ...(parsed.data.after ? { after: parsed.data.after } : {}),
           ...(parsed.data.type ? { type: parsed.data.type } : {}),
-          ...(statuses ? { statuses } : {}),
+          ...(rawStatus.length > 0 ? { statuses: rawStatus } : {}),
           ...(parsed.data.model ? { model: parsed.data.model } : {}),
+          ...(parsed.data.priority ? { priority: parsed.data.priority } : {}),
+          ...(parsed.data.created_after !== undefined
+            ? { createdAfter: new Date(parsed.data.created_after * 1000) }
+            : {}),
+          ...(parsed.data.created_before !== undefined
+            ? { createdBefore: new Date(parsed.data.created_before * 1000) }
+            : {}),
         }),
       );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.get("/v1/files/:id", async (c) => {
+    try {
+      const file = await fileService.get(context(c.req.raw).projectId, c.req.param("id"));
+      return file ? c.json(file) : errorResponse(requestId(c.req.raw), 404, "file_not_found", "File not found");
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.get("/v1/models", async (c) => {
+    const parsed = modelListQuerySchema.safeParse(c.req.query());
+    if (!parsed.success)
+      return errorResponse(requestId(c.req.raw), 400, "invalid_request", "Model filters failed schema validation");
+    try {
+      return c.json(await taskService.listModels(context(c.req.raw), parsed.data.type));
     } catch (error) {
       return serviceError(c.req.raw, error);
     }
@@ -233,6 +391,8 @@ export function createPublicApi(taskService: PublicTaskUseCases, fileService: Pu
     }
   });
   app.post("/v1/tasks/:id/cancel", async (c) => {
+    const parsed = await parseJson(emptyObjectSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
     try {
       const task = await taskService.cancel(context(c.req.raw), c.req.param("id"));
       return task ? c.json(task) : errorResponse(requestId(c.req.raw), 404, "task_not_found", "Task not found");

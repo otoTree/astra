@@ -5,6 +5,7 @@ import * as schema from "./schema.ts";
 export * from "./schema.ts";
 export * from "./task-service.ts";
 export * from "./file-repository.ts";
+export * from "./asset-expiration.ts";
 
 export function createDatabase(databaseUrl: string) {
   const client = postgres(databaseUrl, { prepare: false });

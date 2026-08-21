@@ -154,6 +154,7 @@ describe("contracts", () => {
         resolution: "0.7mp",
         duration: 15,
         audio: { mode: "remix_source", source_mix: 0.5 },
+        input_files: [{ file_id: "file_source", type: "audio", role: "source_audio" }],
       }),
     ).not.toThrow();
   });

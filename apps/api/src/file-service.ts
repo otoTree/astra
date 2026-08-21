@@ -7,8 +7,9 @@ import {
   type HeadObjectOutput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import type { FileUploadRequest } from "@astra/contracts";
+import { mediaValidationRequestSchema, type FileUploadRequest, type MediaMetadata } from "@astra/contracts";
 import type { FileRecord, FileRepository } from "@astra/database";
+import { MediaValidatorError, type MediaValidator } from "./media-validator-client.ts";
 
 export type FileServiceOptions = Readonly<{
   endpoint: string;
@@ -31,6 +32,7 @@ const view = (file: FileRecord) => ({
   purpose: file.purpose,
   created_at: unix(file.createdAt),
   expires_at: unix(file.expiresAt),
+  media: file.media,
 });
 
 export class FileService {
@@ -41,6 +43,7 @@ export class FileService {
   constructor(
     private readonly repository: FileRepository,
     private readonly options: FileServiceOptions,
+    private readonly validator: MediaValidator,
   ) {
     this.now = options.now ?? (() => new Date());
     const base = {
@@ -85,7 +88,8 @@ export class FileService {
     const file = await this.repository.get(projectId, fileId);
     if (!file) throw new Error("file_not_found");
     if (file.status === "rejected") throw new Error("upload_integrity_mismatch");
-    if (file.status !== "pending_upload" && file.status !== "available") throw new Error("invalid_file_state");
+    if (file.status === "available") return view(file);
+    if (file.status !== "pending_upload" && file.status !== "validating") throw new Error("invalid_file_state");
     if (file.status === "pending_upload" && new Date(file.expiresAt) < this.now()) throw new Error("upload_expired");
     let head: HeadObjectOutput;
     try {
@@ -105,9 +109,33 @@ export class FileService {
       await this.repository.markRejected(projectId, fileId);
       throw new Error("upload_integrity_mismatch");
     }
-    const available = await this.repository.markAvailable(projectId, fileId, this.now());
+    const validating = await this.repository.markValidating(projectId, fileId, this.now());
+    if (!validating) throw new Error("invalid_file_state");
+    let media: MediaMetadata;
+    try {
+      const validationRequest = mediaValidationRequestSchema.parse({
+        file_id: file.id,
+        object_key: file.objectKey,
+        content_type: file.contentType,
+        size_bytes: file.sizeBytes,
+        sha256: file.sha256,
+      });
+      media = await this.validator.validate(validationRequest);
+    } catch (error) {
+      if (error instanceof MediaValidatorError && error.kind === "rejected") {
+        await this.storage.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: file.objectKey }));
+        await this.repository.markRejected(projectId, fileId, this.now());
+      }
+      throw error;
+    }
+    const available = await this.repository.markAvailable(projectId, fileId, media, this.now());
     if (!available) throw new Error("invalid_file_state");
     return view(available);
+  }
+
+  async get(projectId: string, fileId: string): Promise<Record<string, unknown> | undefined> {
+    const file = await this.repository.get(projectId, fileId);
+    return file ? view(file) : undefined;
   }
 
   async contentUrl(projectId: string, fileId: string): Promise<string> {

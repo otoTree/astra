@@ -17,6 +17,9 @@ export const publicApiConfigSchema = environmentSchema.extend({
   S3_BUCKET: z.string().min(3),
   S3_ACCESS_KEY: z.string().min(1),
   S3_SECRET_KEY: z.string().min(8),
+  MEDIA_VALIDATOR_URL: requiredUrl,
+  MEDIA_VALIDATOR_TOKEN: z.string().min(32),
+  MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(610),
 });
 
 export const adminApiConfigSchema = environmentSchema.extend({
@@ -71,6 +74,33 @@ export const modelAppConfigSchema = environmentSchema.extend({
   MODEL_APP_DELAY_MS: z.coerce.number().int().nonnegative().default(250),
 });
 
+export const mediaValidatorConfigSchema = environmentSchema.extend({
+  MEDIA_VALIDATOR_PORT: port(4113),
+  MEDIA_VALIDATOR_TOKEN: z.string().min(32),
+  S3_ENDPOINT: requiredUrl,
+  S3_BUCKET: z.string().min(3),
+  S3_ACCESS_KEY: z.string().min(1),
+  S3_SECRET_KEY: z.string().min(8),
+  MEDIA_VALIDATOR_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 1024 * 1024 * 1024),
+  MEDIA_VALIDATOR_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(600),
+});
+
+export const fileSweeperConfigSchema = environmentSchema.extend({
+  FILE_SWEEPER_METRICS_PORT: port(4114),
+  DATABASE_URL: requiredUrl,
+  S3_ENDPOINT: requiredUrl,
+  S3_BUCKET: z.string().min(3),
+  S3_ACCESS_KEY: z.string().min(1),
+  S3_SECRET_KEY: z.string().min(8),
+  FILE_SWEEPER_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  FILE_SWEEPER_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
+  FILE_VALIDATION_RECLAIM_SECONDS: z.coerce.number().int().positive().default(900),
+});
+
 type Environment = Record<string, string | undefined>;
 const parse = <Schema extends z.ZodTypeAny>(schema: Schema, env: Environment): z.output<Schema> => schema.parse(env);
 
@@ -86,3 +116,5 @@ export const loadProviderControllerConfig = (env: Environment = process.env) =>
 export const loadEventRelayConfig = (env: Environment = process.env) => parse(eventRelayConfigSchema, env);
 export const loadWorkerAgentConfig = (env: Environment = process.env) => parse(workerAgentConfigSchema, env);
 export const loadModelAppConfig = (env: Environment = process.env) => parse(modelAppConfigSchema, env);
+export const loadMediaValidatorConfig = (env: Environment = process.env) => parse(mediaValidatorConfigSchema, env);
+export const loadFileSweeperConfig = (env: Environment = process.env) => parse(fileSweeperConfigSchema, env);

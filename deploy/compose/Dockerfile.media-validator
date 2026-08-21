@@ -1,9 +1,10 @@
 FROM oven/bun:1.3.6-alpine@sha256:819f91180e721ba09e0e5d3eb7fb985832fd23f516e18ddad7e55aaba8100be7
+RUN apk add --no-cache ffmpeg
 WORKDIR /workspace
 COPY package.json bun.lock* tsconfig.base.json tsconfig.json bunfig.toml ./
 COPY apps ./apps
 COPY packages ./packages
 COPY model-workers ./model-workers
 RUN bun install --frozen-lockfile
-ENV ASTRA_ENV=local
 USER bun
+CMD ["bun", "run", "apps/api/src/media-validator.ts"]

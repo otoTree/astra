@@ -12,6 +12,8 @@ const result = await Bun.build({
     "apps/provider-controller/src/main.ts",
     "apps/event-relay/src/main.ts",
     "apps/worker-agent/src/main.ts",
+    "apps/api/src/media-validator.ts",
+    "apps/api/src/file-sweeper.ts",
     "model-workers/reference/src/server.ts",
   ],
   outdir,

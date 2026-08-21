@@ -110,6 +110,12 @@ Worker 永远主动连接该服务；控制面不需要访问供应商提供的�
 
 运维只需在后台填写镜像地址、选择目标池并确认滚动参数。镜像 tag 仅作为输入，控制面在创建 Release 时解析一次 digest，此后所有机器使用同一 digest。
 
+### 2.8 Media Validator 与 File Sweeper
+
+Media Validator 是文件数据面内部服务，只接受 Public API 的服务身份调用。它使用只读对象权限下载指定 S3 key，校验实际字节数和 SHA-256，识别文件签名，并用 FFmpeg/FFprobe 完整解码和提取媒体元数据。它不访问 PostgreSQL，不改变 File 状态，不返回预签名 URL，也不执行转码。Public API 在 PostgreSQL 中以 CAS 推进 `pending_upload -> validating -> available/rejected`；验证服务或存储暂时不可用时保留可重试状态。
+
+File Sweeper 是文件生命周期协调器。它从 PostgreSQL 以 `FOR UPDATE SKIP LOCKED` 领取到期记录，尊重有效 Lease，将 File 标记为 `expiring`，幂等删除 S3 对象，再事务性写入 `expired`。输入过期且尚无有效执行租约时，同一事务把相关排队 Task 置为失败，并写状态事件和 Outbox。两项服务的详细决策见 [ADR-0007](./adr/0007-isolated-media-validation-and-expiration.md)。
+
 ## 3. 数据面
 
 每个 Replica 包含两个逻辑进程：
@@ -137,8 +143,10 @@ Model App 不持有平台 API Key，不允许直接读取任意 `file_id`，也�
 1. 调用方申请上传，API 校验项目配额、MIME、大小和用途。
 2. API 创建 `pending_upload` 文件记录并返回短期 S3 PUT URL。
 3. 调用方直传 S3，然后调用完成确认。
-4. API 读取对象元数据，校验长度、SHA-256 和 MIME，文件进入 `available`。
-5. 24 小时生命周期从确认完成时开始计算。
+4. API 读取对象元数据并以 CAS 将文件置为 `validating`。
+5. Media Validator 从 S3 读取原始字节，校验长度、SHA-256、文件签名和完整媒体解码；成功后 API 写入媒体元数据并置为 `available`。
+6. 确定性校验失败置为 `rejected` 并删除对象；基础设施失败保留可重试状态。
+7. 上传预留窗口为 15 分钟；验证成功进入 `available` 时，输入文件的保留期重置为 24 小时。
 
 ### 4.2 创建与排队
 
