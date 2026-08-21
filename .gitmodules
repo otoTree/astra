@@ -1,0 +1,6 @@
+[submodule "docs/third-party/ComfyUI"]
+	path = docs/third-party/ComfyUI
+	url = https://github.com/comfyanonymous/ComfyUI.git
+[submodule "docs/third-party/ComfyUI-H3-FaceRefine"]
+	path = docs/third-party/ComfyUI-H3-FaceRefine
+	url = https://github.com/Carasibana/ComfyUI-H3-FaceRefine.git

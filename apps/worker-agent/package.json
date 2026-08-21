@@ -1,0 +1,11 @@
+{
+  "name": "@astra/worker-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@astra/config": "workspace:*",
+    "@astra/contracts": "workspace:*",
+    "@astra/observability": "workspace:*"
+  }
+}

@@ -1,0 +1,15 @@
+{{- range .Values.apiDeployments }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "astra.fullname" $ }}-{{ .name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "astra.name" $ }}
+    astra.deployment: {{ .name | quote }}
+  ports:
+    - name: http
+      port: {{ .servicePort }}
+      targetPort: http
+---
+{{- end }}

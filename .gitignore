@@ -1,0 +1,8 @@
+node_modules/
+.env.local
+.env.*.local
+dist/
+coverage/
+.DS_Store
+deploy/compose/data/
+model-workers/*/work/

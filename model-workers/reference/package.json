@@ -1,0 +1,10 @@
+{
+  "name": "@astra/reference-model-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@astra/config": "workspace:*",
+    "@astra/contracts": "workspace:*"
+  }
+}

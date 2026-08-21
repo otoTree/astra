@@ -1,0 +1,19 @@
+{
+  "name": "@astra/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit -p ../../tsconfig.json"
+  },
+  "dependencies": {
+    "@astra/auth": "workspace:*",
+    "@astra/config": "workspace:*",
+    "@astra/contracts": "workspace:*",
+    "@astra/database": "workspace:*",
+    "@astra/observability": "workspace:*",
+    "@aws-sdk/client-s3": "^3.1115.0",
+    "@aws-sdk/s3-request-presigner": "^3.1115.0",
+    "hono": "^4.7.2"
+  }
+}

@@ -1,0 +1,295 @@
+openapi: 3.1.0
+info:
+  title: Astra Internal Media API
+  version: 1.0.0
+  description: OpenAI-style asynchronous image/video API. SDK binary compatibility is not promised.
+servers:
+  - url: http://127.0.0.1:54100
+paths:
+  /v1/files/uploads:
+    post:
+      operationId: createFileUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FileUploadRequest' }
+      responses:
+        '201': { description: Signed upload reservation }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/files/{file_id}/complete:
+    post:
+      operationId: completeFileUpload
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200': { description: Available file }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/files/{file_id}/content:
+    get:
+      operationId: getFileContent
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '302': { description: Redirect to a short-lived signed object URL }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/videos/generations:
+    post:
+      operationId: createVideoGeneration
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoGenerationRequest'
+      responses:
+        '202':
+          description: Task accepted
+        '409':
+          $ref: '#/components/responses/Error'
+  /v1/images/generations:
+    post:
+      operationId: createImageGeneration
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerationRequest'
+      responses:
+        '202':
+          description: Task accepted
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/videos/edits:
+    post:
+      operationId: createVideoEdit
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VideoGenerationRequest' }
+      responses:
+        '202': { description: Task accepted }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/images/edits:
+    post:
+      operationId: createImageEdit
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImageEditRequest' }
+      responses:
+        '202': { description: Task accepted }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/tasks:
+    get:
+      operationId: listTasks
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: after, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string, enum: [video, image] } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: model, in: query, schema: { type: string } }
+        - { name: priority, in: query, schema: { type: string, enum: [online, batch] } }
+        - { name: created_after, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: created_before, in: query, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200': { description: Cursor-paginated task list }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/tasks/{task_id}:
+    get:
+      operationId: getTask
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Task
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/tasks/{task_id}/cancel:
+    post:
+      operationId: cancelTask
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Task cancellation accepted
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/models:
+    get:
+      operationId: listModels
+      parameters:
+        - { name: type, in: query, schema: { type: string, enum: [video, image] } }
+      responses:
+        '200': { description: Enabled models available to the authenticated project }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 255 }
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^task_[A-Za-z0-9_-]+$' }
+    FileId:
+      name: file_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^file_[A-Za-z0-9_-]+$' }
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    FileUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [filename, content_type, size_bytes, sha256, purpose]
+      properties:
+        filename: { type: string, minLength: 1, maxLength: 255 }
+        content_type:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, video/mp4, video/quicktime, audio/wav, audio/x-wav, audio/mpeg, audio/flac, audio/x-flac]
+        size_bytes: { type: integer, minimum: 1, maximum: 5368709120 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        purpose: { const: generation_input }
+    InputFile:
+      type: object
+      additionalProperties: false
+      required: [file_id, role]
+      properties:
+        file_id: { type: string }
+        role: { type: string }
+    VideoGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [model, prompt, aspect_ratio, resolution, duration]
+      properties:
+        model: { type: string }
+        prompt: { type: string, minLength: 1, maxLength: 20000 }
+        aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1', '4:3', '3:4'] }
+        resolution: { type: string, pattern: '^[0-9]+(?:\.[0-9]+)?mp$' }
+        duration: { type: integer, minimum: 4, maximum: 15 }
+        input_files: { type: array, maxItems: 15, items: { $ref: '#/components/schemas/VideoInputFile' } }
+        audio:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [native, none, reference, lock_source, remix_source] }
+            source_mix: { type: number, minimum: 0, maximum: 1 }
+        model_options: { type: object, additionalProperties: true }
+        priority: { type: string, enum: [online, batch] }
+        metadata: { type: object, additionalProperties: { type: string } }
+    ImageGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [model, prompt, size]
+      properties:
+        model: { type: string }
+        prompt: { type: string, minLength: 1, maxLength: 20000 }
+        size: { type: string, pattern: '^[0-9]+x[0-9]+$' }
+        quality: { type: string, enum: [standard, high] }
+        n: { type: integer, minimum: 1, maximum: 4 }
+        output_format: { type: string, enum: [png, jpeg, webp] }
+        input_files: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/ImageReferenceInput' } }
+        model_options: { type: object, additionalProperties: true }
+        priority: { type: string, enum: [online, batch] }
+        metadata: { type: object, additionalProperties: { type: string } }
+    ImageEditRequest:
+      type: object
+      additionalProperties: false
+      required: [model, prompt, size, input_files]
+      properties:
+        model: { type: string }
+        prompt: { type: string, minLength: 1, maxLength: 20000 }
+        size: { type: string, pattern: '^\d+x\d+$' }
+        quality: { type: string, enum: [standard, high] }
+        n: { type: integer, minimum: 1, maximum: 4 }
+        output_format: { type: string, enum: [png, jpeg, webp] }
+        input_files:
+          type: array
+          minItems: 1
+          maxItems: 17
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/ImageReferenceInput'
+              - $ref: '#/components/schemas/ImageMaskInput'
+        model_options: { type: object, additionalProperties: true }
+        priority: { type: string, enum: [online, batch] }
+        metadata: { type: object, additionalProperties: { type: string } }
+    ImageReferenceInput:
+      type: object
+      additionalProperties: false
+      required: [file_id, type, role]
+      properties:
+        file_id: { type: string }
+        type: { const: image }
+        role: { const: reference_image }
+    ImageMaskInput:
+      type: object
+      additionalProperties: false
+      required: [file_id, type, role]
+      properties:
+        file_id: { type: string }
+        type: { const: image }
+        role: { const: mask }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, code, message, retryable, request_id]
+          properties:
+            type: { type: string }
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+            request_id: { type: string }
+    VideoInputFile:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [file_id, type, role]
+          properties:
+            file_id: { type: string }
+            type: { const: image }
+            role: { type: string, enum: [reference_image, first_frame, last_frame] }
+        - type: object
+          additionalProperties: false
+          required: [file_id, type, role]
+          properties:
+            file_id: { type: string }
+            type: { const: video }
+            role: { type: string, enum: [reference_video, source_video] }
+        - type: object
+          additionalProperties: false
+          required: [file_id, type, role]
+          properties:
+            file_id: { type: string }
+            type: { const: audio }
+            role: { type: string, enum: [reference_audio, reference_video_audio, source_audio] }

@@ -1,0 +1,40 @@
+image:
+  repository: registry.internal/astra/control-plane
+  pullPolicy: IfNotPresent
+  tag: "immutable-digest-required"
+
+imagePullSecrets: []
+serviceAccount:
+  create: true
+  name: ""
+
+apiDeployments:
+  - name: public-api
+    command: ["bun", "run", "apps/api/src/public.ts"]
+    port: 4100
+    servicePort: 80
+  - name: admin-api
+    command: ["bun", "run", "apps/api/src/admin.ts"]
+    port: 4101
+    servicePort: 80
+  - name: worker-control-api
+    command: ["bun", "run", "apps/api/src/worker-control.ts"]
+    port: 4102
+    servicePort: 80
+
+env:
+  ASTRA_ENV: production
+  ASTRA_LOG_LEVEL: info
+secretRef: astra-runtime-secrets
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits: { cpu: 1, memory: 1Gi }
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: { type: RuntimeDefault }
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+networkPolicy:
+  enabled: true

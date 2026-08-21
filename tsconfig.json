@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@astra/contracts": ["packages/contracts/src/index.ts"],
+      "@astra/config": ["packages/config/src/index.ts"],
+      "@astra/observability": ["packages/observability/src/index.ts"],
+      "@astra/database": ["packages/database/src/index.ts"],
+      "@astra/auth": ["packages/auth/src/index.ts"],
+      "@astra/queue": ["packages/queue/src/index.ts"],
+      "@astra/provider-core": ["packages/provider-core/src/index.ts"],
+      "@astra/provider-gongji": ["packages/provider-gongji/src/index.ts"],
+      "@astra/testkit": ["packages/testkit/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "model-workers/**/*.ts", "vite.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

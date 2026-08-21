@@ -1,0 +1,221 @@
+openapi: 3.1.0
+info:
+  title: Astra Worker Control API
+  version: 1.0.0
+  description: Outbound Worker Agent control contract. Workers may only lease pre-assigned attempts.
+servers:
+  - url: https://astra-worker.internal.example/internal/v1
+paths:
+  /workers/register:
+    post:
+      operationId: registerWorker
+      security:
+        - bootstrapToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkerRegistration' }
+      responses:
+        '201': { description: Worker identity and short-lived token }
+        default: { $ref: '#/components/responses/Error' }
+  /workers/{worker_id}/lease:
+    post:
+      operationId: leaseAssignedAttempt
+      security:
+        - workerToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkerLeaseRequest' }
+      responses:
+        '200': { description: Pre-assigned attempt and PostgreSQL lease }
+        '204': { description: No assigned attempt }
+        default: { $ref: '#/components/responses/Error' }
+  /workers/{worker_id}/heartbeat:
+    post:
+      operationId: heartbeatWorker
+      security:
+        - workerToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkerHeartbeat' }
+      responses:
+        '200': { description: "Accepted sequence, lease extension and desired state" }
+        default: { $ref: '#/components/responses/Error' }
+  /workers/{worker_id}/drained:
+    post:
+      operationId: reportWorkerDrained
+      security:
+        - workerToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DrainedWorker' }
+      responses:
+        '200': { description: Drained state accepted and reclaim token issued }
+        '409': { $ref: '#/components/responses/Error' }
+  /attempts/{attempt_id}/prepare-outputs:
+    post:
+      operationId: prepareAttemptOutputs
+      security:
+        - workerToken: []
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrepareOutputs' }
+      responses:
+        '200': { description: Output file reservations and signed upload requests }
+        default: { $ref: '#/components/responses/Error' }
+  /attempts/{attempt_id}/complete-outputs:
+    post:
+      operationId: completeAttemptOutputs
+      security:
+        - workerToken: []
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteOutputs' }
+      responses:
+        '200': { description: Uploaded output integrity confirmed }
+        default: { $ref: '#/components/responses/Error' }
+  /attempts/{attempt_id}/complete:
+    post:
+      operationId: completeAttempt
+      security:
+        - workerToken: []
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteAttempt' }
+      responses:
+        '200': { description: "Attempt, lease and task completed atomically" }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bootstrapToken: { type: http, scheme: bearer }
+    workerToken: { type: http, scheme: bearer }
+  parameters:
+    WorkerId:
+      name: worker_id
+      in: path
+      required: true
+      schema: { type: string }
+    AttemptId:
+      name: attempt_id
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    WorkerRegistration:
+      type: object
+      additionalProperties: false
+      required: [provider, region, provider_instance_id, replica_id, pool_id, release_id, instance_fingerprint, hardware, capabilities]
+      properties:
+        provider: { type: string }
+        region: { type: string }
+        provider_instance_id: { type: string }
+        replica_id: { type: string }
+        pool_id: { type: string }
+        release_id: { type: string }
+        instance_fingerprint: { type: string }
+        hardware: { type: object, additionalProperties: false }
+        capabilities: { type: object, additionalProperties: false }
+    DrainedWorker:
+      type: object
+      additionalProperties: false
+      required: [sequence, release_id, running_slots, reserved_slots, active_attempt_ids, drain_reason, observed_at]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        release_id: { type: string }
+        running_slots: { const: 0 }
+        reserved_slots: { const: 0 }
+        active_attempt_ids: { type: array, maxItems: 0 }
+        drain_reason: { type: string }
+        observed_at: { type: string, format: date-time }
+    WorkerLeaseRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence, max_concurrency, running_slots, reserved_slots, available_slots, capabilities_hash]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        max_concurrency: { type: integer, minimum: 1 }
+        running_slots: { type: integer, minimum: 0 }
+        reserved_slots: { type: integer, minimum: 0 }
+        available_slots: { type: integer, minimum: 0 }
+        capabilities_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+    WorkerHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [sequence, observed_at, running_slots, reserved_slots, executions, health]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        observed_at: { type: string, format: date-time }
+        running_slots: { type: integer, minimum: 0 }
+        reserved_slots: { type: integer, minimum: 0 }
+        executions: { type: array, items: { type: object, additionalProperties: false } }
+        health: { type: object, additionalProperties: false }
+    PrepareOutputs:
+      type: object
+      additionalProperties: false
+      required: [lease_id, lease_version, manifest]
+      properties:
+        lease_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        manifest: { type: object, additionalProperties: false }
+    CompleteOutputs:
+      type: object
+      additionalProperties: false
+      required: [lease_id, lease_version, files]
+      properties:
+        lease_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        files: { type: array, minItems: 1, items: { type: object, additionalProperties: false } }
+    CompleteAttempt:
+      type: object
+      additionalProperties: false
+      required: [lease_id, lease_version, execution_id, completed_at, usage]
+      properties:
+        lease_id: { type: string }
+        lease_version: { type: integer, minimum: 0 }
+        execution_id: { type: string }
+        completed_at: { type: string, format: date-time }
+        usage: { type: object, additionalProperties: { type: number, minimum: 0 } }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, code, message, retryable, request_id]
+          properties:
+            type: { type: string }
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+            request_id: { type: string }
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }

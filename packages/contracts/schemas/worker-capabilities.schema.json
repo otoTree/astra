@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astra.internal/schemas/worker-capabilities.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "app",
+    "model_release",
+    "modalities",
+    "operations",
+    "max_concurrency",
+    "capabilities",
+    "artifacts"
+  ],
+  "properties": {
+    "contract_version": { "type": "string" },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "build"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "build": { "type": "string" }
+      }
+    },
+    "model_release": { "type": "string" },
+    "modalities": { "type": "array", "items": { "enum": ["image", "video"] } },
+    "operations": { "type": "array", "items": { "type": "string" } },
+    "max_concurrency": { "type": "integer", "minimum": 1 },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "aspect_ratios",
+        "resolutions",
+        "resolution_matrix",
+        "durations",
+        "fps",
+        "input_types",
+        "input_roles",
+        "audio_modes",
+        "supports_cancel",
+        "supports_progress",
+        "supports_resume"
+      ],
+      "properties": {
+        "aspect_ratios": { "type": "array", "items": { "type": "string" } },
+        "resolutions": { "type": "array", "items": { "type": "string" } },
+        "resolution_matrix": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["width", "height"],
+            "properties": {
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "durations": { "type": "array", "items": { "type": "number" } },
+        "fps": { "type": "array", "items": { "type": "number" } },
+        "input_types": { "type": "array", "items": { "enum": ["image", "video", "audio"] } },
+        "input_roles": { "type": "array", "items": { "type": "string" } },
+        "audio_modes": { "type": "array", "items": { "type": "string" } },
+        "supports_cancel": { "type": "boolean" },
+        "supports_progress": { "type": "boolean" },
+        "supports_resume": { "type": "boolean" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_artifacts", "max_outputs", "sidecar_manifest_allowed", "post_processing"],
+      "properties": {
+        "output_artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "content_types"],
+            "properties": {
+              "role": { "type": "string" },
+              "content_types": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "max_outputs": { "type": "integer", "minimum": 1 },
+        "sidecar_manifest_allowed": { "type": "boolean" },
+        "post_processing": { "const": "model_app_only" }
+      }
+    }
+  }
+}

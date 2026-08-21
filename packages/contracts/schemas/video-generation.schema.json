@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astra.internal/schemas/video-generation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["model", "prompt", "aspect_ratio", "resolution", "duration"],
+  "properties": {
+    "model": { "type": "string", "minLength": 1 },
+    "prompt": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:4"] },
+    "resolution": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?mp$" },
+    "duration": { "type": "integer", "minimum": 4, "maximum": 15 },
+    "input_files": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file_id", "type", "role"],
+            "properties": {
+              "file_id": { "type": "string", "minLength": 1 },
+              "type": { "const": "image" },
+              "role": { "enum": ["reference_image", "first_frame", "last_frame"] }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file_id", "type", "role"],
+            "properties": {
+              "file_id": { "type": "string", "minLength": 1 },
+              "type": { "const": "video" },
+              "role": { "enum": ["reference_video", "source_video"] }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file_id", "type", "role"],
+            "properties": {
+              "file_id": { "type": "string", "minLength": 1 },
+              "type": { "const": "audio" },
+              "role": { "enum": ["reference_audio", "reference_video_audio", "source_audio"] }
+            }
+          }
+        ]
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["native", "none", "reference", "lock_source", "remix_source"] },
+        "source_mix": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "if": { "required": ["source_mix"] },
+      "then": { "properties": { "mode": { "const": "remix_source" } } }
+    },
+    "priority": { "type": "string", "enum": ["online", "batch"] },
+    "metadata": { "type": "object", "additionalProperties": { "type": "string" } },
+    "model_options": { "type": "object", "additionalProperties": true }
+  }
+}

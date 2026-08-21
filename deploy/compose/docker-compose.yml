@@ -1,0 +1,201 @@
+name: astra-local
+
+services:
+  postgres:
+    image: postgres@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    environment:
+      POSTGRES_USER: astra
+      POSTGRES_PASSWORD: astra
+      POSTGRES_DB: astra
+    ports:
+      - "55432:5432"
+    volumes:
+      - astra-local-postgres:/var/lib/postgresql/data
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U astra -d astra"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  database-migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "packages/database/src/migrate.ts"]
+    environment:
+      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
+    depends_on: { postgres: { condition: service_healthy } }
+    networks: [astra-local-network]
+    restart: "no"
+
+  redis-node-1:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
+    ports: ["56379:6379"]
+    volumes: ["astra-local-redis-1:/data"]
+    networks: [astra-local-network]
+  redis-node-2:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
+    volumes: ["astra-local-redis-2:/data"]
+    networks: [astra-local-network]
+  redis-node-3:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
+    volumes: ["astra-local-redis-3:/data"]
+    networks: [astra-local-network]
+  redis-node-4:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
+    volumes: ["astra-local-redis-4:/data"]
+    networks: [astra-local-network]
+  redis-node-5:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
+    volumes: ["astra-local-redis-5:/data"]
+    networks: [astra-local-network]
+  redis-node-6:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes", "--protected-mode", "no"]
+    volumes: ["astra-local-redis-6:/data"]
+    networks: [astra-local-network]
+  redis-cluster-init:
+    image: redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50
+    depends_on:
+      redis-node-1: { condition: service_started }
+      redis-node-2: { condition: service_started }
+      redis-node-3: { condition: service_started }
+      redis-node-4: { condition: service_started }
+      redis-node-5: { condition: service_started }
+      redis-node-6: { condition: service_started }
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep 3; redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 redis-node-4:6379 redis-node-5:6379 redis-node-6:6379 --cluster-replicas 1 --cluster-yes"]
+    networks: [astra-local-network]
+    restart: "no"
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda@sha256:04baa40ed34edf86028396f762be802f3b6b0acaab65e9de696a3f15d54c550f
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:59092
+    ports: ["59092:19092"]
+    volumes: ["astra-local-redpanda:/var/lib/redpanda/data"]
+    networks: [astra-local-network]
+
+  minio:
+    image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: astra
+      MINIO_ROOT_PASSWORD: astra-local-secret
+    ports:
+      - "59000:9000"
+      - "59001:9001"
+    volumes: ["astra-local-minio:/data"]
+    networks: [astra-local-network]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc alias set astra http://minio:9000 astra astra-local-secret && mc mb --ignore-existing astra/astra-local"]
+    depends_on: { minio: { condition: service_healthy } }
+    networks: [astra-local-network]
+    restart: "no"
+
+  model-app:
+    build:
+      context: ../..
+      dockerfile: model-workers/reference/Dockerfile
+    environment:
+      MODEL_APP_PORT: 9000
+      MODEL_APP_RELEASE: local-reference-release
+      MODEL_APP_VIDEO_FIXTURE: /app/fixtures/sample.mp4
+    ports: ["49000:9000"]
+    volumes:
+      - astra-local-model-work:/work
+    networks: [astra-local-network]
+
+  public-api:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/api/src/public.ts"]
+    environment:
+      PUBLIC_API_PORT: 4100
+      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
+      ASTRA_REQUEST_ENCRYPTION_KEY: astra-local-development-key-change-me
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://127.0.0.1:59000
+      S3_BUCKET: astra-local
+      S3_ACCESS_KEY: astra
+      S3_SECRET_KEY: astra-local-secret
+    ports: ["54100:4100"]
+    depends_on:
+      database-migrate: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+    networks: [astra-local-network]
+
+  admin-api:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/api/src/admin.ts"]
+    environment:
+      ADMIN_API_PORT: 4101
+      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
+    ports: ["54101:4101"]
+    depends_on: { database-migrate: { condition: service_completed_successfully } }
+    networks: [astra-local-network]
+
+  worker-control-api:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control-plane
+    command: ["bun", "run", "apps/api/src/worker-control.ts"]
+    environment:
+      WORKER_CONTROL_API_PORT: 4102
+      DATABASE_URL: postgres://astra:astra@postgres:5432/astra
+    ports: ["54102:4102"]
+    depends_on: { database-migrate: { condition: service_completed_successfully } }
+    networks: [astra-local-network]
+
+networks:
+  astra-local-network:
+    name: astra-local-network
+    driver: bridge
+
+volumes:
+  astra-local-postgres:
+    name: astra-local-postgres
+  astra-local-redis-1:
+    name: astra-local-redis-1
+  astra-local-redis-2:
+    name: astra-local-redis-2
+  astra-local-redis-3:
+    name: astra-local-redis-3
+  astra-local-redis-4:
+    name: astra-local-redis-4
+  astra-local-redis-5:
+    name: astra-local-redis-5
+  astra-local-redis-6:
+    name: astra-local-redis-6
+  astra-local-redpanda:
+    name: astra-local-redpanda
+  astra-local-minio:
+    name: astra-local-minio
+  astra-local-model-work:
+    name: astra-local-model-work

@@ -1,0 +1,244 @@
+openapi: 3.1.0
+info:
+  title: Astra Admin API
+  version: 1.0.0
+  description: Versioned operations API for Astra administrators. OIDC authentication and RBAC are required.
+servers:
+  - url: https://astra-admin.internal.example/admin/v1
+security:
+  - oidc: []
+paths:
+  /tasks:
+    get:
+      operationId: listAdminTasks
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { description: Task list }
+        default: { $ref: '#/components/responses/Error' }
+  /tasks/{task_id}:
+    get:
+      operationId: getAdminTask
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200': { description: Task detail and timeline }
+        default: { $ref: '#/components/responses/Error' }
+  /models:
+    get:
+      operationId: listAdminModels
+      responses:
+        '200': { description: Model list }
+    post:
+      operationId: createAdminModel
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201': { description: Model created }
+        default: { $ref: '#/components/responses/Error' }
+  /releases:
+    get:
+      operationId: listReleases
+      responses:
+        '200': { description: Release list }
+    post:
+      operationId: createRelease
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseCreate' }
+      responses:
+        '202': { description: Image digest resolution started }
+        default: { $ref: '#/components/responses/Error' }
+  /pools:
+    get:
+      operationId: listPools
+      responses:
+        '200': { description: Model pool list }
+    post:
+      operationId: createPool
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201': { description: Pool created }
+        default: { $ref: '#/components/responses/Error' }
+  /policies/validate:
+    post:
+      operationId: validatePolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyValidation' }
+      responses:
+        '200': { description: Validation result }
+        default: { $ref: '#/components/responses/Error' }
+  /policies/impact-preview:
+    post:
+      operationId: previewPolicyImpact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyValidation' }
+      responses:
+        '201': { description: Immutable impact preview }
+        default: { $ref: '#/components/responses/Error' }
+  /policies/publish:
+    post:
+      operationId: publishPolicy
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201': { description: Policy version published }
+        default: { $ref: '#/components/responses/Error' }
+  /rollouts:
+    get:
+      operationId: listRollouts
+      responses:
+        '200': { description: Rollout list }
+    post:
+      operationId: createRollout
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RolloutCreate' }
+      responses:
+        '202': { description: Rollout accepted }
+        default: { $ref: '#/components/responses/Error' }
+  /rollouts/{rollout_id}:
+    get:
+      operationId: getRollout
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      responses:
+        '200': { description: Rollout detail }
+        default: { $ref: '#/components/responses/Error' }
+  /rollouts/{rollout_id}/pause:
+    post:
+      operationId: pauseRollout
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      responses:
+        '200': { description: Rollout paused }
+        default: { $ref: '#/components/responses/Error' }
+  /rollouts/{rollout_id}/resume:
+    post:
+      operationId: resumeRollout
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      responses:
+        '200': { description: Rollout resumed }
+        default: { $ref: '#/components/responses/Error' }
+  /rollouts/{rollout_id}/rollback:
+    post:
+      operationId: rollbackRollout
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      responses:
+        '202': { description: Reverse rollout accepted }
+        default: { $ref: '#/components/responses/Error' }
+  /workers:
+    get:
+      operationId: listWorkers
+      responses:
+        '200': { description: Worker list }
+  /replicas:
+    get:
+      operationId: listReplicas
+      responses:
+        '200': { description: Replica list }
+  /provider-operations:
+    get:
+      operationId: listProviderOperations
+      responses:
+        '200': { description: Provider operation list }
+  /audit-events:
+    get:
+      operationId: listAuditEvents
+      responses:
+        '200': { description: Audit event list }
+components:
+  securitySchemes:
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://identity.internal.example/.well-known/openid-configuration
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      schema: { type: string }
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: { type: string }
+    RolloutId:
+      name: rollout_id
+      in: path
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+  schemas:
+    ReleaseCreate:
+      type: object
+      additionalProperties: false
+      required: [model_id, source_image, workflow_hash, manifest, reason]
+      properties:
+        model_id: { type: string }
+        source_image: { type: string }
+        workflow_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        manifest: { type: object, additionalProperties: true }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    PolicyValidation:
+      type: object
+      additionalProperties: false
+      required: [policy_type, pool_id, configuration]
+      properties:
+        policy_type: { type: string, enum: [capacity, budget, region, retry] }
+        pool_id: { type: string }
+        configuration: { type: object, additionalProperties: true }
+    RolloutCreate:
+      type: object
+      additionalProperties: false
+      required: [release_id, pool_id, preview_id, expected_pool_version, reason]
+      properties:
+        release_id: { type: string }
+        pool_id: { type: string }
+        preview_id: { type: string }
+        expected_pool_version: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, code, message, retryable, request_id]
+          properties:
+            type: { type: string }
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+            request_id: { type: string }
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
