@@ -105,6 +105,14 @@ export const releaseManifestSchema = z
         concurrency: z.number().int().min(1).max(16).default(1),
       })
       .strict(),
+    service_time_baseline: z
+      .object({
+        default_gpu_seconds: z.number().int().positive(),
+        video_duration_gpu_seconds: z.record(z.string().regex(/^\d+$/), z.number().int().positive()).default({}),
+        image_gpu_seconds_per_output: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     components: z.array(z.object({ name: resourceIdSchema, commit: z.string().min(7).max(128) }).strict()).max(128),
     weights: z.array(weightReferenceSchema).max(256),
   })
@@ -159,6 +167,10 @@ export const capacityPolicyConfigurationSchema = z
     idle_window_seconds: z.number().int().min(60),
     scale_down_cooldown_seconds: z.number().int().min(60),
     hysteresis_percent: z.number().int().min(0).max(100),
+    batch_min_share_percent: z.number().int().min(0).max(100).default(10),
+    aging_seconds: z.number().int().min(60).max(86400).default(1800),
+    prediction_min_samples: z.number().int().min(1).max(10000).default(30),
+    ewma_alpha_basis_points: z.number().int().min(1).max(10000).default(2000),
   })
   .strict()
   .refine((value) => value.max_replicas >= value.min_replicas, { message: "max_replicas must be >= min_replicas" });

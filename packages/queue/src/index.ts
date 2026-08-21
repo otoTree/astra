@@ -30,6 +30,14 @@ export type DeterministicTaskCandidate = Readonly<{
   taskVersion: number;
   lane: QueueClass;
   createdAt: string;
+  expectedGpuSeconds: number;
+  predictionP95Seconds: number;
+  predictionSource: "profile" | "cold_baseline";
+  projectWeight: number;
+  virtualGpuMilliseconds: number;
+  batchMinSharePercent: number;
+  agingSeconds: number;
+  laneAssignedGpuSeconds: Readonly<{ online: number; batch: number }>;
 }>;
 
 export type DispatchableReplica = Readonly<{
@@ -49,22 +57,41 @@ export type DeterministicAssignment = Readonly<{
   task: DeterministicTaskCandidate;
   replica: DispatchableReplica;
   slotIndex: number;
-  reason: "online_priority" | "batch_priority";
+  reason: "online_priority" | "batch_minimum_share" | "weighted_fair_share" | "aged_shortest_job";
 }>;
 
 const compareText = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
 
-/** Pure phase-6 planner. Persistence performs CAS again and remains authoritative. */
+const accountKey = (task: DeterministicTaskCandidate): string =>
+  `${task.releaseId}\u0000${task.projectId}\u0000${task.lane}`;
+
+const desiredLane = (
+  releaseTasks: readonly DeterministicTaskCandidate[],
+  laneUsage: Readonly<{ online: number; batch: number }>,
+): QueueClass => {
+  const hasOnline = releaseTasks.some((task) => task.lane === "online");
+  const hasBatch = releaseTasks.some((task) => task.lane === "batch");
+  if (!hasOnline) return "batch";
+  if (!hasBatch) return "online";
+  const minimumShare = Math.max(...releaseTasks.map((task) => task.batchMinSharePercent));
+  const assigned = laneUsage.online + laneUsage.batch;
+  if (assigned === 0) return "online";
+  const currentShare = assigned === 0 ? 0 : (laneUsage.batch * 100) / assigned;
+  return currentShare < minimumShare ? "batch" : "online";
+};
+
+const effectiveServiceSeconds = (task: DeterministicTaskCandidate, observedAt: Date): number => {
+  const waitSeconds = Math.max(0, (observedAt.getTime() - new Date(task.createdAt).getTime()) / 1000);
+  const agingRounds = Math.floor(waitSeconds / Math.max(60, task.agingSeconds));
+  return Math.max(1, task.expectedGpuSeconds / (agingRounds + 1));
+};
+
+/** Pure weighted-fair planner. Persistence performs CAS again and remains authoritative. */
 export function planDeterministicAssignments(
   tasks: readonly DeterministicTaskCandidate[],
   replicas: readonly DispatchableReplica[],
+  observedAt: Date = new Date(0),
 ): readonly DeterministicAssignment[] {
-  const orderedTasks = [...tasks].sort(
-    (left, right) =>
-      (left.lane === right.lane ? 0 : left.lane === "online" ? -1 : 1) ||
-      compareText(left.createdAt, right.createdAt) ||
-      compareText(left.taskId, right.taskId),
-  );
   const orderedReplicas = [...replicas].sort(
     (left, right) =>
       compareText(left.releaseId, right.releaseId) ||
@@ -72,29 +99,84 @@ export function planDeterministicAssignments(
       compareText(left.poolId, right.poolId) ||
       compareText(left.replicaId, right.replicaId),
   );
+  const remaining = new Map(tasks.map((task) => [task.taskId, task] as const));
+  const virtual = new Map(tasks.map((task) => [accountKey(task), task.virtualGpuMilliseconds] as const));
+  const laneUsage = new Map<string, { online: number; batch: number }>();
+  for (const task of tasks) {
+    laneUsage.set(task.releaseId, {
+      online: task.laneAssignedGpuSeconds.online,
+      batch: task.laneAssignedGpuSeconds.batch,
+    });
+  }
   const occupied = new Map(
     orderedReplicas.map((replica) => [replica.replicaId, new Set(replica.occupiedSlots)] as const),
   );
   const assignments: DeterministicAssignment[] = [];
 
-  for (const task of orderedTasks) {
-    const replica = orderedReplicas.find((candidate) => {
-      if (candidate.releaseId !== task.releaseId) return false;
-      const slots = occupied.get(candidate.replicaId);
-      return slots !== undefined && slots.size < candidate.maximumConcurrency;
+  while (remaining.size > 0) {
+    const eligible = [...remaining.values()].filter((task) =>
+      orderedReplicas.some((replica) => {
+        const slots = occupied.get(replica.replicaId);
+        return replica.releaseId === task.releaseId && slots !== undefined && slots.size < replica.maximumConcurrency;
+      }),
+    );
+    if (eligible.length === 0) break;
+    const releaseLanes = new Map<string, QueueClass>();
+    for (const releaseId of new Set(eligible.map((task) => task.releaseId))) {
+      const releaseTasks = eligible.filter((task) => task.releaseId === releaseId);
+      releaseLanes.set(releaseId, desiredLane(releaseTasks, laneUsage.get(releaseId) ?? { online: 0, batch: 0 }));
+    }
+    const laneEligible = eligible.filter((task) => releaseLanes.get(task.releaseId) === task.lane);
+    laneEligible.sort((left, right) => {
+      const leftVirtual = virtual.get(accountKey(left)) ?? left.virtualGpuMilliseconds;
+      const rightVirtual = virtual.get(accountKey(right)) ?? right.virtualGpuMilliseconds;
+      return (
+        leftVirtual - rightVirtual ||
+        effectiveServiceSeconds(left, observedAt) / left.projectWeight -
+          effectiveServiceSeconds(right, observedAt) / right.projectWeight ||
+        compareText(left.createdAt, right.createdAt) ||
+        compareText(left.taskId, right.taskId)
+      );
     });
-    if (!replica) continue;
+    const task = laneEligible[0];
+    if (!task) break;
+    const replica = orderedReplicas.find((candidate) => {
+      const slots = occupied.get(candidate.replicaId);
+      return candidate.releaseId === task.releaseId && slots !== undefined && slots.size < candidate.maximumConcurrency;
+    });
+    if (!replica) {
+      remaining.delete(task.taskId);
+      continue;
+    }
     const slots = occupied.get(replica.replicaId);
     if (!slots) continue;
     let slotIndex = 0;
     while (slots.has(slotIndex) && slotIndex < replica.maximumConcurrency) slotIndex += 1;
     if (slotIndex >= replica.maximumConcurrency) continue;
     slots.add(slotIndex);
+    remaining.delete(task.taskId);
+    const key = accountKey(task);
+    virtual.set(key, (virtual.get(key) ?? 0) + Math.ceil((task.expectedGpuSeconds * 1000) / task.projectWeight));
+    const usage = laneUsage.get(task.releaseId) ?? { online: 0, batch: 0 };
+    usage[task.lane] += task.expectedGpuSeconds;
+    laneUsage.set(task.releaseId, usage);
+    const initialUsage = task.laneAssignedGpuSeconds;
+    const initialTotal = initialUsage.online + initialUsage.batch;
+    const initialBatchShare = initialTotal === 0 ? 0 : (initialUsage.batch * 100) / initialTotal;
+    const waited = Math.max(0, observedAt.getTime() - new Date(task.createdAt).getTime()) / 1000;
+    const reason =
+      task.lane === "batch" && initialBatchShare < task.batchMinSharePercent
+        ? "batch_minimum_share"
+        : waited >= task.agingSeconds
+          ? "aged_shortest_job"
+          : task.lane === "online" && initialTotal === 0
+            ? "online_priority"
+            : "weighted_fair_share";
     assignments.push({
       task,
       replica,
       slotIndex,
-      reason: task.lane === "online" ? "online_priority" : "batch_priority",
+      reason,
     });
   }
   return assignments;

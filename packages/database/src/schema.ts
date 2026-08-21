@@ -88,6 +88,7 @@ export const projectQuotas = pgTable("project_quotas", {
   maxFileSizeBytes: bigint("max_file_size_bytes", { mode: "number" }).notNull(),
   dailyUploadBytesLimit: bigint("daily_upload_bytes_limit", { mode: "number" }).notNull(),
   activeFileBytesLimit: bigint("active_file_bytes_limit", { mode: "number" }).notNull(),
+  schedulingWeight: integer("scheduling_weight").notNull().default(100),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
@@ -167,6 +168,10 @@ export const tasks = pgTable(
     priority: text("priority").notNull().default("online"),
     requestCiphertext: text("request_ciphertext").notNull(),
     requestHash: text("request_hash").notNull(),
+    schedulingProfile: jsonb("scheduling_profile").notNull(),
+    baselineGpuSeconds: integer("baseline_gpu_seconds").notNull(),
+    retryNotBefore: timestamp("retry_not_before", { withTimezone: true }),
+    lastRetryReason: text("last_retry_reason"),
     progress: integer("progress"),
     output: jsonb("output"),
     error: jsonb("error"),
@@ -204,6 +209,10 @@ export const attempts = pgTable(
     outputsStatus: text("outputs_status").notNull().default("none"),
     usage: jsonb("usage"),
     failureCode: text("failure_code"),
+    expectedGpuSeconds: integer("expected_gpu_seconds"),
+    predictionSource: text("prediction_source"),
+    retryDisposition: text("retry_disposition").notNull().default("none"),
+    retryNotBefore: timestamp("retry_not_before", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     error: jsonb("error"),
@@ -251,6 +260,73 @@ export const schedulingDecisions = pgTable(
     replicaCreatedIdx: index("scheduling_decisions_replica_created_idx").on(table.replicaId, table.decidedAt, table.id),
   }),
 );
+
+export const serviceTimeSamples = pgTable(
+  "service_time_samples",
+  {
+    id: text("id").primaryKey(),
+    attemptId: text("attempt_id").notNull().unique(),
+    taskId: text("task_id").notNull(),
+    releaseId: text("release_id").notNull(),
+    poolId: text("pool_id").notNull(),
+    gpuSku: text("gpu_sku").notNull(),
+    dimensionsHash: text("dimensions_hash").notNull(),
+    dimensions: jsonb("dimensions").notNull(),
+    serviceSeconds: integer("service_seconds").notNull(),
+    outcome: text("outcome").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("service_time_samples_profile_idx").on(table.releaseId, table.gpuSku, table.dimensionsHash)],
+);
+
+export const serviceTimeProfiles = pgTable(
+  "service_time_profiles",
+  {
+    id: text("id").primaryKey(),
+    releaseId: text("release_id").notNull(),
+    gpuSku: text("gpu_sku").notNull(),
+    dimensionsHash: text("dimensions_hash").notNull(),
+    dimensions: jsonb("dimensions").notNull(),
+    sampleCount: bigint("sample_count", { mode: "number" }).notNull(),
+    p75Seconds: integer("p75_seconds").notNull(),
+    p95Seconds: integer("p95_seconds").notNull(),
+    ewmaSeconds: integer("ewma_seconds").notNull(),
+    lastServiceSeconds: integer("last_service_seconds").notNull(),
+    lastSampleAt: timestamp("last_sample_at", { withTimezone: true }).notNull(),
+    version: integer("version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("service_time_profiles_release_gpu_dimensions_key").on(
+      table.releaseId,
+      table.gpuSku,
+      table.dimensionsHash,
+    ),
+  ],
+);
+
+export const projectSchedulingAccounts = pgTable("project_scheduling_accounts", {
+  releaseId: text("release_id").notNull(),
+  projectId: text("project_id").notNull(),
+  lane: text("lane").notNull(),
+  projectWeight: integer("project_weight").notNull(),
+  virtualGpuMilliseconds: bigint("virtual_gpu_milliseconds", { mode: "number" }).notNull(),
+  assignedGpuSeconds: bigint("assigned_gpu_seconds", { mode: "number" }).notNull(),
+  version: bigint("version", { mode: "number" }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const schedulerLaneAccounts = pgTable("scheduler_lane_accounts", {
+  releaseId: text("release_id").notNull(),
+  lane: text("lane").notNull(),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull(),
+  assignedGpuSeconds: bigint("assigned_gpu_seconds", { mode: "number" }).notNull(),
+  version: bigint("version", { mode: "number" }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
 
 export const modelReleases = pgTable("model_releases", {
   id: text("id").primaryKey(),

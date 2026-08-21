@@ -19,6 +19,7 @@ import {
 } from "@astra/contracts";
 import type postgres from "postgres";
 import { RequestCipher } from "./request-cipher.ts";
+import { evaluateRetryPolicy, type RetryDisposition } from "./retry-policy.ts";
 
 type SqlClient = ReturnType<typeof postgres>;
 
@@ -78,7 +79,7 @@ export type TerminalAttempt = Readonly<{
   attempt_id: string;
   task_id: string;
   attempt_status: "completed" | "failed" | "canceled";
-  task_status: "completed" | "failed" | "canceled";
+  task_status: "queued" | "completed" | "failed" | "canceled";
   lease_version: number;
 }>;
 
@@ -1000,6 +1001,153 @@ export class WorkerControlRepository {
     return this.finish(identity, attemptId, undefined, input);
   }
 
+  private async decideRetry(
+    transaction: postgres.TransactionSql,
+    current: Record<string, unknown>,
+    failure: Readonly<{ error: Readonly<{ code: string; retryable: boolean }> }>,
+    timestamp: Date,
+    reportedGpuSeconds: number,
+  ): Promise<Readonly<{ disposition: RetryDisposition; retryAt?: Date }>> {
+    const rows = await transaction`SELECT configuration FROM policy_versions
+      WHERE pool_id=${String(current.pool_id)} AND policy_type='retry' AND status='published'
+      ORDER BY version DESC LIMIT 1`;
+    const policy = rows[0]?.configuration as
+      | {
+          max_attempts?: unknown;
+          initial_backoff_seconds?: unknown;
+          max_backoff_seconds?: unknown;
+          retryable_codes?: unknown;
+        }
+      | undefined;
+    const retryableCodes = Array.isArray(policy?.retryable_codes) ? policy.retryable_codes.map(String) : [];
+    const attemptNo = Math.max(1, Number(current.attempt_no ?? 1));
+    const maximumAttempts = Math.max(1, Number(policy?.max_attempts ?? 1));
+    const initialBackoff = Math.max(1, Number(policy?.initial_backoff_seconds ?? 1));
+    const maximumBackoff = Math.max(initialBackoff, Number(policy?.max_backoff_seconds ?? initialBackoff));
+    const assets = await transaction`SELECT min(f.expires_at) AS expires_at
+      FROM task_files tf JOIN files f ON f.id=tf.file_id
+      WHERE tf.task_id=${String(current.task_id)} AND tf.direction='input'`;
+    const taskExpiry = current.task_expires_at ? new Date(current.task_expires_at as Date | string) : undefined;
+    const assetExpiry = assets[0]?.expires_at ? new Date(assets[0].expires_at as Date | string) : undefined;
+    const quotaRows = await transaction`SELECT q.daily_gpu_seconds_limit,
+        COALESCE((SELECT sum(quantity) FROM usage_ledger u WHERE u.project_id=q.project_id
+          AND u.metric='gpu_seconds' AND u.occurred_at>=date_trunc('day', ${timestamp.toISOString()}::timestamptz)), 0)::bigint AS actual,
+        COALESCE((SELECT sum(estimated_gpu_seconds) FROM admission_reservations ar
+          WHERE ar.project_id=q.project_id AND ar.resource_type='task' AND ar.status='held'), 0)::bigint AS held
+      FROM project_quotas q WHERE q.project_id=${String(current.project_id)} FOR SHARE`;
+    const quota = quotaRows[0];
+    const budgetAvailable =
+      quota?.daily_gpu_seconds_limit === null ||
+      quota?.daily_gpu_seconds_limit === undefined ||
+      Number(quota.actual) + Number(quota.held) + reportedGpuSeconds <= Number(quota.daily_gpu_seconds_limit);
+    return evaluateRetryPolicy({
+      errorCode: failure.error.code,
+      retryable: failure.error.retryable,
+      attemptNumber: attemptNo,
+      policy: {
+        maxAttempts: maximumAttempts,
+        initialBackoffSeconds: initialBackoff,
+        maximumBackoffSeconds: maximumBackoff,
+        retryableCodes,
+      },
+      now: timestamp,
+      expectedServiceSeconds: Math.max(1, Number(current.expected_gpu_seconds ?? current.baseline_gpu_seconds ?? 1)),
+      ...(taskExpiry ? { taskExpiresAt: taskExpiry } : {}),
+      ...(assetExpiry ? { assetExpiresAt: assetExpiry } : {}),
+      budgetAvailable,
+    });
+  }
+
+  private async recordServiceTime(
+    transaction: postgres.TransactionSql,
+    current: Record<string, unknown>,
+    attemptId: string,
+    outcome: "completed" | "failed" | "canceled" | "abandoned",
+    timestamp: Date,
+    reportedGpuSeconds: number,
+  ): Promise<void> {
+    if (!current.started_at || !current.pool_id || !current.gpu_sku) return;
+    const startedAt = new Date(current.started_at as Date | string);
+    const elapsedSeconds = Math.max(1, Math.ceil((timestamp.getTime() - startedAt.getTime()) / 1000));
+    const serviceSeconds = reportedGpuSeconds > 0 ? reportedGpuSeconds : elapsedSeconds;
+    const dimensions = (current.scheduling_profile ?? {}) as Record<string, unknown>;
+    const dimensionsHash = canonicalHash(dimensions);
+    const inserted = await transaction`INSERT INTO service_time_samples (
+        id, attempt_id, task_id, release_id, pool_id, gpu_sku, dimensions_hash, dimensions,
+        service_seconds, outcome, started_at, completed_at, created_at
+      ) VALUES (
+        ${this.createId("servicetime")}, ${attemptId}, ${String(current.task_id)}, ${String(current.release_id)},
+        ${String(current.pool_id)}, ${String(current.gpu_sku)}, ${dimensionsHash}, ${JSON.stringify(dimensions)},
+        ${serviceSeconds}, ${outcome}, ${startedAt.toISOString()}, ${timestamp.toISOString()}, ${timestamp.toISOString()}
+      ) ON CONFLICT (attempt_id) DO NOTHING RETURNING id`;
+    if (!inserted[0] || outcome !== "completed") return;
+    const statistics = await transaction`SELECT count(*)::bigint AS sample_count,
+        percentile_disc(0.75) WITHIN GROUP (ORDER BY service_seconds)::integer AS p75_seconds,
+        percentile_disc(0.95) WITHIN GROUP (ORDER BY service_seconds)::integer AS p95_seconds
+      FROM (SELECT service_seconds FROM service_time_samples
+        WHERE release_id=${String(current.release_id)} AND gpu_sku=${String(current.gpu_sku)}
+          AND dimensions_hash=${dimensionsHash} AND outcome='completed'
+        ORDER BY completed_at DESC, id DESC LIMIT 500) recent`;
+    const existing = await transaction`SELECT id, ewma_seconds FROM service_time_profiles
+      WHERE release_id=${String(current.release_id)} AND gpu_sku=${String(current.gpu_sku)}
+        AND dimensions_hash=${dimensionsHash} FOR UPDATE`;
+    const policyRows = await transaction`SELECT configuration FROM policy_versions
+      WHERE pool_id=${String(current.pool_id)} AND policy_type='capacity' AND status='published'
+      ORDER BY version DESC LIMIT 1`;
+    const alpha = Math.min(
+      10000,
+      Math.max(
+        1,
+        Number((policyRows[0]?.configuration as Record<string, unknown> | undefined)?.ewma_alpha_basis_points ?? 2000),
+      ),
+    );
+    const previousEwma = Number(existing[0]?.ewma_seconds ?? serviceSeconds);
+    const ewma = Math.max(1, Math.round((alpha * serviceSeconds + (10000 - alpha) * previousEwma) / 10000));
+    await transaction`INSERT INTO service_time_profiles (
+        id, release_id, gpu_sku, dimensions_hash, dimensions, sample_count, p75_seconds, p95_seconds,
+        ewma_seconds, last_service_seconds, last_sample_at, version, created_at, updated_at
+      ) VALUES (
+        ${this.createId("serviceprofile")}, ${String(current.release_id)}, ${String(current.gpu_sku)},
+        ${dimensionsHash}, ${JSON.stringify(dimensions)}, ${Number(statistics[0]?.sample_count ?? 1)},
+        ${Number(statistics[0]?.p75_seconds ?? serviceSeconds)}, ${Number(statistics[0]?.p95_seconds ?? serviceSeconds)},
+        ${ewma}, ${serviceSeconds}, ${timestamp.toISOString()}, 1, ${timestamp.toISOString()}, ${timestamp.toISOString()}
+      ) ON CONFLICT (release_id, gpu_sku, dimensions_hash) DO UPDATE SET
+        dimensions=EXCLUDED.dimensions, sample_count=EXCLUDED.sample_count,
+        p75_seconds=EXCLUDED.p75_seconds, p95_seconds=EXCLUDED.p95_seconds,
+        ewma_seconds=EXCLUDED.ewma_seconds, last_service_seconds=EXCLUDED.last_service_seconds,
+        last_sample_at=EXCLUDED.last_sample_at, version=service_time_profiles.version+1,
+        updated_at=EXCLUDED.updated_at`;
+  }
+
+  private async reconcileFairnessCharge(
+    transaction: postgres.TransactionSql,
+    current: Record<string, unknown>,
+    timestamp: Date,
+    reportedGpuSeconds: number,
+  ): Promise<void> {
+    if (!current.release_id || !current.project_id || !current.expected_gpu_seconds) return;
+    const expectedSeconds = Math.max(1, Number(current.expected_gpu_seconds));
+    const startedAt = current.started_at ? new Date(current.started_at as Date | string) : undefined;
+    const actualSeconds =
+      reportedGpuSeconds > 0
+        ? reportedGpuSeconds
+        : startedAt
+          ? Math.max(1, Math.ceil((timestamp.getTime() - startedAt.getTime()) / 1000))
+          : expectedSeconds;
+    const lane = current.priority === "batch" ? "batch" : "online";
+    await transaction`UPDATE project_scheduling_accounts SET
+        virtual_gpu_milliseconds=GREATEST(0, virtual_gpu_milliseconds
+          + CEIL(${actualSeconds}::numeric * 1000 / project_weight)::bigint
+          - CEIL(${expectedSeconds}::numeric * 1000 / project_weight)::bigint),
+        assigned_gpu_seconds=GREATEST(0, assigned_gpu_seconds + ${actualSeconds} - ${expectedSeconds}),
+        version=version+1, updated_at=${timestamp.toISOString()}
+      WHERE release_id=${String(current.release_id)} AND project_id=${String(current.project_id)} AND lane=${lane}`;
+    await transaction`UPDATE scheduler_lane_accounts SET
+        assigned_gpu_seconds=GREATEST(0, assigned_gpu_seconds + ${actualSeconds} - ${expectedSeconds}),
+        version=version+1, updated_at=${timestamp.toISOString()}
+      WHERE release_id=${String(current.release_id)} AND lane=${lane}`;
+  }
+
   private async finish(
     identity: WorkerIdentity,
     attemptId: string,
@@ -1011,15 +1159,17 @@ export class WorkerControlRepository {
     const timestamp = this.now();
     return this.sql.begin(async (transaction) => {
       const rows = await transaction`SELECT a.id, a.task_id, a.execution_key, a.status, a.outputs_status,
-          a.output_manifest, a.replica_id, a.release_id, l.id AS lease_id, l.worker_id,
+          a.output_manifest, a.replica_id, a.release_id, a.attempt_no, a.pool_id, a.started_at,
+          a.expected_gpu_seconds, a.retry_disposition, a.retry_not_before, l.id AS lease_id, l.worker_id,
           l.version AS lease_version, l.status AS lease_status, t.status AS task_status,
-          t.version AS task_version, t.project_id, p.organization_id
+          t.version AS task_version, t.project_id, t.priority, t.expires_at AS task_expires_at,
+          t.scheduling_profile, t.baseline_gpu_seconds, p.organization_id, r.gpu_sku
         FROM attempts a JOIN leases l ON l.attempt_id=a.id JOIN tasks t ON t.id=a.task_id
+        LEFT JOIN replicas r ON r.id=a.replica_id
         LEFT JOIN projects p ON p.id=t.project_id WHERE a.id=${attemptId} FOR UPDATE OF a, l, t`;
       const current = rows[0];
       if (!current) throw new WorkerControlError("attempt_not_found", 404);
       const intendedAttemptStatus = failed?.error.code === "canceled" ? "canceled" : failed ? "failed" : "completed";
-      const intendedTaskStatus = intendedAttemptStatus;
       if (["completed", "failed", "canceled"].includes(String(current.status))) {
         if (String(current.status) !== intendedAttemptStatus)
           throw new WorkerControlError("attempt_terminal_conflict", 409);
@@ -1027,7 +1177,7 @@ export class WorkerControlRepository {
           attempt_id: attemptId,
           task_id: String(current.task_id),
           attempt_status: intendedAttemptStatus,
-          task_status: intendedTaskStatus,
+          task_status: current.retry_disposition === "scheduled" ? "queued" : intendedAttemptStatus,
           lease_version: Number(current.lease_version),
         };
       }
@@ -1046,11 +1196,18 @@ export class WorkerControlRepository {
         throw new WorkerControlError("outputs_not_committed", 409);
       }
       const usage = completed?.usage ?? failed?.usage ?? {};
+      const gpuSeconds = Math.max(0, Math.ceil(Number(usage.gpu_seconds ?? 0)));
       const error = failed
         ? { code: failed.error.code, message: failed.error.message, retryable: failed.error.retryable }
         : null;
+      const retry = failed
+        ? await this.decideRetry(transaction, current as Record<string, unknown>, failed, timestamp, gpuSeconds)
+        : undefined;
+      const intendedTaskStatus: TerminalAttempt["task_status"] =
+        retry?.disposition === "scheduled" ? "queued" : intendedAttemptStatus;
       await transaction`UPDATE attempts SET status=${intendedAttemptStatus}, usage=${JSON.stringify(usage)},
         error=${error ? JSON.stringify(error) : null}, failure_code=${failed?.error.code ?? null}, progress=${completed ? 100 : null},
+        retry_disposition=${retry?.disposition ?? "none"}, retry_not_before=${retry?.retryAt?.toISOString() ?? null},
         completed_at=${timestamp.toISOString()}, updated_at=${timestamp.toISOString()} WHERE id=${attemptId}`;
       const leaseRows =
         await transaction`UPDATE leases SET status=${intendedAttemptStatus === "canceled" ? "canceled" : "released"},
@@ -1066,8 +1223,12 @@ export class WorkerControlRepository {
         : null;
       const taskRows =
         await transaction`UPDATE tasks SET status=${intendedTaskStatus}, progress=${completed ? 100 : null},
-          output=${output ? JSON.stringify(output) : null}, error=${error ? JSON.stringify(error) : null},
-          version=version+1, updated_at=${timestamp.toISOString()}, completed_at=${timestamp.toISOString()}
+          output=${output ? JSON.stringify(output) : null},
+          error=${retry?.disposition === "scheduled" ? null : error ? JSON.stringify(error) : null},
+          retry_not_before=${retry?.retryAt?.toISOString() ?? null},
+          last_retry_reason=${retry?.disposition === "scheduled" ? (failed?.error.code ?? null) : null},
+          version=version+1, updated_at=${timestamp.toISOString()},
+          completed_at=${intendedTaskStatus === "queued" ? null : timestamp.toISOString()}
         WHERE id=${String(current.task_id)} AND version=${Number(current.task_version)} RETURNING version`;
       if (!taskRows[0]) throw new WorkerControlError("task_completion_cas_conflict", 409, true);
       const taskVersion = Number(taskRows[0].version);
@@ -1076,14 +1237,19 @@ export class WorkerControlRepository {
         String(current.task_id),
         String(current.task_status),
         intendedTaskStatus,
-        failed ? failed.error.code : "worker_completed",
+        retry?.disposition === "scheduled"
+          ? `retry_scheduled:${failed?.error.code ?? "unknown"}`
+          : failed
+            ? failed.error.code
+            : "worker_completed",
         taskVersion,
         timestamp,
       );
-      await transaction`UPDATE admission_reservations SET status='released',
-        release_reason=${failed ? "task_failed" : "task_completed"}, released_at=${timestamp.toISOString()}
-        WHERE resource_type='task' AND resource_id=${String(current.task_id)} AND status='held'`;
-      const gpuSeconds = Math.max(0, Math.ceil(Number(usage.gpu_seconds ?? 0)));
+      if (intendedTaskStatus !== "queued") {
+        await transaction`UPDATE admission_reservations SET status='released',
+          release_reason=${failed ? "task_failed" : "task_completed"}, released_at=${timestamp.toISOString()}
+          WHERE resource_type='task' AND resource_id=${String(current.task_id)} AND status='held'`;
+      }
       if (current.organization_id && gpuSeconds > 0) {
         await transaction`INSERT INTO usage_ledger (
           id, organization_id, project_id, task_id, source_type, source_id, metric, quantity, occurred_at, created_at
@@ -1093,6 +1259,15 @@ export class WorkerControlRepository {
           ${timestamp.toISOString()}, ${timestamp.toISOString()}
         ) ON CONFLICT (source_type, source_id, metric) DO NOTHING`;
       }
+      await this.recordServiceTime(
+        transaction,
+        current as Record<string, unknown>,
+        attemptId,
+        intendedAttemptStatus,
+        timestamp,
+        gpuSeconds,
+      );
+      await this.reconcileFairnessCharge(transaction, current as Record<string, unknown>, timestamp, gpuSeconds);
       const remaining = await transaction`SELECT a.id FROM attempts a JOIN leases l ON l.attempt_id=a.id
         WHERE l.worker_id=${identity.workerId} AND a.id<>${attemptId}
           AND a.status IN ('leased', 'running', 'unknown') AND l.status IN ('active', 'unknown')
@@ -1185,18 +1360,35 @@ export class WorkerControlRepository {
         LIMIT ${Math.min(Math.max(limit, 1), 500)} FOR UPDATE SKIP LOCKED`;
       let orphaned = 0;
       for (const worker of workers) {
-        const attempts = await transaction`SELECT a.id, a.task_id, t.status AS task_status, t.version AS task_version
+        const attempts = await transaction`SELECT a.id, a.task_id, a.release_id, a.attempt_no, a.pool_id,
+            a.started_at, a.expected_gpu_seconds, t.status AS task_status, t.version AS task_version,
+            t.project_id, t.priority, t.expires_at AS task_expires_at, t.scheduling_profile, t.baseline_gpu_seconds,
+            p.organization_id, r.gpu_sku
           FROM attempts a JOIN leases l ON l.attempt_id=a.id JOIN tasks t ON t.id=a.task_id
+          LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN replicas r ON r.id=a.replica_id
           WHERE l.worker_id=${String(worker.id)} AND a.status='unknown' AND l.status='unknown'
           FOR UPDATE OF a, l, t`;
         for (const attempt of attempts) {
+          const retry = await this.decideRetry(
+            transaction,
+            attempt as Record<string, unknown>,
+            { error: { code: "worker_lost", retryable: true } },
+            timestamp,
+            0,
+          );
           await transaction`UPDATE leases SET status='expired', version=version+1,
             updated_at=${timestamp.toISOString()} WHERE attempt_id=${String(attempt.id)} AND status='unknown'`;
           await transaction`UPDATE attempts SET status='abandoned', failure_code='worker_lost',
+            retry_disposition=${retry.disposition}, retry_not_before=${retry.retryAt?.toISOString() ?? null},
             completed_at=${timestamp.toISOString()}, updated_at=${timestamp.toISOString()}
             WHERE id=${String(attempt.id)} AND status='unknown'`;
           if (["provisioning", "running", "post_processing", "uploading"].includes(String(attempt.task_status))) {
-            const taskRows = await transaction`UPDATE tasks SET status='queued', progress=NULL, version=version+1,
+            const taskStatus = retry.disposition === "scheduled" ? "queued" : "failed";
+            const taskRows = await transaction`UPDATE tasks SET status=${taskStatus}, progress=NULL,
+              error=${taskStatus === "failed" ? JSON.stringify({ code: "worker_lost", message: "worker_lost", retryable: true }) : null},
+              retry_not_before=${retry.retryAt?.toISOString() ?? null},
+              last_retry_reason=${retry.disposition === "scheduled" ? "worker_lost" : null},
+              completed_at=${taskStatus === "failed" ? timestamp.toISOString() : null}, version=version+1,
               updated_at=${timestamp.toISOString()} WHERE id=${String(attempt.task_id)}
               AND version=${Number(attempt.task_version)} RETURNING version`;
             if (taskRows[0]) {
@@ -1204,13 +1396,27 @@ export class WorkerControlRepository {
                 transaction,
                 String(attempt.task_id),
                 String(attempt.task_status),
-                "queued",
-                "worker_lost",
+                taskStatus,
+                retry.disposition === "scheduled" ? "retry_scheduled:worker_lost" : `worker_lost:${retry.disposition}`,
                 Number(taskRows[0].version),
                 timestamp,
               );
+              if (taskStatus === "failed") {
+                await transaction`UPDATE admission_reservations SET status='released',
+                  release_reason='task_failed', released_at=${timestamp.toISOString()}
+                  WHERE resource_type='task' AND resource_id=${String(attempt.task_id)} AND status='held'`;
+              }
             }
           }
+          await this.recordServiceTime(
+            transaction,
+            attempt as Record<string, unknown>,
+            String(attempt.id),
+            "abandoned",
+            timestamp,
+            0,
+          );
+          await this.reconcileFairnessCharge(transaction, attempt as Record<string, unknown>, timestamp, 0);
           orphaned += 1;
         }
         await transaction`UPDATE workers SET status='offline', updated_at=${timestamp.toISOString()}

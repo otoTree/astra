@@ -24,8 +24,8 @@
 | 8 | 共绩 Transport 与只读快照 | 完成 | 7 |
 | 9 | 共绩资源操作与 Reconcile | 完成 | 8 |
 | 10 | 预热、滚动发布、排空、回滚 | 完成 | 9 |
-| 11 | WFQ、耗时预测、Retry Policy | 进行中 | 10 |
-| 12 | 扩缩容、成本收益、跨区放置 | 未开始 | 11 |
+| 11 | WFQ、耗时预测、Retry Policy | 完成 | 10 |
+| 12 | 扩缩容、成本收益、跨区放置 | 进行中 | 11 |
 | 13 | 生产安全、灾备、10-50 GPU 验收 | 未开始 | 12 |
 | 14 | H3/10Eros 真实 Model App | 未开始 | 13 |
 | 15 | 图片模型与数百 GPU 扩展 | 未开始 | 14 |
@@ -309,6 +309,27 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 交付：按 Release/GPU/尺寸/FPS/时长/质量/输入角色分桶的 P75/P95/EWMA；在线优先和批量最低份额；按预计 GPU 秒/项目权重排序；aging 和 Retry Policy。
 
 退出条件：4-15 秒混合任务按 GPU 时间公平；突发在线不饿死批量；预测缺失与漂移不破坏队列。
+
+阶段 11 完成证据（2026-08-22）：
+
+- Task 创建时只持久化 Release、GPU、尺寸、FPS、时长、质量、输入角色和输出数等非敏感调度维度；
+  Release 可声明 4-15 秒视频及图片输出的冷样本 GPU 秒基线。达到策略样本门后使用同维度桶的 P75 与
+  EWMA 加权预测，P95 独立用于尾延迟和超时，禁止跨 Release 或跨维度猜测。
+- 在线/批量双层队列按预计 GPU 秒维护启动份额，批量低于版本化最低份额时获得下一空闲槽；项目排序按
+  `predicted_gpu_seconds / scheduling_weight` 计费，并在终态以实际 GPU 秒同事务修正。SJF 只在同层使用，
+  aging 保证长任务最终提升，运行中任务不抢占。
+- Retry Policy 统一为纯确定性判定，结合发布策略错误码、Attempt 上限、指数退避、Task/输入素材剩余 TTL
+  和项目 GPU 预算。Worker 失联经过 orphan grace 后走同一策略；重试保留 Admission reservation，终态才释放，
+  重复失败回报不会重复计费或重复写服务时间。
+- PostgreSQL 永久保存成功/失败/取消/失联样本、P75/P95/EWMA Profile、项目虚拟 GPU 账本和 lane GPU 账本；
+  Attempt 固定预测值与来源，Scheduler 指标暴露排队 GPU 秒、预测候选和分配原因。
+- `bun run test:integration:postgres` 通过 34 项，覆盖冷样本、P75/EWMA、并发 CAS、公平账本、可重试/不可重试
+  失败、终态幂等和 Worker 失联。纯算法测试覆盖输入顺序无关、批量最低份额、按权重 GPU 时间公平及 aging。
+
+本阶段迁移 `0019_fair_scheduling_and_retry.sql` 已应用，checksum 为
+`05c9a1769acc0c3ff3698d3c2afa66cdbea91edf22f070682050d462e37ca9db`，后续禁止修改。回滚采用应用回滚并
+暂停 Scheduler 新分配；保留 Task 调度画像、Attempt 预测/重试字段、服务时间样本与公平账本。旧应用忽略新增
+结构，恢复阶段 11 应用后继续从 PostgreSQL 权威状态收敛，不删除历史样本或回退已发生的实际 GPU 用量。
 
 ### 阶段 12：扩缩容与放置
 

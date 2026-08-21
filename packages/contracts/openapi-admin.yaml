@@ -594,6 +594,17 @@ components:
             gpu_skus: { type: array, minItems: 1, maxItems: 32, items: { type: string } }
             gpu_memory_bytes: { type: integer, minimum: 1 }
             concurrency: { type: integer, minimum: 1, maximum: 16, default: 1 }
+        service_time_baseline:
+          type: object
+          additionalProperties: false
+          required: [default_gpu_seconds]
+          properties:
+            default_gpu_seconds: { type: integer, minimum: 1 }
+            video_duration_gpu_seconds:
+              type: object
+              default: {}
+              additionalProperties: { type: integer, minimum: 1 }
+            image_gpu_seconds_per_output: { type: integer, minimum: 1 }
         components:
           type: array
           maxItems: 128

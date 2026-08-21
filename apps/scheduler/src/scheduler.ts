@@ -8,6 +8,9 @@ export type SchedulerRunResult = Readonly<{
   planned: number;
   reserved: readonly Reservation[];
   conflicts: number;
+  queuedGpuSeconds: number;
+  predictionSources: Readonly<Record<"profile" | "cold_baseline", number>>;
+  assignmentReasons: Readonly<Record<string, number>>;
 }>;
 
 export class DeterministicScheduler {
@@ -24,7 +27,7 @@ export class DeterministicScheduler {
   async runOnce(): Promise<SchedulerRunResult> {
     const expired = await this.repository.expireReservations(this.options.batchSize);
     const snapshot = await this.repository.snapshot(this.options.batchSize, this.options.workerFreshnessSeconds);
-    const assignments = planDeterministicAssignments(snapshot.tasks, snapshot.replicas);
+    const assignments = planDeterministicAssignments(snapshot.tasks, snapshot.replicas, new Date(snapshot.observedAt));
     const reserved: Reservation[] = [];
     let conflicts = 0;
     for (const assignment of assignments) {
@@ -57,6 +60,15 @@ export class DeterministicScheduler {
       planned: assignments.length,
       reserved,
       conflicts,
+      queuedGpuSeconds: snapshot.tasks.reduce((total, task) => total + task.expectedGpuSeconds, 0),
+      predictionSources: {
+        profile: snapshot.tasks.filter((task) => task.predictionSource === "profile").length,
+        cold_baseline: snapshot.tasks.filter((task) => task.predictionSource === "cold_baseline").length,
+      },
+      assignmentReasons: assignments.reduce<Record<string, number>>((counts, assignment) => {
+        counts[assignment.reason] = (counts[assignment.reason] ?? 0) + 1;
+        return counts;
+      }, {}),
     };
   }
 }

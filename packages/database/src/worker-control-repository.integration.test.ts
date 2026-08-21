@@ -46,17 +46,50 @@ const capabilities = capabilitiesSchema.parse({
 async function fixture(now: () => Date) {
   if (!database) throw new Error("test_database_unavailable");
   const suffix = randomUUID().replaceAll("-", "");
+  const poolId = `pool_worker_${suffix}`;
+  const apiKeyId = `key_worker_${suffix}`;
   const replicaId = `replica_worker_${suffix}`;
   const bootstrapHash = createHash("sha256").update(`bootstrap:${suffix}`).digest("hex");
   const sessionHash = createHash("sha256").update(`session:${suffix}`).digest("hex");
-  await database.client`INSERT INTO replicas (
-    id, pool_id, release_id, provider, provider_resource_id, region_id, gpu_sku, image_digest,
-    desired_state, observed_state, rollout_reserved, version, last_observed_at, created_at, updated_at
-  ) VALUES (
-    ${replicaId}, 'pool_local_reference', 'release_local_reference', 'reference', ${`instance_${suffix}`},
-    'region_local', 'reference-gpu', 'sha256:local-reference', 'provisioning', 'provisioning', false, 0,
-    ${now().toISOString()}, ${now().toISOString()}, ${now().toISOString()}
-  )`;
+  await database.client.begin(async (transaction) => {
+    await transaction`INSERT INTO api_keys (
+      id, organization_id, default_project_id, name, key_prefix, key_last_four, secret_hash,
+      scopes, status, created_at, updated_at
+    ) VALUES (
+      ${apiKeyId}, 'org_local', 'project_local', ${`worker-${suffix}`}, ${suffix.slice(0, 12)},
+      ${suffix.slice(-4)}, ${`integration-secret-${suffix}`}, ARRAY['tasks:create']::text[], 'active',
+      ${now().toISOString()}, ${now().toISOString()}
+    )`;
+    await transaction`INSERT INTO model_pools (
+      id, project_id, release_id, provider, region_id, gpu_sku, execution_mode, status, version,
+      created_by, created_at, updated_at
+    ) VALUES (
+      ${poolId}, 'project_local', 'release_local_reference', 'reference', 'region_local', 'reference-gpu',
+      'deployment', 'active', 1, 'integration', ${now().toISOString()}, ${now().toISOString()}
+    )`;
+    await transaction`INSERT INTO policy_versions (
+      id, project_id, pool_id, policy_type, version, status, configuration, validation,
+      reason, created_by, created_at, published_at
+    ) VALUES (
+      ${`policy_retry_${suffix}`}, 'project_local', ${poolId}, 'retry', 1, 'published',
+      ${JSON.stringify({
+        max_attempts: 3,
+        initial_backoff_seconds: 5,
+        max_backoff_seconds: 60,
+        retryable_codes: ["worker_lost", "provider_timeout"],
+      })},
+      ${JSON.stringify({ policy_type: "retry", valid: true, errors: [], warnings: [] })},
+      'Integration retry policy', 'integration', ${now().toISOString()}, ${now().toISOString()}
+    )`;
+    await transaction`INSERT INTO replicas (
+      id, pool_id, release_id, provider, provider_resource_id, region_id, gpu_sku, image_digest,
+      desired_state, observed_state, rollout_reserved, version, last_observed_at, created_at, updated_at
+    ) VALUES (
+      ${replicaId}, ${poolId}, 'release_local_reference', 'reference', ${`instance_${suffix}`},
+      'region_local', 'reference-gpu', 'sha256:local-reference', 'provisioning', 'provisioning', false, 0,
+      ${now().toISOString()}, ${now().toISOString()}, ${now().toISOString()}
+    )`;
+  });
   await database.client`INSERT INTO worker_bootstrap_tokens (
     id, token_hash, replica_id, release_id, expires_at, created_at
   ) VALUES (
@@ -76,7 +109,7 @@ async function fixture(now: () => Date) {
       region: "region_local",
       provider_instance_id: `instance_${suffix}`,
       replica_id: replicaId,
-      pool_id: "pool_local_reference",
+      pool_id: poolId,
       release_id: "release_local_reference",
       instance_fingerprint: `fingerprint_${suffix}`,
       hardware: { gpu_sku: "reference-gpu", gpu_count: 1, gpu_memory_bytes: 34_359_738_368 },
@@ -90,7 +123,7 @@ async function fixture(now: () => Date) {
     },
   );
   const identity = await repository.authenticate(sessionHash, registered.workerId);
-  return { suffix, replicaId, repository, identity, bootstrapHash };
+  return { suffix, poolId, replicaId, repository, identity, bootstrapHash, apiKeyId };
 }
 
 async function reserveTask(context: Awaited<ReturnType<typeof fixture>>, now: () => Date, name: string) {
@@ -114,6 +147,17 @@ async function reserveTask(context: Awaited<ReturnType<typeof fixture>>, now: ()
     "/v1/videos/generations",
     `${name}-${context.suffix}`,
   );
+  await database.client`UPDATE tasks SET scheduling_profile=${JSON.stringify({
+    integration_case: name,
+    fixture: context.suffix,
+  })} WHERE id=${task.task.id}`;
+  await database.client`INSERT INTO admission_reservations (
+      id, project_id, api_key_id, resource_type, resource_id, lane, status,
+      estimated_gpu_seconds, estimated_cost_minor, reserved_bytes, created_at
+    ) VALUES (
+      ${`reservation_worker_${context.suffix}_${name}`}, 'project_local', ${context.apiKeyId}, 'task',
+      ${task.task.id}, 'online', 'held', 840, 0, 0, ${now().toISOString()}
+    )`;
   const scheduling = new SchedulingRepository(database.client, now);
   const snapshot = await scheduling.snapshot(100, 60);
   const taskSnapshot = snapshot.tasks.find((item) => item.taskId === task.task.id);
@@ -307,8 +351,85 @@ describe("WorkerControlRepository PostgreSQL contract", () => {
         lease_status: "released",
         file_status: "available",
       });
+      const serviceTime = await database.client`SELECT s.outcome, s.service_seconds, p.sample_count,
+          p.p75_seconds, p.p95_seconds, p.ewma_seconds
+        FROM service_time_samples s JOIN service_time_profiles p ON p.release_id=s.release_id
+          AND p.gpu_sku=s.gpu_sku AND p.dimensions_hash=s.dimensions_hash
+        WHERE s.attempt_id=${leased.attemptId}`;
+      expect({ ...serviceTime[0], sample_count: Number(serviceTime[0]?.sample_count) }).toMatchObject({
+        outcome: "completed",
+        service_seconds: 1,
+        sample_count: 1,
+        p75_seconds: 1,
+        p95_seconds: 1,
+        ewma_seconds: 1,
+      });
     },
   );
+
+  integrationTest("requeues a declared retryable failure once and keeps the task reservation held", async () => {
+    if (!database) throw new Error("test_database_unavailable");
+    const clock = new Date("2026-08-22T01:30:00.000Z");
+    const now = () => new Date(clock);
+    const context = await fixture(now);
+    const { task, leased } = await reserveTask(context, now, "retryable");
+    const failure = {
+      lease_id: leased.leaseId,
+      lease_version: leased.leaseVersion,
+      execution_id: leased.executionKey,
+      failed_at: now().toISOString(),
+      error: { code: "worker_lost", message: "worker connection lost", retryable: true },
+      usage: { gpu_seconds: 2 },
+    };
+    const failed = await context.repository.fail(context.identity, leased.attemptId, failure);
+    expect(failed).toMatchObject({ attempt_status: "failed", task_status: "queued" });
+    expect(await context.repository.fail(context.identity, leased.attemptId, failure)).toEqual(failed);
+    const rows = await database.client`SELECT t.status, t.retry_not_before, t.last_retry_reason,
+        a.retry_disposition, a.retry_not_before AS attempt_retry_not_before,
+        ar.status AS reservation_status,
+        (SELECT count(*)::int FROM usage_ledger u WHERE u.source_type='attempt'
+          AND u.source_id=a.id AND u.metric='gpu_seconds') AS usage_entries,
+        (SELECT count(*)::int FROM service_time_samples s WHERE s.attempt_id=a.id) AS service_samples
+      FROM tasks t JOIN attempts a ON a.task_id=t.id
+      LEFT JOIN admission_reservations ar ON ar.resource_type='task' AND ar.resource_id=t.id
+      WHERE t.id=${task.task.id}`;
+    expect(rows[0]).toMatchObject({
+      status: "queued",
+      last_retry_reason: "worker_lost",
+      retry_disposition: "scheduled",
+      reservation_status: "held",
+      usage_entries: 1,
+      service_samples: 0,
+    });
+    expect(new Date(rows[0]?.retry_not_before as Date).toISOString()).toBe("2026-08-22T01:30:05.000Z");
+    expect(new Date(rows[0]?.attempt_retry_not_before as Date).toISOString()).toBe("2026-08-22T01:30:05.000Z");
+  });
+
+  integrationTest("terminates an undeclared failure without scheduling another attempt", async () => {
+    if (!database) throw new Error("test_database_unavailable");
+    const clock = new Date("2026-08-22T01:45:00.000Z");
+    const now = () => new Date(clock);
+    const context = await fixture(now);
+    const { task, leased } = await reserveTask(context, now, "terminal");
+    const failed = await context.repository.fail(context.identity, leased.attemptId, {
+      lease_id: leased.leaseId,
+      lease_version: leased.leaseVersion,
+      execution_id: leased.executionKey,
+      failed_at: now().toISOString(),
+      error: { code: "invalid_output", message: "output contract rejected", retryable: true },
+      usage: {},
+    });
+    expect(failed).toMatchObject({ attempt_status: "failed", task_status: "failed" });
+    const rows = await database.client`SELECT t.status, a.retry_disposition, ar.status AS reservation_status
+      FROM tasks t JOIN attempts a ON a.task_id=t.id
+      LEFT JOIN admission_reservations ar ON ar.resource_type='task' AND ar.resource_id=t.id
+      WHERE t.id=${task.task.id}`;
+    expect(rows[0]).toMatchObject({
+      status: "failed",
+      retry_disposition: "not_retryable",
+      reservation_status: "released",
+    });
+  });
 
   integrationTest("recovers unknown leases inside grace and rejects them after orphan requeue", async () => {
     if (!database) throw new Error("test_database_unavailable");

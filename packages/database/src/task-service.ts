@@ -115,6 +115,79 @@ function resolvedParameters(
   return { width, height };
 }
 
+function schedulingProfile(
+  type: "video" | "image",
+  operation: "generation" | "edit",
+  request: TaskRequest,
+  execution: TaskExecutionRequest,
+): Record<string, unknown> {
+  const dimensions = resolvedParameters(type, execution);
+  const inputRoles = [...new Set(request.input_files.map((file) => file.role))].sort();
+  if (type === "video") {
+    const video = request as VideoGenerationRequest | VideoEditRequest;
+    return {
+      type,
+      operation,
+      width: dimensions.width,
+      height: dimensions.height,
+      fps: dimensions.fps,
+      duration_seconds: video.duration,
+      quality: typeof video.model_options.quality === "string" ? video.model_options.quality : "release_default",
+      input_roles: inputRoles,
+      audio_mode: video.audio.mode,
+      output_count: 1,
+    };
+  }
+  const image = request as ImageGenerationRequest | ImageEditRequest;
+  return {
+    type,
+    operation,
+    width: dimensions.width,
+    height: dimensions.height,
+    quality: image.quality,
+    input_roles: inputRoles,
+    audio_mode: "none",
+    output_count: image.n,
+  };
+}
+
+function baselineGpuSeconds(type: "video" | "image", input: TaskRequest, manifest: Record<string, unknown>): number {
+  const baseline = manifest.service_time_baseline as
+    | {
+        default_gpu_seconds?: unknown;
+        video_duration_gpu_seconds?: Record<string, unknown>;
+        image_gpu_seconds_per_output?: unknown;
+      }
+    | undefined;
+  const admission = manifest.admission_estimates as
+    | {
+        video?: { base_gpu_seconds?: unknown; per_output_second_gpu_seconds?: unknown };
+        image?: { per_output_gpu_seconds?: unknown };
+      }
+    | undefined;
+  let seconds = Number(baseline?.default_gpu_seconds ?? 0);
+  if (type === "video") {
+    const video = input as VideoGenerationRequest | VideoEditRequest;
+    const durationBaseline = baseline?.video_duration_gpu_seconds?.[String(video.duration)];
+    if (durationBaseline !== undefined) {
+      seconds = Number(durationBaseline);
+    } else {
+      const admissionSeconds =
+        Number(admission?.video?.base_gpu_seconds ?? 0) +
+        video.duration * Number(admission?.video?.per_output_second_gpu_seconds ?? 0);
+      if (admissionSeconds > 0) seconds = admissionSeconds;
+    }
+  } else {
+    const image = input as ImageGenerationRequest | ImageEditRequest;
+    seconds = Number(
+      baseline?.image_gpu_seconds_per_output !== undefined
+        ? Number(baseline.image_gpu_seconds_per_output) * image.n
+        : Number(admission?.image?.per_output_gpu_seconds ?? seconds) * image.n,
+    );
+  }
+  return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 1;
+}
+
 function taskView(row: Record<string, unknown>, snapshot: TaskSnapshot, model: string): CreatedTask {
   const created = row.created_at as Date | string;
   const updated = row.updated_at as Date | string;
@@ -316,7 +389,8 @@ export class TaskService {
               this.createSeed,
             )
           : input;
-      let estimatedGpuSeconds = 0;
+      const profile = schedulingProfile(type, operation, input, resolved);
+      const estimatedGpuSeconds = baselineGpuSeconds(type, input, manifest as Record<string, unknown>);
       let estimatedCostMinor = 0;
       if (this.enforceAdmission) {
         if (!context.apiKeyId) throw new Error("invalid_api_key_context");
@@ -345,25 +419,8 @@ export class TaskService {
         if (Number(reservationRows[0]?.count ?? 0) >= reservationLimit) {
           throw new Error("project_concurrency_exceeded");
         }
-        const estimates = (
-          release.manifest as {
-            admission_estimates?: {
-              video?: { base_gpu_seconds?: number; per_output_second_gpu_seconds?: number };
-              image?: { per_output_gpu_seconds?: number };
-              cost_minor_per_gpu_second?: number;
-            };
-          }
-        ).admission_estimates;
-        if (type === "video") {
-          const video = input as VideoGenerationRequest;
-          estimatedGpuSeconds = Math.ceil(
-            Number(estimates?.video?.base_gpu_seconds ?? 0) +
-              video.duration * Number(estimates?.video?.per_output_second_gpu_seconds ?? 0),
-          );
-        } else {
-          const image = input as ImageGenerationRequest | ImageEditRequest;
-          estimatedGpuSeconds = Math.ceil(image.n * Number(estimates?.image?.per_output_gpu_seconds ?? 0));
-        }
+        const estimates = (release.manifest as { admission_estimates?: { cost_minor_per_gpu_second?: number } })
+          .admission_estimates;
         estimatedCostMinor = Math.ceil(estimatedGpuSeconds * Number(estimates?.cost_minor_per_gpu_second ?? 0));
         const dayStart = new Date(timestamp);
         dayStart.setUTCHours(0, 0, 0, 0);
@@ -393,9 +450,14 @@ export class TaskService {
         }
       }
       const sealed = this.seal({ request: input, execution: resolved });
-      const rows =
-        await transaction`INSERT INTO tasks (id, project_id, type, operation, status, priority, model_release_id, request_ciphertext, request_hash, version, created_at, updated_at)
-        VALUES (${taskId}, ${context.projectId}, ${type}, ${operation}, 'queued', ${input.priority ?? "online"}, ${String(release.id)}, ${sealed}, ${requestHash}, 0, ${timestamp.toISOString()}, ${timestamp.toISOString()}) RETURNING *`;
+      const rows = await transaction`INSERT INTO tasks (
+          id, project_id, type, operation, status, priority, model_release_id, request_ciphertext,
+          request_hash, scheduling_profile, baseline_gpu_seconds, version, created_at, updated_at
+        ) VALUES (
+          ${taskId}, ${context.projectId}, ${type}, ${operation}, 'queued', ${input.priority ?? "online"},
+          ${String(release.id)}, ${sealed}, ${requestHash}, ${JSON.stringify(profile)}, ${estimatedGpuSeconds}, 0,
+          ${timestamp.toISOString()}, ${timestamp.toISOString()}
+        ) RETURNING *`;
       const row = rows[0] as Record<string, unknown>;
       row.model = String(release.alias);
       for (const inputFile of validatedInputs) {

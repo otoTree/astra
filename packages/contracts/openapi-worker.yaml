@@ -534,7 +534,7 @@ components:
         attempt_id: { type: string }
         task_id: { type: string }
         attempt_status: { enum: [completed, failed, canceled] }
-        task_status: { enum: [completed, failed, canceled] }
+        task_status: { enum: [queued, completed, failed, canceled] }
         lease_version: { type: integer, minimum: 0 }
     DrainedWorker:
       type: object

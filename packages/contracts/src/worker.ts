@@ -403,7 +403,7 @@ export const attemptMutationResponseSchema = z
     attempt_id: z.string().min(1),
     task_id: z.string().min(1),
     attempt_status: z.enum(["completed", "failed", "canceled"]),
-    task_status: z.enum(["completed", "failed", "canceled"]),
+    task_status: z.enum(["queued", "completed", "failed", "canceled"]),
     lease_version: z.number().int().nonnegative(),
   })
   .strict();

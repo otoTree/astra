@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type postgres from "postgres";
 
 type SqlClient = ReturnType<typeof postgres>;
@@ -9,6 +10,14 @@ export type SchedulingTaskSnapshot = Readonly<{
   taskVersion: number;
   lane: "online" | "batch";
   createdAt: string;
+  expectedGpuSeconds: number;
+  predictionP95Seconds: number;
+  predictionSource: "profile" | "cold_baseline";
+  projectWeight: number;
+  virtualGpuMilliseconds: number;
+  batchMinSharePercent: number;
+  agingSeconds: number;
+  laneAssignedGpuSeconds: Readonly<{ online: number; batch: number }>;
 }>;
 
 export type SchedulingReplicaSnapshot = Readonly<{
@@ -64,6 +73,20 @@ const numberArray = (value: unknown): readonly number[] => {
   if (!Array.isArray(value)) return [];
   return value.map(Number).filter((item) => Number.isInteger(item) && item >= 0);
 };
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalize(item)]),
+    );
+  return value;
+};
+const profileHash = (value: unknown): string =>
+  createHash("sha256")
+    .update(JSON.stringify(canonicalize(value)))
+    .digest("hex");
 
 export class SchedulingRepository {
   constructor(
@@ -76,16 +99,19 @@ export class SchedulingRepository {
     const observedAt = this.now();
     const boundedLimit = Math.min(Math.max(limit, 1), 500);
     const freshAfter = new Date(observedAt.getTime() - workerFreshnessSeconds * 1000);
-    const tasks = await this.sql`SELECT t.id, t.project_id, t.model_release_id, t.priority, t.version, t.created_at
+    const tasks = await this.sql`SELECT t.id, t.project_id, t.model_release_id, t.priority, t.version, t.created_at,
+        t.scheduling_profile, t.baseline_gpu_seconds, COALESCE(q.scheduling_weight, 100) AS project_weight
       FROM tasks t JOIN model_releases mr ON mr.id=t.model_release_id
+      LEFT JOIN project_quotas q ON q.project_id=t.project_id
       WHERE t.status='queued' AND (mr.accept_new_tasks=true OR mr.accept_existing_tasks=true) AND mr.status='approved'
+        AND (t.retry_not_before IS NULL OR t.retry_not_before<=${observedAt.toISOString()})
         AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.task_id=t.id
           AND a.status IN ('reserved', 'leased', 'running', 'unknown'))
         AND EXISTS (SELECT 1 FROM replicas candidate JOIN model_pools p ON p.id=candidate.pool_id
           WHERE candidate.release_id=t.model_release_id AND p.status='active'
             AND candidate.desired_state='ready' AND candidate.observed_state IN ('ready','busy'))
-      ORDER BY CASE WHEN t.priority='online' THEN 0 ELSE 1 END, t.created_at, t.id
-      LIMIT ${boundedLimit}`;
+      ORDER BY t.created_at, t.id
+      LIMIT ${Math.min(boundedLimit * 4, 2000)}`;
     const releaseIds = [...new Set(tasks.map((row) => String(row.model_release_id)))];
     if (releaseIds.length === 0) return { observedAt: observedAt.toISOString(), tasks: [], replicas: [] };
 
@@ -117,16 +143,87 @@ export class SchedulingRepository {
         w.capabilities, mr.manifest, p.id
       ORDER BY r.release_id, r.region_id, r.pool_id, r.id`;
 
+    const [profiles, policies, projectAccounts, laneAccounts] = await Promise.all([
+      this.sql`SELECT release_id, gpu_sku, dimensions_hash, sample_count, p75_seconds, p95_seconds, ewma_seconds
+        FROM service_time_profiles WHERE release_id=ANY(${this.sql.array(releaseIds)}::text[])
+        ORDER BY release_id, gpu_sku, dimensions_hash`,
+      this.sql`SELECT p.release_id, pv.id, pv.configuration FROM model_pools p
+        JOIN policy_versions pv ON pv.pool_id=p.id AND pv.policy_type='capacity' AND pv.status='published'
+        WHERE p.status='active' AND p.release_id=ANY(${this.sql.array(releaseIds)}::text[])
+        ORDER BY p.release_id, p.id, pv.version DESC`,
+      this.sql`SELECT release_id, project_id, lane, virtual_gpu_milliseconds
+        FROM project_scheduling_accounts WHERE release_id=ANY(${this.sql.array(releaseIds)}::text[])`,
+      this.sql`SELECT release_id, lane, window_started_at, assigned_gpu_seconds
+        FROM scheduler_lane_accounts WHERE release_id=ANY(${this.sql.array(releaseIds)}::text[])`,
+    ]);
+    const policyByRelease = new Map<string, Record<string, unknown>>();
+    for (const row of policies) {
+      const releaseId = String(row.release_id);
+      if (!policyByRelease.has(releaseId)) policyByRelease.set(releaseId, row.configuration as Record<string, unknown>);
+    }
+    const virtualByAccount = new Map(
+      projectAccounts.map((row) => [
+        `${String(row.release_id)}\u0000${String(row.project_id)}\u0000${String(row.lane)}`,
+        Number(row.virtual_gpu_milliseconds),
+      ]),
+    );
+    const laneByRelease = new Map<string, { online: number; batch: number }>();
+    for (const row of laneAccounts) {
+      const releaseId = String(row.release_id);
+      const current = laneByRelease.get(releaseId) ?? { online: 0, batch: 0 };
+      const fresh = observedAt.getTime() - new Date(row.window_started_at as Date | string).getTime() < 60 * 60 * 1000;
+      current[row.lane === "batch" ? "batch" : "online"] = fresh ? Number(row.assigned_gpu_seconds) : 0;
+      laneByRelease.set(releaseId, current);
+    }
+    const gpuSkusByRelease = new Map<string, Set<string>>();
+    for (const replica of replicas) {
+      const releaseId = String(replica.release_id);
+      const skus = gpuSkusByRelease.get(releaseId) ?? new Set<string>();
+      skus.add(String(replica.gpu_sku));
+      gpuSkusByRelease.set(releaseId, skus);
+    }
     return {
       observedAt: observedAt.toISOString(),
-      tasks: tasks.map((row) => ({
-        taskId: String(row.id),
-        projectId: String(row.project_id),
-        releaseId: String(row.model_release_id),
-        taskVersion: Number(row.version),
-        lane: row.priority === "batch" ? "batch" : "online",
-        createdAt: new Date(row.created_at as Date | string).toISOString(),
-      })),
+      tasks: tasks.slice(0, boundedLimit).map((row) => {
+        const releaseId = String(row.model_release_id);
+        const dimensionsHash = profileHash(row.scheduling_profile);
+        const policy = policyByRelease.get(releaseId) ?? {};
+        const minimumSamples = Number(policy.prediction_min_samples ?? 30);
+        const matches = profiles.filter(
+          (profile) =>
+            String(profile.release_id) === releaseId &&
+            String(profile.dimensions_hash) === dimensionsHash &&
+            (gpuSkusByRelease.get(releaseId)?.has(String(profile.gpu_sku)) ?? false) &&
+            Number(profile.sample_count) >= minimumSamples,
+        );
+        const selected = matches.sort(
+          (left, right) =>
+            Number(right.p75_seconds) - Number(left.p75_seconds) ||
+            String(left.gpu_sku).localeCompare(String(right.gpu_sku)),
+        )[0];
+        const baseline = Math.max(1, Number(row.baseline_gpu_seconds));
+        const expected = selected
+          ? Math.max(1, Math.ceil((Number(selected.p75_seconds) * 3 + Number(selected.ewma_seconds)) / 4))
+          : baseline;
+        const lane = row.priority === "batch" ? "batch" : "online";
+        const projectId = String(row.project_id);
+        return {
+          taskId: String(row.id),
+          projectId,
+          releaseId,
+          taskVersion: Number(row.version),
+          lane,
+          createdAt: new Date(row.created_at as Date | string).toISOString(),
+          expectedGpuSeconds: expected,
+          predictionP95Seconds: selected ? Number(selected.p95_seconds) : baseline,
+          predictionSource: selected ? ("profile" as const) : ("cold_baseline" as const),
+          projectWeight: Math.max(1, Number(row.project_weight)),
+          virtualGpuMilliseconds: virtualByAccount.get(`${releaseId}\u0000${projectId}\u0000${lane}`) ?? 0,
+          batchMinSharePercent: Number(policy.batch_min_share_percent ?? 10),
+          agingSeconds: Number(policy.aging_seconds ?? 1800),
+          laneAssignedGpuSeconds: laneByRelease.get(releaseId) ?? { online: 0, batch: 0 },
+        };
+      }),
       replicas: replicas.map((row) => ({
         replicaId: String(row.id),
         replicaVersion: Number(row.version),
@@ -144,6 +241,12 @@ export class SchedulingRepository {
 
   async reserve(input: ReservationRequest): Promise<Reservation | undefined> {
     if (!Number.isInteger(input.slotIndex) || input.slotIndex < 0) throw new Error("invalid_slot_index");
+    if (!Number.isInteger(input.task.expectedGpuSeconds) || input.task.expectedGpuSeconds < 1) {
+      throw new Error("invalid_expected_gpu_seconds");
+    }
+    if (!Number.isInteger(input.task.projectWeight) || input.task.projectWeight < 1) {
+      throw new Error("invalid_project_weight");
+    }
     if (!Number.isInteger(input.reservationSeconds) || input.reservationSeconds < 5) {
       throw new Error("invalid_reservation_seconds");
     }
@@ -153,7 +256,7 @@ export class SchedulingRepository {
     try {
       return await this.sql.begin(async (transaction) => {
         const tasks = await transaction`SELECT t.id, t.project_id, t.model_release_id, t.status, t.version,
-            mr.accept_new_tasks, mr.accept_existing_tasks, mr.status AS release_status
+            t.retry_not_before, mr.accept_new_tasks, mr.accept_existing_tasks, mr.status AS release_status
           FROM tasks t JOIN model_releases mr ON mr.id=t.model_release_id
           WHERE t.id=${input.task.taskId} FOR UPDATE OF t`;
         const task = tasks[0];
@@ -161,6 +264,7 @@ export class SchedulingRepository {
           task?.status !== "queued" ||
           Number(task.version) !== input.task.taskVersion ||
           String(task.model_release_id) !== input.task.releaseId ||
+          (task.retry_not_before && new Date(task.retry_not_before as Date | string) > timestamp) ||
           (task.accept_new_tasks !== true && task.accept_existing_tasks !== true) ||
           task.release_status !== "approved"
         ) {
@@ -230,11 +334,13 @@ export class SchedulingRepository {
         )`;
         await transaction`INSERT INTO attempts (
           id, task_id, release_id, status, execution_key, attempt_no, pool_id, replica_id, slot_index,
-          decision_id, task_version_at_assignment, reservation_expires_at, created_at, updated_at
+          decision_id, task_version_at_assignment, reservation_expires_at, expected_gpu_seconds,
+          prediction_source, retry_disposition, created_at, updated_at
         ) VALUES (
           ${input.attemptId}, ${input.task.taskId}, ${input.task.releaseId}, 'reserved', ${input.executionKey},
           ${attemptNo}, ${input.replica.poolId}, ${input.replica.replicaId}, ${input.slotIndex},
-          ${input.decisionId}, ${input.task.taskVersion}, ${expiresAt.toISOString()},
+          ${input.decisionId}, ${input.task.taskVersion}, ${expiresAt.toISOString()}, ${input.task.expectedGpuSeconds},
+          ${input.task.predictionSource}, 'none',
           ${timestamp.toISOString()}, ${timestamp.toISOString()}
         )`;
         await transaction`INSERT INTO leases (
@@ -248,6 +354,35 @@ export class SchedulingRepository {
           RETURNING version`;
         if (!changed[0]) throw new Error("task_assignment_cas_failed");
         const taskVersion = Number(changed[0].version);
+        const virtualCharge = Math.max(
+          1,
+          Math.ceil((input.task.expectedGpuSeconds * 1000) / Math.max(1, input.task.projectWeight)),
+        );
+        await transaction`INSERT INTO project_scheduling_accounts (
+            release_id, project_id, lane, project_weight, virtual_gpu_milliseconds,
+            assigned_gpu_seconds, version, updated_at
+          ) VALUES (
+            ${input.task.releaseId}, ${input.task.projectId}, ${input.task.lane}, ${input.task.projectWeight},
+            ${virtualCharge}, ${input.task.expectedGpuSeconds}, 1, ${timestamp.toISOString()}
+          ) ON CONFLICT (release_id, project_id, lane) DO UPDATE SET
+            project_weight=EXCLUDED.project_weight,
+            virtual_gpu_milliseconds=project_scheduling_accounts.virtual_gpu_milliseconds+EXCLUDED.virtual_gpu_milliseconds,
+            assigned_gpu_seconds=project_scheduling_accounts.assigned_gpu_seconds+EXCLUDED.assigned_gpu_seconds,
+            version=project_scheduling_accounts.version+1, updated_at=EXCLUDED.updated_at`;
+        await transaction`INSERT INTO scheduler_lane_accounts (
+            release_id, lane, window_started_at, assigned_gpu_seconds, version, updated_at
+          ) VALUES (
+            ${input.task.releaseId}, ${input.task.lane}, ${timestamp.toISOString()},
+            ${input.task.expectedGpuSeconds}, 1, ${timestamp.toISOString()}
+          ) ON CONFLICT (release_id, lane) DO UPDATE SET
+            window_started_at=CASE
+              WHEN scheduler_lane_accounts.window_started_at<=${new Date(timestamp.getTime() - 60 * 60 * 1000).toISOString()}
+                THEN EXCLUDED.window_started_at ELSE scheduler_lane_accounts.window_started_at END,
+            assigned_gpu_seconds=CASE
+              WHEN scheduler_lane_accounts.window_started_at<=${new Date(timestamp.getTime() - 60 * 60 * 1000).toISOString()}
+                THEN EXCLUDED.assigned_gpu_seconds
+              ELSE scheduler_lane_accounts.assigned_gpu_seconds+EXCLUDED.assigned_gpu_seconds END,
+            version=scheduler_lane_accounts.version+1, updated_at=EXCLUDED.updated_at`;
         await transaction`INSERT INTO task_state_events (
           id, task_id, from_status, to_status, reason, version, created_at
         ) VALUES (

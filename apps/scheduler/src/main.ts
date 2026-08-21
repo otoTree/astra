@@ -32,6 +32,23 @@ const candidates = new Gauge({
   labelNames: ["kind"] as const,
   registers: [metrics],
 });
+const queuedGpuSeconds = new Gauge({
+  name: "astra_scheduler_queued_gpu_seconds",
+  help: "Predicted GPU service seconds in the authoritative candidate snapshot",
+  registers: [metrics],
+});
+const predictionCandidates = new Gauge({
+  name: "astra_scheduler_prediction_candidates",
+  help: "Candidates by service-time prediction source",
+  labelNames: ["source"] as const,
+  registers: [metrics],
+});
+const assignmentReasons = new Counter({
+  name: "astra_scheduler_assignment_reasons_total",
+  help: "Reserved assignments by fairness reason",
+  labelNames: ["reason"] as const,
+  registers: [metrics],
+});
 const iterationDuration = new Histogram({
   name: "astra_scheduler_iteration_duration_seconds",
   help: "Duration of one deterministic scheduling iteration",
@@ -50,6 +67,12 @@ const run = async (): Promise<void> => {
       const result = await scheduler.runOnce();
       candidates.set({ kind: "tasks" }, result.consideredTasks);
       candidates.set({ kind: "replicas" }, result.consideredReplicas);
+      queuedGpuSeconds.set(result.queuedGpuSeconds);
+      predictionCandidates.set({ source: "profile" }, result.predictionSources.profile);
+      predictionCandidates.set({ source: "cold_baseline" }, result.predictionSources.cold_baseline);
+      for (const [reason, count] of Object.entries(result.assignmentReasons)) {
+        assignmentReasons.inc({ reason }, count);
+      }
       reservations.inc({ outcome: "reserved" }, result.reserved.length);
       reservations.inc({ outcome: "cas_conflict" }, result.conflicts);
       reservations.inc({ outcome: "expired" }, result.expired);
