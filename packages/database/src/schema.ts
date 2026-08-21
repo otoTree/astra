@@ -286,3 +286,113 @@ export const taskFiles = pgTable("task_files", {
   role: text("role").notNull(),
   ordinal: integer("ordinal").notNull(),
 });
+
+export const models = pgTable("models", {
+  id: text("id").primaryKey(),
+  alias: text("alias").notNull().unique(),
+  modality: text("modality").notNull(),
+  status: text("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const providerRegions = pgTable("provider_regions", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  name: text("name").notNull(),
+  status: text("status").notNull(),
+  snapshotVersion: text("snapshot_version"),
+  observedAt: timestamp("observed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const providerInventory = pgTable("provider_inventory", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  regionId: text("region_id").notNull(),
+  gpuSku: text("gpu_sku").notNull(),
+  gpuMemoryBytes: bigint("gpu_memory_bytes", { mode: "number" }).notNull(),
+  availableReplicas: integer("available_replicas").notNull(),
+  pricePerGpuHourMinor: bigint("price_per_gpu_hour_minor", { mode: "number" }).notNull(),
+  currency: text("currency").notNull(),
+  snapshotVersion: text("snapshot_version").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const modelPools = pgTable("model_pools", {
+  id: text("id").primaryKey(),
+  releaseId: text("release_id").notNull(),
+  provider: text("provider").notNull(),
+  regionId: text("region_id").notNull(),
+  gpuSku: text("gpu_sku").notNull(),
+  executionMode: text("execution_mode").notNull(),
+  status: text("status").notNull(),
+  version: integer("version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const replicas = pgTable("replicas", {
+  id: text("id").primaryKey(),
+  poolId: text("pool_id").notNull(),
+  releaseId: text("release_id").notNull(),
+  provider: text("provider").notNull(),
+  providerResourceId: text("provider_resource_id"),
+  regionId: text("region_id").notNull(),
+  gpuSku: text("gpu_sku").notNull(),
+  imageDigest: text("image_digest").notNull(),
+  desiredState: text("desired_state").notNull(),
+  observedState: text("observed_state").notNull(),
+  rolloutReserved: boolean("rollout_reserved").notNull(),
+  version: integer("version").notNull(),
+  lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const workers = pgTable("workers", {
+  id: text("id").primaryKey(),
+  replicaId: text("replica_id").notNull().unique(),
+  releaseId: text("release_id").notNull(),
+  contractVersion: text("contract_version").notNull(),
+  status: text("status").notNull(),
+  capabilities: jsonb("capabilities").notNull(),
+  currentAttemptId: text("current_attempt_id"),
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const providerOperations = pgTable("provider_operations", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  operationKey: text("operation_key").notNull().unique(),
+  operationType: text("operation_type").notNull(),
+  status: text("status").notNull(),
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  requestHash: text("request_hash").notNull(),
+  retryCount: integer("retry_count").notNull(),
+  costMinor: bigint("cost_minor", { mode: "number" }).notNull(),
+  currency: text("currency").notNull(),
+  error: jsonb("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+});
+
+export const modelRollouts = pgTable("model_rollouts", {
+  id: text("id").primaryKey(),
+  poolId: text("pool_id").notNull(),
+  sourceReleaseId: text("source_release_id"),
+  targetReleaseId: text("target_release_id").notNull(),
+  status: text("status").notNull(),
+  progress: jsonb("progress").notNull(),
+  reason: text("reason").notNull(),
+  version: integer("version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+});

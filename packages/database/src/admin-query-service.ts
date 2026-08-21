@@ -1,0 +1,238 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import type postgres from "postgres";
+
+type SqlClient = ReturnType<typeof postgres>;
+export type AdminQueryContext = Readonly<{ organizationId: string; projectId: string }>;
+export type AdminResource =
+  | "tasks"
+  | "models"
+  | "releases"
+  | "pools"
+  | "rollouts"
+  | "workers"
+  | "replicas"
+  | "provider_operations"
+  | "audit_events"
+  | "regions"
+  | "inventory";
+export type AdminListResource = Exclude<AdminResource, "tasks">;
+
+export type AdminListResult = Readonly<{
+  object: "list";
+  data: readonly Record<string, unknown>[];
+  has_more: boolean;
+  next_after: string | null;
+}>;
+
+const tableByResource: Readonly<Record<Exclude<AdminResource, "tasks" | "regions" | "inventory">, string>> = {
+  models: "models",
+  releases: "model_releases",
+  pools: "model_pools",
+  rollouts: "model_rollouts",
+  workers: "workers",
+  replicas: "replicas",
+  provider_operations: "provider_operations",
+  audit_events: "audit_events",
+};
+
+const unix = (value: unknown): number | null =>
+  value instanceof Date || typeof value === "string" ? Math.floor(new Date(value).getTime() / 1000) : null;
+
+const jsonRecord = (row: Record<string, unknown>): Record<string, unknown> => {
+  const output = { ...row };
+  for (const key of [
+    "created_at",
+    "updated_at",
+    "completed_at",
+    "expires_at",
+    "last_heartbeat_at",
+    "last_observed_at",
+    "observed_at",
+  ]) {
+    if (key in output) output[key] = output[key] === null ? null : unix(output[key]);
+  }
+  return output;
+};
+
+export class AdminQueryService {
+  private readonly cursorKey: Buffer;
+
+  constructor(
+    private readonly sql: SqlClient,
+    cursorSigningKey: string,
+  ) {
+    this.cursorKey = createHash("sha256").update(`astra-admin-cursor-v1:${cursorSigningKey}`).digest();
+  }
+
+  private encodeCursor(resource: AdminResource, context: AdminQueryContext, createdAt: string, id: string): string {
+    const body = Buffer.from(
+      JSON.stringify({ resource, project_id: context.projectId, created_at: createdAt, id }),
+    ).toString("base64url");
+    return `${body}.${createHmac("sha256", this.cursorKey).update(body).digest("base64url")}`;
+  }
+
+  private decodeCursor(
+    cursor: string,
+    resource: AdminResource,
+    context: AdminQueryContext,
+  ): Readonly<{ createdAt: string; id: string }> {
+    const [body, signature] = cursor.split(".");
+    if (!body || !signature) throw new Error("invalid_cursor");
+    const expected = createHmac("sha256", this.cursorKey).update(body).digest();
+    const actual = Buffer.from(signature, "base64url");
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("invalid_cursor");
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as Record<string, unknown>;
+    } catch {
+      throw new Error("invalid_cursor");
+    }
+    if (
+      payload.resource !== resource ||
+      payload.project_id !== context.projectId ||
+      typeof payload.created_at !== "string" ||
+      Number.isNaN(Date.parse(payload.created_at)) ||
+      typeof payload.id !== "string"
+    ) {
+      throw new Error("invalid_cursor");
+    }
+    return { createdAt: payload.created_at, id: payload.id };
+  }
+
+  async list(
+    context: AdminQueryContext,
+    resource: AdminListResource,
+    input: Readonly<{ limit: number; after?: string }>,
+  ): Promise<AdminListResult> {
+    const cursor = input.after ? this.decodeCursor(input.after, resource, context) : undefined;
+    const limit = Math.min(Math.max(input.limit, 1), 200);
+    let rows: readonly Record<string, unknown>[];
+    if (resource === "regions") {
+      rows = await this.sql`SELECT * FROM provider_regions
+        WHERE (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (created_at, id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY created_at DESC, id DESC LIMIT ${limit + 1}`;
+    } else if (resource === "inventory") {
+      rows = await this.sql`SELECT i.*, r.name AS region_name, r.status AS region_status
+        FROM provider_inventory i JOIN provider_regions r ON r.id=i.region_id
+        WHERE (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (i.created_at, i.id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY i.created_at DESC, i.id DESC LIMIT ${limit + 1}`;
+    } else if (resource === "audit_events") {
+      rows = await this.sql`SELECT id, actor_type, actor_id, organization_id, project_id, action,
+          resource_type, resource_id, outcome, reason_code, source_ip, user_agent,
+          request_id, trace_id, purpose, details, created_at
+        FROM audit_events
+        WHERE organization_id=${context.organizationId} AND project_id=${context.projectId}
+          AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (created_at, id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY created_at DESC, id DESC LIMIT ${limit + 1}`;
+    } else {
+      const table = tableByResource[resource];
+      rows = (await this.sql.unsafe(
+        `SELECT * FROM ${table}
+         WHERE ($1::timestamptz IS NULL OR (created_at, id) < ($1::timestamptz, $2))
+         ORDER BY created_at DESC, id DESC LIMIT $3`,
+        [cursor?.createdAt ?? null, cursor?.id ?? "", limit + 1],
+      )) as readonly Record<string, unknown>[];
+    }
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit).map(jsonRecord);
+    const last = page.at(-1);
+    return {
+      object: "list",
+      data: page,
+      has_more: hasMore,
+      next_after:
+        hasMore && last && typeof last.id === "string"
+          ? this.encodeCursor(
+              resource,
+              context,
+              new Date(rows[Math.min(limit, rows.length) - 1]?.created_at as Date | string).toISOString(),
+              last.id,
+            )
+          : null,
+    };
+  }
+
+  async listTasks(
+    context: AdminQueryContext,
+    input: Readonly<{ limit: number; after?: string }>,
+  ): Promise<AdminListResult> {
+    const cursor = input.after ? this.decodeCursor(input.after, "tasks", context) : undefined;
+    const limit = Math.min(Math.max(input.limit, 1), 200);
+    const rows = (await this.sql`SELECT t.id, t.project_id, t.type, t.operation, t.status, t.priority,
+        t.model_release_id, r.alias AS model, t.progress, t.error, t.version,
+        t.created_at, t.updated_at, t.completed_at, t.expires_at
+      FROM tasks t JOIN model_releases r ON r.id=t.model_release_id
+      WHERE t.project_id=${context.projectId}
+        AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (t.created_at, t.id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+      ORDER BY t.created_at DESC, t.id DESC LIMIT ${limit + 1}`) as readonly Record<string, unknown>[];
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit).map(jsonRecord);
+    const lastRow = rows[Math.min(limit, rows.length) - 1];
+    return {
+      object: "list",
+      data: page,
+      has_more: hasMore,
+      next_after:
+        hasMore && lastRow
+          ? this.encodeCursor(
+              "tasks",
+              context,
+              new Date(lastRow.created_at as Date | string).toISOString(),
+              String(lastRow.id),
+            )
+          : null,
+    };
+  }
+
+  async taskDetail(context: AdminQueryContext, taskId: string): Promise<Record<string, unknown> | undefined> {
+    const rows = await this.sql`SELECT t.id, t.project_id, t.type, t.operation, t.status, t.priority,
+        t.model_release_id, r.alias AS model, t.request_hash, t.progress, t.output, t.error,
+        t.version, t.created_at, t.updated_at, t.completed_at, t.expires_at
+      FROM tasks t JOIN model_releases r ON r.id=t.model_release_id
+      WHERE t.id=${taskId} AND t.project_id=${context.projectId}`;
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const [events, attempts, files] = await Promise.all([
+      this.sql`SELECT id, from_status, to_status, reason, version, created_at
+        FROM task_state_events WHERE task_id=${taskId} ORDER BY created_at, id`,
+      this.sql`SELECT a.id, a.release_id, a.status, a.error, a.created_at, a.updated_at,
+          a.started_at, a.completed_at, l.id AS lease_id, l.worker_id, l.replica_id,
+          l.expires_at AS lease_expires_at, l.version AS lease_version
+        FROM attempts a LEFT JOIN leases l ON l.attempt_id=a.id
+        WHERE a.task_id=${taskId} ORDER BY a.created_at, a.id`,
+      this.sql`SELECT tf.direction, tf.role, tf.ordinal, f.id AS file_id, f.content_type,
+          f.size_bytes, f.sha256, f.status, f.expires_at
+        FROM task_files tf JOIN files f ON f.id=tf.file_id
+        WHERE tf.task_id=${taskId} ORDER BY tf.direction, tf.ordinal`,
+    ]);
+    return {
+      ...jsonRecord(row),
+      timeline: events.map((event) => jsonRecord(event as Record<string, unknown>)),
+      attempts: attempts.map((attempt) => {
+        const result = jsonRecord(attempt as Record<string, unknown>);
+        if ("lease_expires_at" in result)
+          result.lease_expires_at = result.lease_expires_at ? unix(result.lease_expires_at) : null;
+        return result;
+      }),
+      files: files.map((file) => jsonRecord(file as Record<string, unknown>)),
+    };
+  }
+
+  async costSummary(context: AdminQueryContext): Promise<Record<string, unknown>> {
+    const rows = await this.sql`SELECT metric, COALESCE(sum(quantity), 0)::bigint AS quantity,
+        max(currency) AS currency FROM usage_ledger
+      WHERE organization_id=${context.organizationId} AND project_id=${context.projectId}
+        AND occurred_at >= date_trunc('day', now())
+      GROUP BY metric ORDER BY metric`;
+    return {
+      object: "cost.summary",
+      project_id: context.projectId,
+      period_start: Math.floor(new Date().setUTCHours(0, 0, 0, 0) / 1000),
+      metrics: rows.map((row) => ({
+        metric: String(row.metric),
+        quantity: Number(row.quantity),
+        currency: row.currency === null ? null : String(row.currency),
+      })),
+    };
+  }
+}

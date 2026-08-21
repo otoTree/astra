@@ -219,6 +219,30 @@ paths:
       operationId: listProviderOperations
       responses:
         '200': { description: Provider operation list }
+  /regions:
+    get:
+      operationId: listProviderRegions
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { description: Provider region list }
+        default: { $ref: '#/components/responses/Error' }
+  /inventory:
+    get:
+      operationId: listProviderInventory
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { description: Current normalized provider inventory snapshots }
+        default: { $ref: '#/components/responses/Error' }
+  /cost-summary:
+    get:
+      operationId: getCostSummary
+      responses:
+        '200': { description: Project daily usage and cost summary }
+        default: { $ref: '#/components/responses/Error' }
   /audit-events:
     get:
       operationId: listAuditEvents

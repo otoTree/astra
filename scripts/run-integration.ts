@@ -11,6 +11,9 @@ const common = {
   ASTRA_TEST_DATABASE_URL: required("DATABASE_URL"),
 };
 
+const localUrl = (explicitName: string, portName: string, defaultPort: number): string =>
+  process.env[explicitName] ?? `http://127.0.0.1:${process.env[portName] ?? defaultPort}`;
+
 const configuration =
   suite === "postgres"
     ? {
@@ -18,6 +21,7 @@ const configuration =
           "packages/database/src/task-service.integration.test.ts",
           "packages/database/src/identity-admission.integration.test.ts",
           "packages/database/src/admin-identity.integration.test.ts",
+          "packages/database/src/admin-query.integration.test.ts",
         ],
         env: common,
       }
@@ -45,8 +49,8 @@ const configuration =
               ...common,
               ASTRA_TEST_PUBLIC_API_URL: required("PUBLIC_API_URL"),
               ASTRA_TEST_PUBLIC_API_KEY: required("ASTRA_LOCAL_API_KEY"),
-              ASTRA_TEST_ADMIN_API_URL: required("ADMIN_API_URL"),
-              ASTRA_TEST_IDENTITY_URL: required("IDENTITY_URL"),
+              ASTRA_TEST_ADMIN_API_URL: localUrl("ADMIN_API_URL", "ASTRA_LOCAL_ADMIN_API_PORT", 54101),
+              ASTRA_TEST_IDENTITY_URL: localUrl("IDENTITY_URL", "ASTRA_LOCAL_IDENTITY_PORT", 54180),
             },
           }
         : undefined;

@@ -16,7 +16,7 @@
 | 0 | 工程基线与 v1 合同 | 完成 | 无 |
 | 1 | Public API 完整实现 | 完成 | 0 |
 | 2 | API Key、配额、限流、审计 | 完成 | 1 |
-| 3 | Admin API 与管理台只读能力 | 未开始 | 2 |
+| 3 | Admin API 与管理台只读能力 | 完成 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 未开始 | 3 |
 | 5 | Outbox、Kafka、Redis 重建 | 未开始 | 4 |
 | 6 | 最小确定性调度与租约 | 未开始 | 5 |
@@ -96,6 +96,16 @@
 交付：Task 时间线、Attempt/Lease、Worker/Replica、队列、区域、库存、成本、Model/Release/Pool/Policy/Rollout/Provider Operation 查询；每个 Admin API 同批提供管理台页面和 RBAC。
 
 退出条件：权限矩阵通过；任一 Task 可从创建追踪到终态；游标和查询索引通过执行计划审查。
+
+阶段 3 完成证据（2026-08-21）：
+
+- PostgreSQL 新增 Model、Pool、区域、库存、Replica、Worker、Provider Operation 与 Rollout 观察实体；Task、Attempt、Lease 与状态事件保留权威关联和有界索引。
+- Admin API 提供 Task 时间线、Model/Release/Pool、Worker/Replica、区域库存、Provider Operation、Rollout、当日成本和不可变审计查询；列表统一使用绑定项目与资源类型的签名游标。
+- 普通 Task 详情只返回请求哈希和执行时间线，不返回请求密文或解密提示词；敏感请求继续由独立权限接口和读取用途审计保护。
+- Admin Web 已接入真实只读 API，覆盖概览、Task 排障、容量、发布和审计；本地开发通过短期 RS256 参考身份进入正式 Session Exchange，生产构建只保留企业 OIDC 入口。
+- 验收通过 41 项普通测试、20 项 PostgreSQL、6 项 MinIO/媒体、7 项真实 HTTP；执行计划命中项目游标索引。浏览器验证 1440px 与 390px 视口无页面横向溢出，Task 抽屉可用且控制台无错误。
+
+回滚使用应用回滚并保留 `0007_admin_observability.sql` 新增表。旧应用忽略这些结构；观察记录不得因回滚删除。恢复本批应用后从 PostgreSQL 与 Provider 快照重新填充可重建观察数据。
 
 ### 阶段 4：版本化管理写接口
 

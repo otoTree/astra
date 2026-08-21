@@ -1,6 +1,6 @@
 import { loadAdminApiConfig } from "@astra/config";
 import { AdminSessionManager, RemoteOidcTokenVerifier } from "@astra/auth";
-import { createDatabase, DatabaseHealth, IdentityRepository, TaskService } from "@astra/database";
+import { AdminQueryService, createDatabase, DatabaseHealth, IdentityRepository, TaskService } from "@astra/database";
 import { createAdminApi, withErrorHandling } from "./app.ts";
 import { serve } from "./server.ts";
 
@@ -28,6 +28,7 @@ const taskService = new TaskService(database.client, {
   requestEncryptionKey: config.ASTRA_REQUEST_ENCRYPTION_KEY,
   enforceAdmission: false,
 });
+const queryService = new AdminQueryService(database.client, config.ASTRA_REQUEST_ENCRYPTION_KEY);
 serve(
   withErrorHandling(
     createAdminApi(
@@ -40,6 +41,7 @@ serve(
         sessionTtlSeconds: config.ADMIN_SESSION_TTL_SECONDS,
       },
       taskService,
+      queryService,
     ),
   ),
   config.ADMIN_API_PORT,

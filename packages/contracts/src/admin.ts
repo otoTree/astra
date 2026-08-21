@@ -35,6 +35,13 @@ export const sensitiveTaskRequestSchema = z
   })
   .strict();
 
+export const adminListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    after: z.string().min(1).max(4096).optional(),
+  })
+  .strict();
+
 export const versionedMutationSchema = z
   .object({
     expected_version: z.number().int().nonnegative(),

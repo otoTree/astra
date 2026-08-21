@@ -117,4 +117,46 @@ describe("Admin API OIDC and session HTTP contract", () => {
     });
     expect(denied.status).toBe(403);
   });
+
+  integrationTest("serves every read-only operations view and keeps normal task details non-sensitive", async () => {
+    const admin = await exchange(await issueToken());
+    expect(admin.response.status).toBe(201);
+    const paths = [
+      "models",
+      "releases",
+      "pools",
+      "rollouts",
+      "workers",
+      "replicas",
+      "provider-operations",
+      "regions",
+      "inventory",
+      "audit-events",
+    ];
+    for (const path of paths) {
+      const response = await fetch(`${adminApiUrl}/admin/v1/${path}?limit=2`, { headers: { cookie: admin.cookie } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(
+        expect.objectContaining({ object: "list", data: expect.any(Array), has_more: expect.any(Boolean) }),
+      );
+    }
+    const tasks = await fetch(`${adminApiUrl}/admin/v1/tasks?limit=1`, { headers: { cookie: admin.cookie } });
+    expect(tasks.status).toBe(200);
+    const taskList = (await tasks.json()) as ListResponse;
+    if (taskList.data[0]) {
+      const detail = await fetch(`${adminApiUrl}/admin/v1/tasks/${String(taskList.data[0].id)}`, {
+        headers: { cookie: admin.cookie },
+      });
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty("request");
+      expect(body).not.toHaveProperty("request_ciphertext");
+      expect(body).toEqual(expect.objectContaining({ timeline: expect.any(Array), attempts: expect.any(Array) }));
+    }
+    expect((await fetch(`${adminApiUrl}/admin/v1/cost-summary`, { headers: { cookie: admin.cookie } })).status).toBe(
+      200,
+    );
+  });
 });
+
+type ListResponse = { data: Array<Record<string, unknown>> };

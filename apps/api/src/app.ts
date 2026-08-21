@@ -13,6 +13,7 @@ import {
 import {
   errorResponse,
   adminSessionExchangeSchema,
+  adminListQuerySchema,
   fileUploadRequestSchema,
   imageEditSchema,
   imageGenerationSchema,
@@ -22,7 +23,7 @@ import {
   videoEditSchema,
   videoGenerationSchema,
 } from "@astra/contracts";
-import type { TaskService } from "@astra/database";
+import type { AdminQueryService, TaskService } from "@astra/database";
 import { Counter, Histogram, createMetricRegistry, metricResponse } from "@astra/observability";
 import { RateLimiterUnavailableError, type PublicApiRateLimiter, type RateLimitCategory } from "@astra/queue";
 import { matchedRoutes } from "hono/route";
@@ -611,6 +612,7 @@ export function createAdminApi(
   readiness: ReadinessProbe,
   security?: AdminApiSecurity,
   taskService?: AdminTaskUseCases,
+  queryService?: AdminQueryService,
 ): Hono {
   const app = new Hono();
   attachRequestId(app);
@@ -688,6 +690,104 @@ export function createAdminApi(
     if (context instanceof Response) return context;
     c.header("Cache-Control", "no-store");
     return c.json(security.sessions.view(context));
+  });
+
+  const listRoute = (
+    path: string,
+    resource: Parameters<AdminQueryService["list"]>[1],
+    permission: AdminPermission = "resources:read",
+  ): void => {
+    app.get(path, async (c) => {
+      if (!queryService)
+        return errorResponse(
+          requestId(c.req.raw),
+          503,
+          "admin_query_service_unavailable",
+          "Query service unavailable",
+          true,
+        );
+      const context = await authorize(c.req.raw, permission);
+      if (context instanceof Response) return context;
+      const parsed = adminListQuerySchema.safeParse(c.req.query());
+      if (!parsed.success) return errorResponse(requestId(c.req.raw), 400, "invalid_query", "Invalid pagination query");
+      try {
+        const query = { limit: parsed.data.limit, ...(parsed.data.after ? { after: parsed.data.after } : {}) };
+        return c.json(
+          await queryService.list(
+            { organizationId: context.organizationId, projectId: context.projectId },
+            resource,
+            query,
+          ),
+        );
+      } catch (error) {
+        return serviceError(c.req.raw, error);
+      }
+    });
+  };
+
+  app.get("/admin/v1/tasks", async (c) => {
+    if (!queryService)
+      return errorResponse(
+        requestId(c.req.raw),
+        503,
+        "admin_query_service_unavailable",
+        "Query service unavailable",
+        true,
+      );
+    const context = await authorize(c.req.raw, "tasks:read");
+    if (context instanceof Response) return context;
+    const parsed = adminListQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return errorResponse(requestId(c.req.raw), 400, "invalid_query", "Invalid pagination query");
+    try {
+      const query = { limit: parsed.data.limit, ...(parsed.data.after ? { after: parsed.data.after } : {}) };
+      return c.json(
+        await queryService.listTasks({ organizationId: context.organizationId, projectId: context.projectId }, query),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.get("/admin/v1/tasks/:id", async (c) => {
+    if (!queryService)
+      return errorResponse(
+        requestId(c.req.raw),
+        503,
+        "admin_query_service_unavailable",
+        "Query service unavailable",
+        true,
+      );
+    const context = await authorize(c.req.raw, "tasks:read");
+    if (context instanceof Response) return context;
+    const detail = await queryService.taskDetail(
+      { organizationId: context.organizationId, projectId: context.projectId },
+      c.req.param("id"),
+    );
+    return detail ? c.json(detail) : errorResponse(requestId(c.req.raw), 404, "task_not_found", "Task not found");
+  });
+  listRoute("/admin/v1/models", "models");
+  listRoute("/admin/v1/releases", "releases");
+  listRoute("/admin/v1/pools", "pools");
+  listRoute("/admin/v1/rollouts", "rollouts");
+  listRoute("/admin/v1/workers", "workers");
+  listRoute("/admin/v1/replicas", "replicas");
+  listRoute("/admin/v1/provider-operations", "provider_operations");
+  listRoute("/admin/v1/audit-events", "audit_events", "audit:read");
+  listRoute("/admin/v1/regions", "regions");
+  listRoute("/admin/v1/inventory", "inventory");
+  app.get("/admin/v1/cost-summary", async (c) => {
+    if (!queryService)
+      return errorResponse(
+        requestId(c.req.raw),
+        503,
+        "admin_query_service_unavailable",
+        "Query service unavailable",
+        true,
+      );
+    const context = await authorize(c.req.raw, "resources:read");
+    if (context instanceof Response) return context;
+    return c.json(
+      await queryService.costSummary({ organizationId: context.organizationId, projectId: context.projectId }),
+    );
   });
 
   app.delete("/admin/v1/sessions/current", async (c) => {
