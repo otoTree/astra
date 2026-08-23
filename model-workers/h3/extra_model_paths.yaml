@@ -1,0 +1,7 @@
+# The provider-mounted volume is empty in the OCI image and is populated only
+# by the explicit remote test profile after deployment.
+base_path: /var/lib/astra/h3/weights
+text_encoders: text_encoders
+vae: vae
+diffusion_models: diffusion_models
+loras: loras

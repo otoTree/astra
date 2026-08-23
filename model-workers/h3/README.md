@@ -11,6 +11,25 @@
 
 生产镜像必须固定 OCI digest、ComfyUI commit、自定义节点 commit、workflow hash、权重 hash、Attention backend、Block Cache 参数和输出 Schema。
 
+## 联合镜像构建
+
+该 Dockerfile 构建的是完整联合运行时：CUDA、PyTorch、ComfyUI、固定自定义节点、H3 Model App 和 Bun Worker Agent 均进入同一个 OCI 镜像。第三方源码快照通过 named context 传入；不要把 `docs/third-party` 直接复制进默认构建上下文，也不要把任何权重放入上下文。
+
+在具备 Docker Buildx 的构建机上生成共绩使用的 x86_64 镜像：
+
+```bash
+docker buildx build \
+  --build-context thirdparty=./docs/third-party \
+  --platform linux/amd64 \
+  --tag <registry>/<repository>:<release> \
+  --push \
+  --file model-workers/h3/Dockerfile .
+```
+
+构建阶段会执行 `build_smoke.py`，验证工作流节点、Python AST、运行时文件和空权重目录；默认 `H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED=false`。本地只需使用 `--load` 做镜像元数据检查，不启动联合镜像、不运行 ComfyUI、不执行真实推理。共绩测试实例启动时，才由显式的隔离 Profile 按 `weight-manifest.json` 下载或挂载经过审核的权重。
+
+镜像内的两个进程关系固定为：supervisor 先启动 `asset_bootstrap.py` 和 Model App（其内部可启动同容器 `127.0.0.1:8188` 的 ComfyUI），Model App readiness 通过后再启动 `/opt/astra/apps/worker-agent/src/main.ts`。Worker Agent 与 Model App 同属一个 Replica，但模型进程不访问平台控制面、数据库、队列或供应商 API。
+
 ## 启动契约
 
 基础镜像默认不下载任何文件。测试 Provider 必须显式设置：
