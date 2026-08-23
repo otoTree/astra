@@ -54,17 +54,15 @@ flowchart TD
 
 合集中的 `RandomNoise` 示例使用固定 `123456789`，平台不能沿用这个值：公共 API 不暴露 seed，控制面生成系统随机 seed 并写入 Task 快照，重试沿用同一值。合集中的 `VHS_VideoCombine` 是 ComfyUI 示例输出节点；平台不接受它隐含的 RunningHub URL 或本地路径，Model App 必须将生成的原始文件和 manifest 放到 Attempt 输出目录。
 
-## 3. 三档分辨率能力
+## 3. 两档分辨率能力
 
-Work-Fisher Release 使用三个像素面积档位，不把它们命名为行业视频标准。最终宽高必须由 Release 的 `resolution_matrix` 声明，不能由调用方任意传入：
+Work-Fisher Release 当前使用两个像素面积档位，不把它们命名为行业视频标准。最终宽高必须由 Release 的 `resolution_matrix` 声明，不能由调用方任意传入：
 
 | 公共档位 | 16:9 目标 | ComfyUI 32 倍数候选 | 说明 |
 | --- | ---: | ---: | --- |
 | `0.7mp` | 约 0.7 megapixels | `1152x640` | 低成本 smoke 和在线低延迟档 |
 | `0.9mp` | 约 0.9 megapixels | `1280x736` | 默认生产质量档，需重新测显存 |
-| `2.0mp` | 约 2.0 megapixels | `1920x1088` | 高成本档，首期不承诺所有 GPU 可用 |
-
-这些是当前合集 `ResolutionSelector` 的 16:9 候选，不是已验收结论。`9:16`、`1:1` 和其他比例必须分别登记实际尺寸；如果某档位的显存安全门或输出合同未通过，Release 不得在 `/v1/models` 暴露该组合。
+当前 H3 Release 暂不提供 `2.0mp`：实测可靠性不足，不能进入能力发现、模型列表或调度候选。`9:16`、`1:1` 和其他比例必须分别登记实际尺寸；如果某档位的显存安全门或输出合同未通过，Release 不得在 `/v1/models` 暴露该组合。
 
 建议 H3 Release Manifest 片段：
 
@@ -75,11 +73,10 @@ Work-Fisher Release 使用三个像素面积档位，不把它们命名为行业
   "max_concurrency": 1,
   "capabilities": {
     "aspect_ratios": ["16:9", "9:16"],
-    "resolutions": ["0.7mp", "0.9mp", "2.0mp"],
+    "resolutions": ["0.7mp", "0.9mp"],
     "resolution_matrix": {
       "16:9/0.7mp": {"width": 1152, "height": 640},
-      "16:9/0.9mp": {"width": 1280, "height": 736},
-      "16:9/2.0mp": {"width": 1920, "height": 1088}
+      "16:9/0.9mp": {"width": 1280, "height": 736}
     },
     "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     "fps": [24],
@@ -185,10 +182,10 @@ Model App 只允许从固定模板深拷贝并修改以下字段：
 ## 6. 发布和回滚
 
 1. 运维填写模型镜像地址；控制面解析并固定 OCI digest。
-2. 模型团队提交 Work-Fisher API-format 子图、节点 commit、Weight Manifest 和三档能力矩阵。
+2. 模型团队提交 Work-Fisher API-format 子图、节点 commit、Weight Manifest 和两档能力矩阵。
 3. Provider Controller 为候选 Release 创建临时 GPU 实例，测试 Profile 才注入代理和 runtime download 开关。
 4. 容器完成下载/本地校验、ComfyUI 节点发现、固定输入 smoke、媒体解码、显存余量和 Worker Contract 检查。
-5. 通过后再把 `0.7mp/0.9mp/2.0mp` 的已验收组合加入 Release 能力；旧 Release 关闭新任务并排空后回收。
+5. 通过后再把 `0.7mp/0.9mp` 的已验收组合加入 Release 能力；`2.0mp` 在可靠性复评前保持禁用。旧 Release 关闭新任务并排空后回收。
 6. 任一下载、节点、输出、错误率或成本门失败，候选保持 `accept_new_tasks=false`；回滚先切 Alias，再按稳定 digest 预热。
 
 运行中任务默认完成，不因为镜像替换而杀掉正在采样的 Worker。新镜像下载失败不会影响旧版本和旧权重缓存。
@@ -201,7 +198,7 @@ Model App 只允许从固定模板深拷贝并修改以下字段：
 | API-format 子图和 Python ComfyUI 适配器 | 已落在 `model-workers/h3`，尚未接入真实 GPU | 平台/模型工程 |
 | H3 UNET/CLIP/VAE/LoRA SHA-256 | 已登记固定地址、大小和 LFS SHA-256，完整文件未下载 | 模型工程/供应链 |
 | ComfyUI 与自定义节点 commit | 研究版本已有，运行环境仍需核对 | 模型工程 |
-| 0.7mp/0.9mp/2.0mp 显存与耗时 | 未在目标 GPU 实测 | 模型工程/SRE |
+| 0.7mp/0.9mp 显存与耗时 | 未在目标 GPU 实测 | 模型工程/SRE |
 | 测试镜像 OCI digest | 尚未构建 | 发布工程 |
 | 人工质量批准 | 未开始 | 模型团队 |
 

@@ -117,13 +117,10 @@ def resolution_dimensions(aspect_ratio: str, resolution: str) -> tuple[int, int]
     matrix = {
         ("16:9", "0.7mp"): (1152, 640),
         ("16:9", "0.9mp"): (1280, 736),
-        ("16:9", "2.0mp"): (1920, 1088),
         ("9:16", "0.7mp"): (640, 1152),
         ("9:16", "0.9mp"): (736, 1280),
-        ("9:16", "2.0mp"): (1088, 1920),
         ("1:1", "0.7mp"): (832, 832),
         ("1:1", "0.9mp"): (960, 960),
-        ("1:1", "2.0mp"): (1408, 1408),
     }
     try:
         return matrix[(aspect_ratio, resolution)]
@@ -526,7 +523,7 @@ class H3ModelApp:
     def capabilities(self) -> dict[str, Any]:
         matrix: dict[str, dict[str, int]] = {}
         for ratio in ("16:9", "9:16", "1:1"):
-            for tier in ("0.7mp", "0.9mp", "2.0mp"):
+            for tier in ("0.7mp", "0.9mp"):
                 width, height = resolution_dimensions(ratio, tier)
                 matrix[f"{ratio}/{tier}"] = {"width": width, "height": height}
         return {
@@ -542,7 +539,7 @@ class H3ModelApp:
             "max_concurrency": 1,
             "capabilities": {
                 "aspect_ratios": ["16:9", "9:16", "1:1"],
-                "resolutions": ["0.7mp", "0.9mp", "2.0mp"],
+                "resolutions": ["0.7mp", "0.9mp"],
                 "resolution_matrix": matrix,
                 "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
                 "fps": [24],

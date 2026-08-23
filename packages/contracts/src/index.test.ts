@@ -25,7 +25,7 @@ describe("contracts", () => {
   });
 
   test("accepts the Work-Fisher resolution tiers", () => {
-    for (const resolution of ["0.7mp", "0.9mp", "2.0mp"] as const) {
+    for (const resolution of ["0.7mp", "0.9mp"] as const) {
       const result = videoGenerationSchema.parse({
         model: "minimax-h3-work-fisher",
         prompt: "a slow camera move",

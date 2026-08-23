@@ -5,7 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
-from server import ComfyClient, H3ModelApp, normalize_prompt
+from server import ComfyClient, H3ModelApp, ModelAppError, normalize_prompt, resolution_dimensions
 
 
 class ContractComfy(ComfyClient):
@@ -49,7 +49,12 @@ class H3ModelAppContractTest(unittest.TestCase):
             status, body = app.handle("GET", "/v1/capabilities")
             self.assertEqual(status, 200)
             capabilities = json.loads(body)
-            self.assertEqual(capabilities["capabilities"]["resolutions"], ["0.7mp", "0.9mp", "2.0mp"])
+            self.assertEqual(capabilities["capabilities"]["resolutions"], ["0.7mp", "0.9mp"])
+            self.assertNotIn("16:9/2.0mp", capabilities["capabilities"]["resolution_matrix"])
+
+    def test_unreliable_two_megapixel_tier_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ModelAppError, "aspect_ratio and resolution are not in this Release"):
+            resolution_dimensions("16:9", "2.0mp")
 
     def test_input_integrity_and_execution_idempotency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

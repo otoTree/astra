@@ -69,6 +69,7 @@ export class ProviderOperationReconciler {
             ...(claim.payload.image_reference ? { imageReference: claim.payload.image_reference } : {}),
             region: claim.payload.region as string,
             gpuSku: claim.payload.gpu_sku as string,
+            ...(claim.payload.environment ? { environment: claim.payload.environment } : {}),
           },
           context,
         );

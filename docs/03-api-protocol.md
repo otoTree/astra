@@ -194,7 +194,7 @@ API Key 绑定组织和默认项目。调用方可以传 `X-Project-Id` 选择�
 | `model` | 是 | 可用 Model Alias 或固定 Release ID；响应固定解析后的 Release |
 | `prompt` | 是 | UTF-8，1-20000 字符；加密永久保存 |
 | `aspect_ratio` | 是 | `16:9 | 9:16 | 1:1 | 4:3 | 3:4`；还必须命中 Model Release 能力 |
-| `resolution` | 是 | Release 声明的像素面积档位，例如 `0.7mp`、`0.9mp`、`2.0mp`；与比例组合后解析成固定宽高。平台不把它命名为 480P/720P/1080P |
+| `resolution` | 是 | Release 声明的像素面积档位；当前 H3 Release 仅支持 `0.7mp`、`0.9mp`，与比例组合后解析成固定宽高。平台不把它命名为 480P/720P/1080P |
 | `duration` | 是 | 首期为 4-15 秒整数；还必须命中 Model Release 能力 |
 | `input_files` | 否 | 有序参考素材数组，最多 15 个；只允许平台 File API 已确认的图片、视频和音频 |
 | `audio` | 否 | 默认 `{ "mode": "native" }`，能力不支持音频时固定 `none` |
@@ -523,10 +523,10 @@ stateDiagram-v2
       "operations": ["generation"],
       "capabilities": {
         "aspect_ratios": ["16:9", "9:16"],
-        "resolutions": ["0.7mp", "0.98mp"],
+        "resolutions": ["0.7mp", "0.9mp"],
         "resolution_matrix": {
           "16:9/0.7mp": {"width": 1152, "height": 640},
-          "16:9/0.98mp": {"width": 1344, "height": 768}
+          "16:9/0.9mp": {"width": 1280, "height": 736}
         },
         "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         "output_fps": 24,

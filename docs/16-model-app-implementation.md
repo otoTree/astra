@@ -179,10 +179,10 @@ sequenceDiagram
   "max_concurrency": 1,
   "capabilities": {
     "aspect_ratios": ["16:9", "9:16"],
-    "resolutions": ["0.7mp", "0.98mp"],
+    "resolutions": ["0.7mp", "0.9mp"],
     "resolution_matrix": {
       "16:9/0.7mp": {"width": 1152, "height": 640},
-      "16:9/0.98mp": {"width": 1344, "height": 768}
+      "16:9/0.9mp": {"width": 1280, "height": 736}
     },
     "durations": [15],
     "fps": [24],

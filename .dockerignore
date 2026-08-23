@@ -1,5 +1,8 @@
 .git
 node_modules
 dist
-docs
 .env.local
+
+# The H3 bundle uses pinned source snapshots under docs/third-party. The
+# repository contains documentation and source only; model artifacts remain
+# excluded by the artifact check and are never copied into this context.
