@@ -24,8 +24,8 @@ describe("contracts", () => {
     expect(result.input_files).toEqual([]);
   });
 
-  test("accepts public resolution tier aliases", () => {
-    for (const resolution of ["480p", "720p", "1080p"] as const) {
+  test("accepts the Work-Fisher resolution tiers", () => {
+    for (const resolution of ["0.7mp", "0.9mp", "2.0mp"] as const) {
       const result = videoGenerationSchema.parse({
         model: "minimax-h3-work-fisher",
         prompt: "a slow camera move",
@@ -34,6 +34,20 @@ describe("contracts", () => {
         duration: 15,
       });
       expect(result.resolution).toBe(resolution);
+    }
+  });
+
+  test("does not treat named video standards as resolution values", () => {
+    for (const resolution of ["480p", "720p", "1080p"]) {
+      expect(() =>
+        videoGenerationSchema.parse({
+          model: "minimax-h3-work-fisher",
+          prompt: "a slow camera move",
+          aspect_ratio: "16:9",
+          resolution,
+          duration: 15,
+        }),
+      ).toThrow();
     }
   });
 
