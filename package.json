@@ -24,6 +24,7 @@
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "test:unit": "bun test --timeout 10000",
+    "test:model-app:h3": "PYTHONPATH=model-workers/h3/src python3 -m unittest discover -s model-workers/h3/src -p 'test_*.py' -v",
     "test:integration:postgres": "bun run scripts/run-integration.ts postgres",
     "test:integration:s3": "bun run scripts/run-integration.ts s3",
     "test:integration:events": "docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml --profile test run --rm --build event-contract-tests",
@@ -38,7 +39,7 @@
     "dependencies:check": "bun run scripts/check-dependencies.ts",
     "compose:check": "docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml config --quiet",
     "build": "bun run scripts/build.ts",
-    "check": "bun run format:check && bun run lint && bun run dependencies:check && bun run typecheck && bun run contracts:check && bun run db:migrate:check && bun run model-artifacts:check && bun run test:unit && bun run build",
+    "check": "bun run format:check && bun run lint && bun run dependencies:check && bun run typecheck && bun run contracts:check && bun run db:migrate:check && bun run model-artifacts:check && bun run test:model-app:h3 && bun run test:unit && bun run build",
     "compose:up": "docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml up -d",
     "compose:down": "docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml down"
   },

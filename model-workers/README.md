@@ -7,6 +7,6 @@
 当前目录：
 
 - `reference/`：Model App 合同参考实现，用于本地验证同一生产协议，不加载 GPU 权重。
-- `h3/`：Work-Fisher/MiniMax H3 运行时准备目录，提供无权重基础镜像、固定清单下载器和模型团队交接边界；生产实现应固定 ComfyUI、节点、工作流和权重 digest。
+- `h3/`：Work-Fisher/MiniMax H3 Ref2VA Model App，提供固定 API-format workflow、ComfyUI `/prompt`/`history`/`interrupt` 适配器、输出 manifest、无权重基础镜像和运行时清单下载器；派生生产镜像必须固定 ComfyUI、节点、工作流和权重 digest。
 
 `h3/` 基础镜像默认不下载模型。只有远端 GPU 测试 Profile 显式打开 `H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED`、提供固定权重清单和批准的 HTTPS 代理时才执行运行时下载；本地 Compose、CI 和默认部署不会触发该路径。

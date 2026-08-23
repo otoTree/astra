@@ -4,7 +4,7 @@
 
 Work-Fisher 合集作为当前 MiniMax H3 参考媒体生成视频的主力研究输入。平台先把它转换为一个固定的 Model App Release，再由 Bun Worker Agent 通过 localhost Worker Contract 调用。业务调用方不接触 ComfyUI `/prompt`，也不能提交任意工作流图。
 
-本阶段交付的是工作流登记、协议映射、镜像启动契约和远端 GPU 测试方案。真实 H3/10Eros 推理、权重来源最终确认、质量批准和性能结论仍由模型团队在隔离算力环境完成。
+本阶段交付的是工作流登记、固定 API-format 子图、协议映射、镜像启动契约和远端 GPU 测试方案。真实 H3/10Eros 推理、质量批准和性能结论仍由模型团队在隔离算力环境完成；本机不会下载或运行权重。
 
 ```mermaid
 flowchart LR
@@ -19,7 +19,7 @@ flowchart LR
 
 关键边界：
 
-- OCI 镜像只包含 ComfyUI、Python/CUDA 运行时、自定义节点、Model App 适配器、工作流模板和 Release Manifest，不包含几十 GB 权重。
+- OCI 镜像只包含固定的 ComfyUI、Python/CUDA 运行时、自定义节点、Model App 适配器、工作流模板和 Release Manifest，不包含几十 GB 权重。
 - 测试镜像可以在远端 GPU 容器首次启动时下载权重，但文件写入 Provider 提供的独立持久卷或本地 NVMe，不是写入 OCI 镜像层。
 - `H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED` 默认必须为 `false`；只有隔离测试 Provider Profile 显式设置为 `true` 才允许下载。
 - 本地 Bun/Compose、CI、默认 Helm 和平台控制面不下载权重，不访问 Hugging Face 或 `hf-mirror.com`。
@@ -85,7 +85,7 @@ Work-Fisher Release 使用三个像素面积档位，不把它们命名为行业
     "fps": [24],
     "input_types": ["image", "video", "audio"],
     "input_roles": ["reference_image", "reference_video", "reference_video_audio", "reference_audio"],
-    "audio_modes": ["native", "none", "reference"]
+    "audio_modes": ["native", "reference", "lock_source", "remix_source"]
   }
 }
 ```
@@ -96,7 +96,7 @@ Work-Fisher Release 使用三个像素面积档位，不把它们命名为行业
 
 ### 4.1 配置契约
 
-权重清单必须由模型团队提供，至少包含 `repo_id`、固定 `revision`、文件路径、期望字节数、SHA-256、safetensors header 摘要和许可证确认。容器下载器使用 [`model-workers/h3/weight-manifest.schema.json`](../model-workers/h3/weight-manifest.schema.json) 的最小机器校验格式；完整来源、header 和许可证审计保存在平台 Release Manifest。没有完整清单时，启动应失败在 `loading_failed`，不能按文件名猜测或下载最新版本。
+权重清单已登记在 [`model-workers/h3/weight-manifest.json`](../model-workers/h3/weight-manifest.json)，包含固定 revision、路径、大小和 LFS SHA-256；模型团队仍需在隔离环境补充 safetensors header 摘要、许可证批准和实际下载后独立复核。容器下载器使用 [`model-workers/h3/weight-manifest.schema.json`](../model-workers/h3/weight-manifest.schema.json) 的机器校验格式。没有完整清单时，启动应失败在 `loading_failed`，不能按文件名猜测或下载最新版本。
 
 测试 Provider 的环境变量建议如下：
 
@@ -108,6 +108,8 @@ HF_ENDPOINT=https://hf-mirror.com
 HTTPS_PROXY=http://<approved-proxy>
 HTTP_PROXY=http://<approved-proxy>
 NO_PROXY=127.0.0.1,localhost,worker-control-api
+H3_COMFYUI_COMMAND_JSON=["python3","/opt/comfyui/main.py","--listen","127.0.0.1","--port","8188"]
+H3_SMOKE_EXECUTION_ENABLED=true
 ```
 
 生产稳定 Profile 应改为：
@@ -159,15 +161,17 @@ sequenceDiagram
 
 ## 5. Model App 映射实现
 
+仓库中的 [`model-workers/h3/workflow_ref2va_api.json`](../model-workers/h3/workflow_ref2va_api.json) 是 Group 63 的固定 API-format 子图（SHA-256：`ee0fceeb40f32009d4a913caae95dae211e0ee1fd095f79512f0ff5fc80f8e4d`），适配器位于 [`model-workers/h3/src/server.py`](../model-workers/h3/src/server.py)。它只允许覆盖下表字段；不能从 Worker 请求接受任意 ComfyUI 节点或外部 URL。
+
 Model App 只允许从固定模板深拷贝并修改以下字段：
 
 | 平台字段 | 工作流输入 | 规则 |
 | --- | --- | --- |
 | `prompt` | `MiniMaxH3AudioConditioningT8.prompt` | 正向提示词，按 `input_files` 顺序引用媒体标签 |
 | `input_files[].type/role` | `ref_images.*`、`ref_videos.*`、`ref_video_audios.*`、`ref_audios.*` | 由 Agent 提供本地路径；严格按类型/角色映射 |
-| `aspect_ratio + resolution` | `width`、`height` | 只使用 Release matrix 中的解析值 |
+| `aspect_ratio + resolution` | `width`、`height` | 只使用 Release matrix 中的解析值；适配器再次 CAS 校验尺寸 |
 | `duration` | `length` | 通过固定 24fps 对齐公式转换为合法帧数 |
-| 系统 `seed` | `RandomNoise.seed` | 平台生成并固定，模板中的常量只作示例替换 |
+| 系统 `seed` | `RandomNoise.noise_seed` | Worker Contract 内部字段，平台生成并固定；公共 API 不暴露 |
 | `audio.mode` | `audio_mode` / 参考音频端口 | 能力不支持则拒绝，不静默退化 |
 | Release profile | `MultiRateSampler`、SageAttention、LoRA、Block Cache | 只能切换已验收 Profile，不能由调用方直接提交节点参数 |
 
@@ -193,8 +197,8 @@ Model App 只允许从固定模板深拷贝并修改以下字段：
 | 项目 | 当前状态 | 责任 |
 | --- | --- | --- |
 | Work-Fisher 原始 JSON | 已纳入仓库，SHA-256 已登记 | 平台 |
-| API-format 子图 | 尚未从 UI 合集冻结 | 模型工程 |
-| 10Eros UNET/CLIP/VAE SHA-256 | 地址已登记，完整文件未下载 | 模型工程/供应链 |
+| API-format 子图和 Python ComfyUI 适配器 | 已落在 `model-workers/h3`，尚未接入真实 GPU | 平台/模型工程 |
+| H3 UNET/CLIP/VAE/LoRA SHA-256 | 已登记固定地址、大小和 LFS SHA-256，完整文件未下载 | 模型工程/供应链 |
 | ComfyUI 与自定义节点 commit | 研究版本已有，运行环境仍需核对 | 模型工程 |
 | 0.7mp/0.9mp/2.0mp 显存与耗时 | 未在目标 GPU 实测 | 模型工程/SRE |
 | 测试镜像 OCI digest | 尚未构建 | 发布工程 |
