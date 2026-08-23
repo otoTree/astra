@@ -7,11 +7,18 @@ import hashlib
 import json
 import os
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production image is Linux; keep import errors explicit below.
+    fcntl = None
 
 
 CHUNK_SIZE = 8 * 1024 * 1024
@@ -41,6 +48,32 @@ def parse_bool(name: str, default: bool = False) -> bool:
     if raw.lower() not in {"true", "false"}:
         raise BootstrapError(f"invalid_boolean_environment:{name}")
     return raw.lower() == "true"
+
+
+def bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise BootstrapError(f"invalid_integer_environment:{name}") from error
+    if value < minimum or value > maximum:
+        raise BootstrapError(f"out_of_range_environment:{name}")
+    return value
+
+
+@contextmanager
+def materialize_lock(root: Path):
+    if fcntl is None:
+        raise BootstrapError("file_lock_unavailable")
+    lock_path = root / ".weight-manifest.lock"
+    with lock_path.open("a+", encoding="ascii") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def load_manifest(path: Path) -> list[dict[str, Any]]:
@@ -178,27 +211,40 @@ def download(url: str, destination: Path, expected_size: int, hosts: set[str]) -
     raise BootstrapError(f"weight_redirect_limit_exceeded:{url}")
 
 
-def materialize(root: Path, artifacts: list[dict[str, Any]], enabled: bool, hosts: set[str]) -> None:
+def materialize(root: Path, artifacts: list[dict[str, Any]], enabled: bool, hosts: set[str], maximum_retries: int) -> None:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for artifact in artifacts:
-        target = root / artifact["target"]
-        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if verified(target, artifact):
-            continue
-        if target.exists():
-            target.unlink()
-        if not enabled:
-            raise BootstrapError(f"weight_missing_or_hash_mismatch:{artifact['name']}")
-        partial = Path(f"{target}.partial.{os.getpid()}")
-        try:
-            download(artifact["url"], partial, artifact["size_bytes"], hosts)
-            digest, size = digest_file(partial)
-            if digest != artifact["sha256"] or size != artifact["size_bytes"]:
-                raise BootstrapError(f"weight_hash_mismatch:{artifact['name']}")
-            os.chmod(partial, 0o600)
-            os.replace(partial, target)
-        finally:
-            partial.unlink(missing_ok=True)
+    with materialize_lock(root):
+        for artifact in artifacts:
+            target = root / artifact["target"]
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if verified(target, artifact):
+                continue
+            if target.exists():
+                target.unlink()
+            if not enabled:
+                raise BootstrapError(f"weight_missing_or_hash_mismatch:{artifact['name']}")
+            partial = Path(f"{target}.partial.{os.getpid()}")
+            try:
+                last_error: BootstrapError | None = None
+                for attempt in range(maximum_retries + 1):
+                    try:
+                        download(artifact["url"], partial, artifact["size_bytes"], hosts)
+                        digest, size = digest_file(partial)
+                        if digest != artifact["sha256"] or size != artifact["size_bytes"]:
+                            raise BootstrapError(f"weight_hash_mismatch:{artifact['name']}")
+                        last_error = None
+                        break
+                    except BootstrapError as error:
+                        last_error = error
+                        partial.unlink(missing_ok=True)
+                        if attempt < maximum_retries:
+                            time.sleep(min(30, 2**attempt))
+                if last_error is not None:
+                    raise last_error
+                os.chmod(partial, 0o600)
+                os.replace(partial, target)
+            finally:
+                partial.unlink(missing_ok=True)
 
 
 def exec_model_app() -> None:
@@ -218,8 +264,9 @@ def main() -> int:
         root = Path(required_env("H3_WEIGHT_ROOT"))
         enabled = parse_bool("H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED")
         hosts = allowed_hosts() if enabled else set()
+        maximum_retries = bounded_int("H3_WEIGHT_DOWNLOAD_MAX_RETRIES", 2, 0, 5)
         artifacts = load_manifest(manifest_path)
-        materialize(root, artifacts, enabled, hosts)
+        materialize(root, artifacts, enabled, hosts, maximum_retries)
         exec_model_app()
     except BootstrapError as error:
         print(json.dumps({"component": "h3-runtime-bootstrap", "status": "failed", "error": str(error)}), file=sys.stderr)

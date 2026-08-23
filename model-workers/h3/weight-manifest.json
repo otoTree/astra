@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/6701b0a14feefd7141bd9cfe8386961c27007622/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6",
+      "size_bytes": 15687142551,
+      "target": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+    },
+    {
+      "name": "minimax_h3_video_vae_fp16.safetensors",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/6701b0a14feefd7141bd9cfe8386961c27007622/vae/minimax_h3_video_vae_fp16.safetensors",
+      "sha256": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522",
+      "size_bytes": 5207808496,
+      "target": "vae/minimax_h3_video_vae_fp16.safetensors"
+    },
+    {
+      "name": "minimax_h3_audio_vae_fp32.safetensors",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/6701b0a14feefd7141bd9cfe8386961c27007622/vae/minimax_h3_audio_vae_fp32.safetensors",
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+      "size_bytes": 605254808,
+      "target": "vae/minimax_h3_audio_vae_fp32.safetensors"
+    },
+    {
+      "name": "minimax_h3_fl2va_int8_convrot.safetensors",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/6701b0a14feefd7141bd9cfe8386961c27007622/diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors",
+      "sha256": "7ad4c73e6e378b822ffd1629f27f632d3787d95f5e468e3af958f98c58df96a5",
+      "size_bytes": 34038892334,
+      "target": "diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors"
+    },
+    {
+      "name": "minimax_h3_turbo_4step_comfyui.safetensors",
+      "url": "https://huggingface.co/t8star/minimax-h3-4step-turbo-loras-comfyui-exp/resolve/daf9dc88ea667729c962cf3e1a49d844bc240e98/minimax_h3_turbo_4步加速_comfyui.safetensors",
+      "sha256": "35946f9f2957c2766e28b627c88169535249dd07a3040ce3c2c8c99951fdbc7b",
+      "size_bytes": 779858752,
+      "target": "loras/minimax_h3_turbo_4步加速_comfyui.safetensors"
+    }
+  ]
+}
