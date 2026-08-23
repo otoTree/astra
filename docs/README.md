@@ -59,6 +59,7 @@
 | [17-continuous-delivery-plan.md](./17-continuous-delivery-plan.md) | 持续开发顺序、阶段依赖、当前状态、逐阶段交付与退出条件 | 全体研发、QA、SRE、项目负责人 |
 | [18-production-capacity-acceptance.md](./18-production-capacity-acceptance.md) | Helm、安全、故障演练与 10-50 GPU 无权重容量验收 | SRE、QA、平台研发 |
 | [19-model-team-handoff-without-weights.md](./19-model-team-handoff-without-weights.md) | 无模型权重的 Model App 交接合同、验收清单和人类推理边界 | 模型团队、平台研发、QA |
+| [20-work-fisher-h3-model-app-preparation.md](./20-work-fisher-h3-model-app-preparation.md) | Work-Fisher H3 参考媒体工作流、三档分辨率、远端权重启动和 Model App 准备方案 | 模型工程、平台研发、SRE、QA |
 | [runbooks/model-rollout.md](./runbooks/model-rollout.md) | 固定 digest 模型发布、暂停、排空、回滚和故障处置手册 | SRE、发布人员、值班人员 |
 | [runbooks/disaster-recovery.md](./runbooks/disaster-recovery.md) | PostgreSQL、Redis、Kafka、S3、Provider 和 Worker 灾难恢复顺序 | SRE、值班人员 |
 | [providers/gongji/README.md](./providers/gongji/README.md) | 共绩算力 67 个 Open API 的本地原始文档、接口索引和 Adapter 说明 | Provider、调度、SRE |
