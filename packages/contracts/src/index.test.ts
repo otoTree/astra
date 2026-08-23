@@ -24,6 +24,19 @@ describe("contracts", () => {
     expect(result.input_files).toEqual([]);
   });
 
+  test("accepts public resolution tier aliases", () => {
+    for (const resolution of ["480p", "720p", "1080p"] as const) {
+      const result = videoGenerationSchema.parse({
+        model: "minimax-h3-work-fisher",
+        prompt: "a slow camera move",
+        aspect_ratio: "16:9",
+        resolution,
+        duration: 15,
+      });
+      expect(result.resolution).toBe(resolution);
+    }
+  });
+
   test("rejects an invalid aspect ratio", () => {
     expect(() =>
       videoGenerationSchema.parse({

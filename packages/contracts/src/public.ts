@@ -106,8 +106,8 @@ export type AspectRatio = z.infer<typeof aspectRatioSchema>;
 
 export const resolutionSchema = z
   .string()
-  .regex(/^\d+(?:\.\d+)?mp$/)
-  .max(16);
+  .max(16)
+  .regex(/^(?:480p|720p|1080p|\d+(?:\.\d+)?mp)$/);
 export type Resolution = z.infer<typeof resolutionSchema>;
 
 const referenceImageSchema = z

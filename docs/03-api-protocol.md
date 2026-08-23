@@ -194,7 +194,7 @@ API Key 绑定组织和默认项目。调用方可以传 `X-Project-Id` 选择�
 | `model` | 是 | 可用 Model Alias 或固定 Release ID；响应固定解析后的 Release |
 | `prompt` | 是 | UTF-8，1-20000 字符；加密永久保存 |
 | `aspect_ratio` | 是 | `16:9 | 9:16 | 1:1 | 4:3 | 3:4`；还必须命中 Model Release 能力 |
-| `resolution` | 是 | Release 声明的分辨率档位，例如当前 H3 的 `0.7mp`；与比例组合后解析成固定宽高 |
+| `resolution` | 是 | Release 声明的分辨率档位；支持兼容的 `480p`、`720p`、`1080p` 别名以及既有 `mp` 表达，与比例组合后解析成固定宽高 |
 | `duration` | 是 | 首期为 4-15 秒整数；还必须命中 Model Release 能力 |
 | `input_files` | 否 | 有序参考素材数组，最多 15 个；只允许平台 File API 已确认的图片、视频和音频 |
 | `audio` | 否 | 默认 `{ "mode": "native" }`，能力不支持音频时固定 `none` |

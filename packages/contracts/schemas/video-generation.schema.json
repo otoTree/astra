@@ -8,7 +8,12 @@
     "model": { "type": "string", "minLength": 1 },
     "prompt": { "type": "string", "minLength": 1, "maxLength": 20000 },
     "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:4"] },
-    "resolution": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?mp$" },
+    "resolution": {
+      "oneOf": [
+        { "type": "string", "enum": ["480p", "720p", "1080p"] },
+        { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?mp$" }
+      ]
+    },
     "duration": { "type": "integer", "minimum": 4, "maximum": 15 },
     "input_files": {
       "type": "array",
