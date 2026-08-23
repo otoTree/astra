@@ -135,7 +135,9 @@ def allowed_hosts() -> set[str]:
 
 def validate_url(url: str, hosts: set[str]) -> None:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname is None or parsed.hostname.lower() not in hosts:
+    hostname = parsed.hostname.lower() if parsed.hostname else ""
+    redirect_host_allowed = any(hostname.endswith(f".{allowed}") for allowed in hosts if allowed.endswith(".hf.co"))
+    if parsed.scheme != "https" or not hostname or (hostname not in hosts and not redirect_host_allowed):
         raise BootstrapError("weight_url_host_not_allowed")
 
 

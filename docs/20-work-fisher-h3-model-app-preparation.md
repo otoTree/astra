@@ -104,6 +104,7 @@ Work-Fisher Release 使用三个像素面积档位，不把它们命名为行业
 H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED=true
 H3_WEIGHT_MANIFEST=/etc/astra/h3/weight-manifest.json
 H3_WEIGHT_ROOT=/var/lib/astra/h3/weights
+H3_WEIGHT_ALLOWED_HOSTS=hf-mirror.com,huggingface.co,cdn.hf.co,cdn-lfs.hf.co,xethub.hf.co
 HF_ENDPOINT=https://hf-mirror.com
 HTTPS_PROXY=http://<approved-proxy>
 HTTP_PROXY=http://<approved-proxy>

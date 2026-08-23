@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from asset_bootstrap import BootstrapError, load_manifest, materialize
+from asset_bootstrap import BootstrapError, load_manifest, materialize, validate_url
 
 
 class AssetBootstrapTest(unittest.TestCase):
@@ -35,6 +35,13 @@ class AssetBootstrapTest(unittest.TestCase):
             }
             with self.assertRaisesRegex(BootstrapError, "weight_missing_or_hash_mismatch"):
                 materialize(Path(directory), [artifact], False, set(), 0)
+
+    def test_hugging_face_signed_redirect_hosts_are_explicitly_scoped(self) -> None:
+        hosts = {"huggingface.co", "cdn.hf.co", "xethub.hf.co"}
+        validate_url("https://us.aws.cdn.hf.co/object", hosts)
+        validate_url("https://cas-bridge.xethub.hf.co/object", hosts)
+        with self.assertRaisesRegex(BootstrapError, "weight_url_host_not_allowed"):
+            validate_url("https://cdn.example.com/object", hosts)
 
 
 if __name__ == "__main__":
