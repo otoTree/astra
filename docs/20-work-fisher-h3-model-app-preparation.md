@@ -23,7 +23,7 @@ flowchart LR
 - 测试镜像可以在远端 GPU 容器首次启动时下载权重，但文件写入 Provider 提供的独立持久卷或本地 NVMe，不是写入 OCI 镜像层。
 - `H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED` 默认必须为 `false`；只有隔离测试 Provider Profile 显式设置为 `true` 才允许下载。
 - 本地 Bun/Compose、CI、默认 Helm 和平台控制面不下载权重，不访问 Hugging Face 或 `hf-mirror.com`。
-- Model App 的网络出口只为测试启动阶段的固定权重源开放；推理就绪后应收紧为无模型外网访问。平台 API、数据库、Redis、Kafka、Provider 和 S3 仍由 Agent/控制面负责。
+- Model App 的网络出口只为测试启动阶段的固定权重源开放；推理就绪后应收紧为无模型外网访问。平台 API、数据库、Redis、Redis Streams、Provider 和 S3 仍由 Agent/控制面负责。
 
 ## 2. Work-Fisher 结构与主路径
 
@@ -99,12 +99,10 @@ Work-Fisher Release 当前使用两个像素面积档位，不把它们命名为
 
 ```text
 H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED=true
+H3_WEIGHT_MIRROR_ENDPOINT=https://hf-mirror.com
 H3_WEIGHT_MANIFEST=/etc/astra/h3/weight-manifest.json
 H3_WEIGHT_ROOT=/var/lib/astra/h3/weights
-H3_WEIGHT_ALLOWED_HOSTS=hf-mirror.com,huggingface.co,cdn.hf.co,cdn-lfs.hf.co,xethub.hf.co
-HF_ENDPOINT=https://hf-mirror.com
-HTTPS_PROXY=http://<approved-proxy>
-HTTP_PROXY=http://<approved-proxy>
+H3_WEIGHT_ALLOWED_HOSTS=hf-mirror.com,cdn-lfs.hf-mirror.com,cdn.hf.co,cdn-lfs.hf.co,xethub.hf.co
 NO_PROXY=127.0.0.1,localhost,worker-control-api
 H3_COMFYUI_COMMAND_JSON=["python3","/opt/comfyui/main.py","--listen","127.0.0.1","--port","8188"]
 H3_SMOKE_EXECUTION_ENABLED=true
@@ -183,7 +181,7 @@ Model App 只允许从固定模板深拷贝并修改以下字段：
 
 1. 运维填写模型镜像地址；控制面解析并固定 OCI digest。
 2. 模型团队提交 Work-Fisher API-format 子图、节点 commit、Weight Manifest 和两档能力矩阵。
-3. Provider Controller 为候选 Release 创建临时 GPU 实例，测试 Profile 才注入代理和 runtime download 开关。
+3. Provider Controller 为候选 Release 创建临时 GPU 实例，测试 Profile 才注入镜像端点和 runtime download 开关。
 4. 容器完成下载/本地校验、ComfyUI 节点发现、固定输入 smoke、媒体解码、显存余量和 Worker Contract 检查。
 5. 通过后再把 `0.7mp/0.9mp` 的已验收组合加入 Release 能力；`2.0mp` 在可靠性复评前保持禁用。旧 Release 关闭新任务并排空后回收。
 6. 任一下载、节点、输出、错误率或成本门失败，候选保持 `accept_new_tasks=false`；回滚先切 Alias，再按稳定 digest 预热。

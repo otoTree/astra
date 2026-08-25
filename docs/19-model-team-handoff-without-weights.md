@@ -50,6 +50,6 @@ flowchart LR
 
 - 在 Astra 仓库提交或下载任何模型文件。
 - 在默认 Compose 或 CI 中启动真实 GPU/ComfyUI 推理。
-- 让 Model App 访问 PostgreSQL、Redis、Kafka、Provider 或管理 API。
+- 让 Model App 访问 PostgreSQL、Redis、Redis Streams、Provider 或管理 API。
 - 将供应商缓存、镜像 tag 或外部 URL 当作权重真源。
 - 以参考实现的确定性媒体产物冒充 H3/10Eros 质量、速度或成本结果。

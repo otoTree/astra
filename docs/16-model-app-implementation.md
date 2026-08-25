@@ -18,7 +18,7 @@
 
 ## 2. 设计原则
 
-1. **Model App 只负责推理**：不连接 PostgreSQL、Redis、Kafka、Provider 或管理 API，不持有平台长期凭证。
+1. **Model App 只负责推理**：不连接 PostgreSQL、Redis、Redis Streams、Provider 或管理 API，不持有平台长期凭证。
 2. **Agent 负责平台事务**：租约、任务状态、素材下载、结果上传、取消宽限、清理和审计由 Agent 完成。
 3. **模型应用主动提供合同**：Agent 通过 `/health` 和 `/v1/capabilities` 判断应用是否可接收任务；不能依赖猜测的端口、节点或模型文件名。
 4. **Release 不可变**：镜像地址在发布时解析为 OCI digest；工作流、节点 commit、权重 hash、运行时参数和输出 Schema 一起形成 Release 身份。

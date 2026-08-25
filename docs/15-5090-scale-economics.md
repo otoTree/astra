@@ -180,7 +180,7 @@ desired_workers = clamp(
 - 共绩建机、镜像拉取、模型预热和回收时间。
 - 任务失败重试、Worker 失联、GPU Xid/OOM 和供应商超时。
 - S3/MinIO 存储、输入输出流量和跨区域传输。
-- PostgreSQL、Redis、Kafka、控制面和管理台成本。
+- PostgreSQL、Redis Streams、控制面和管理台成本。
 - 5090 机器的宿主机、机房、电力、带宽、折旧和运维。
 - 退款、内容审核、人工质量复核和客户支持。
 

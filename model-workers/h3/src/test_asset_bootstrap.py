@@ -1,9 +1,18 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from asset_bootstrap import BootstrapError, load_manifest, materialize, validate_url
+from asset_bootstrap import (
+    BootstrapError,
+    load_manifest,
+    materialize,
+    mirror_endpoint,
+    resolve_download_url,
+    validate_url,
+)
 
 
 class AssetBootstrapTest(unittest.TestCase):
@@ -42,6 +51,36 @@ class AssetBootstrapTest(unittest.TestCase):
         validate_url("https://cas-bridge.xethub.hf.co/object", hosts)
         with self.assertRaisesRegex(BootstrapError, "weight_url_host_not_allowed"):
             validate_url("https://cdn.example.com/object", hosts)
+
+    def test_hugging_face_source_url_is_rewritten_to_configured_mirror(self) -> None:
+        source = "https://huggingface.co/org/repo/resolve/fixed-revision/model.safetensors?download=true"
+        self.assertEqual(
+            resolve_download_url(source, "https://hf-mirror.com"),
+            "https://hf-mirror.com/org/repo/resolve/fixed-revision/model.safetensors?download=true",
+        )
+
+    def test_non_hugging_face_source_url_is_not_rewritten(self) -> None:
+        source = "https://artifacts.example.com/models/model.safetensors"
+        self.assertEqual(resolve_download_url(source, "https://hf-mirror.com"), source)
+
+    def test_mirror_endpoint_must_be_an_allowed_https_origin(self) -> None:
+        hosts = {"hf-mirror.com"}
+        invalid_endpoints = (
+            "http://hf-mirror.com",
+            "https://user:secret@hf-mirror.com",
+            "https://hf-mirror.com/path",
+            "https://hf-mirror.com?token=secret",
+            "https://unapproved.example.com",
+        )
+        for endpoint in invalid_endpoints:
+            with self.subTest(endpoint=endpoint):
+                with patch.dict(os.environ, {"H3_WEIGHT_MIRROR_ENDPOINT": endpoint}, clear=False):
+                    with self.assertRaisesRegex(BootstrapError, "invalid_weight_mirror_endpoint"):
+                        mirror_endpoint(hosts)
+
+    def test_mirror_endpoint_accepts_allowed_https_origin(self) -> None:
+        with patch.dict(os.environ, {"H3_WEIGHT_MIRROR_ENDPOINT": "https://hf-mirror.com/"}, clear=False):
+            self.assertEqual(mirror_endpoint({"hf-mirror.com"}), "https://hf-mirror.com")
 
 
 if __name__ == "__main__":

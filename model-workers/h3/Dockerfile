@@ -6,6 +6,7 @@ ARG ASTRA_H3_RUNTIME_VERSION=0.2.0
 ARG ASTRA_TORCH_VERSION=2.9.1
 ARG ASTRA_TORCHVISION_VERSION=0.24.1
 ARG ASTRA_TORCHAUDIO_VERSION=2.9.1
+ARG UBUNTU_MIRROR=https://mirrors.cloud.tencent.com/ubuntu
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -25,7 +26,11 @@ ENV ASTRA_H3_RUNTIME_VERSION=${ASTRA_H3_RUNTIME_VERSION} \
     PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:/usr/local/bin:${PATH}
 
-RUN apt-get update \
+RUN sed -i \
+      -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+      -e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+      /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get -o Acquire::Retries=5 update \
     && apt-get install --no-install-recommends --yes bash ca-certificates curl ffmpeg git libgcc-s1 libstdc++6 python3 python3-dev python3-pip python3-venv build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin astra \

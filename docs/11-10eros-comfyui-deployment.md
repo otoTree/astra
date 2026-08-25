@@ -227,7 +227,7 @@ Model App 必须实现：
 - `GET /v1/inferences/{execution_id}` 或等价的进度查询
 - `POST /v1/inferences/{execution_id}/cancel`
 
-ComfyUI 不得连接 PostgreSQL、Redis、Kafka、Provider 或 S3，也不持有平台长期凭证。输入文件由 Agent 下载到任务目录，Model App 只接收本地路径或受限的执行参数。
+ComfyUI 不得连接 PostgreSQL、Redis、Redis Streams、Provider 或 S3，也不持有平台长期凭证。输入文件由 Agent 下载到任务目录，Model App 只接收本地路径或受限的执行参数。
 
 ## 7. 部署验收门
 

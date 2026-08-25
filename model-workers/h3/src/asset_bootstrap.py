@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 try:
@@ -141,6 +141,37 @@ def validate_url(url: str, hosts: set[str]) -> None:
         raise BootstrapError("weight_url_host_not_allowed")
 
 
+def mirror_endpoint(hosts: set[str]) -> str | None:
+    raw = os.environ.get("H3_WEIGHT_MIRROR_ENDPOINT", "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    hostname = parsed.hostname.lower() if parsed.hostname else ""
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or hostname not in hosts
+    ):
+        raise BootstrapError("invalid_weight_mirror_endpoint")
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"https://{hostname}{port}"
+
+
+def resolve_download_url(url: str, endpoint: str | None) -> str:
+    if endpoint is None:
+        return url
+    source = urlparse(url)
+    if source.hostname != "huggingface.co":
+        return url
+    mirror = urlparse(endpoint)
+    return urlunparse((mirror.scheme, mirror.netloc, source.path, source.params, source.query, source.fragment))
+
+
 def digest_file(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -213,7 +244,14 @@ def download(url: str, destination: Path, expected_size: int, hosts: set[str]) -
     raise BootstrapError(f"weight_redirect_limit_exceeded:{url}")
 
 
-def materialize(root: Path, artifacts: list[dict[str, Any]], enabled: bool, hosts: set[str], maximum_retries: int) -> None:
+def materialize(
+    root: Path,
+    artifacts: list[dict[str, Any]],
+    enabled: bool,
+    hosts: set[str],
+    maximum_retries: int,
+    endpoint: str | None = None,
+) -> None:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     with materialize_lock(root):
         for artifact in artifacts:
@@ -230,7 +268,7 @@ def materialize(root: Path, artifacts: list[dict[str, Any]], enabled: bool, host
                 last_error: BootstrapError | None = None
                 for attempt in range(maximum_retries + 1):
                     try:
-                        download(artifact["url"], partial, artifact["size_bytes"], hosts)
+                        download(resolve_download_url(artifact["url"], endpoint), partial, artifact["size_bytes"], hosts)
                         digest, size = digest_file(partial)
                         if digest != artifact["sha256"] or size != artifact["size_bytes"]:
                             raise BootstrapError(f"weight_hash_mismatch:{artifact['name']}")
@@ -266,9 +304,10 @@ def main() -> int:
         root = Path(required_env("H3_WEIGHT_ROOT"))
         enabled = parse_bool("H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED")
         hosts = allowed_hosts() if enabled else set()
+        endpoint = mirror_endpoint(hosts) if enabled else None
         maximum_retries = bounded_int("H3_WEIGHT_DOWNLOAD_MAX_RETRIES", 2, 0, 5)
         artifacts = load_manifest(manifest_path)
-        materialize(root, artifacts, enabled, hosts, maximum_retries)
+        materialize(root, artifacts, enabled, hosts, maximum_retries, endpoint)
         exec_model_app()
     except BootstrapError as error:
         print(json.dumps({"component": "h3-runtime-bootstrap", "status": "failed", "error": str(error)}), file=sys.stderr)

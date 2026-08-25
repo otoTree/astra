@@ -36,9 +36,10 @@ docker buildx build \
 
 ```text
 H3_RUNTIME_WEIGHT_DOWNLOAD_ENABLED=true
+H3_WEIGHT_MIRROR_ENDPOINT=https://hf-mirror.com
 H3_WEIGHT_MANIFEST=/etc/astra/h3/weight-manifest.json
 H3_WEIGHT_ROOT=/var/lib/astra/h3/weights
-H3_WEIGHT_ALLOWED_HOSTS=hf-mirror.com,huggingface.co,cdn.hf.co,cdn-lfs.hf.co,xethub.hf.co
+H3_WEIGHT_ALLOWED_HOSTS=hf-mirror.com,cdn-lfs.hf-mirror.com,cdn.hf.co,cdn-lfs.hf.co,xethub.hf.co
 H3_WEIGHT_DOWNLOAD_MAX_RETRIES=2
 HTTPS_PROXY=http://<approved-proxy>
 H3_MODEL_APP_COMMAND_JSON=["python3","/opt/astra/h3/server.py"]
