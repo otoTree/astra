@@ -18,7 +18,7 @@ jobs:
       ASTRA_LOCAL_POSTGRES_DB: astra_ci
       ASTRA_LOCAL_POSTGRES_PORT: 55432
       ASTRA_LOCAL_REDIS_PORT: 56379
-      ASTRA_LOCAL_KAFKA_PORT: 59092
+      ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY: astra-ci-provider-credential-key-value
       ASTRA_LOCAL_S3_ACCESS_KEY: astra_ci
       ASTRA_LOCAL_S3_SECRET_KEY: astra_ci_ephemeral_secret
       ASTRA_LOCAL_S3_BUCKET: astra-local
@@ -30,6 +30,10 @@ jobs:
       ASTRA_LOCAL_REQUEST_ENCRYPTION_KEY: astra-ci-request-encryption-key-value
       ASTRA_LOCAL_PUBLIC_API_PORT: 54100
       ASTRA_LOCAL_ADMIN_API_PORT: 54101
+      ASTRA_LOCAL_ADMIN_BOOTSTRAP_USERNAME: admin
+      ASTRA_LOCAL_ADMIN_BOOTSTRAP_PASSWORD: astra_ci_admin_password
+      ASTRA_LOCAL_ADMIN_BOOTSTRAP_ORGANIZATION_ID: org_local
+      ASTRA_LOCAL_ADMIN_BOOTSTRAP_PROJECT_ID: project_local
       ASTRA_LOCAL_WORKER_CONTROL_API_PORT: 54102
       ASTRA_LOCAL_FILE_SWEEPER_METRICS_PORT: 54104
       DATABASE_URL: postgres://astra_ci:astra_ci_ephemeral_password@127.0.0.1:55432/astra_ci

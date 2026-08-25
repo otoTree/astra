@@ -82,6 +82,7 @@ const decodePart = (value: string): Record<string, unknown> => {
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) && value.length <= 100 && value.every((item) => typeof item === "string") ? value : [];
 
+/** Legacy verifier retained for historical fixture compatibility; production Admin API uses local accounts. */
 export class RemoteOidcTokenVerifier implements OidcTokenVerifier {
   private cached: Readonly<{ expiresAt: number; document: JwksDocument }> | undefined;
 
@@ -220,6 +221,23 @@ export type AdminSessionRecord = Readonly<{
 }>;
 
 export interface AdminIdentityStore {
+  findLocalAdminUser?(username: string): Promise<
+    | Readonly<{
+        id: string;
+        username: string;
+        passwordHash: string;
+        displayName: string | null;
+        email: string | null;
+        status: "active" | "disabled";
+        organizationId: string;
+        projectId: string;
+        failedAttempts: number;
+        lockedUntil: Date | string | null;
+      }>
+    | undefined
+  >;
+  recordLocalAdminFailure?(userId: string, now: Date, lockSeconds: number, maxFailures: number): Promise<void>;
+  resetLocalAdminFailures?(userId: string, now: Date): Promise<void>;
   createAdminSession(input: {
     id: string;
     identity: VerifiedOidcIdentity;
@@ -238,7 +256,7 @@ export interface AdminIdentityStore {
 }
 
 export type AdminContext = Readonly<{
-  actorType: "oidc_user";
+  actorType: "admin_user";
   actorId: string;
   sessionId: string;
   organizationId: string;
@@ -276,6 +294,9 @@ export class AdminAuthenticationError extends Error {
       | "invalid_oidc_token"
       | "expired_oidc_token"
       | "oidc_verifier_unavailable"
+      | "invalid_admin_credentials"
+      | "admin_login_locked"
+      | "admin_account_disabled"
       | "admin_membership_denied"
       | "invalid_admin_session"
       | "expired_admin_session"
@@ -334,7 +355,7 @@ export class AdminSessionManager {
 
   constructor(
     private readonly store: AdminIdentityStore,
-    private readonly verifier: OidcTokenVerifier,
+    private readonly verifier: OidcTokenVerifier | undefined,
     private readonly options: Readonly<{
       auditSigningKey: string;
       cookieName: string;
@@ -373,7 +394,7 @@ export class AdminSessionManager {
 
   private context(record: AdminSessionRecord): AdminContext {
     return {
-      actorType: "oidc_user",
+      actorType: "admin_user",
       actorId: record.subject,
       sessionId: record.id,
       organizationId: record.organizationId,
@@ -408,6 +429,7 @@ export class AdminSessionManager {
     };
   }
 
+  /** @deprecated Kept only for replaying historical contract fixtures; Admin API never registers this path. */
   async exchange(
     idToken: string,
     selection: Readonly<{ organizationId: string; projectId: string }>,
@@ -416,6 +438,7 @@ export class AdminSessionManager {
   ): Promise<Readonly<{ context: AdminContext; sessionToken: string; csrfToken: string }>> {
     let identity: VerifiedOidcIdentity;
     try {
+      if (!this.verifier) throw new AdminAuthenticationError("invalid_admin_credentials", 401);
       identity = await this.verifier.verify(idToken);
     } catch (error) {
       const candidate =
@@ -439,7 +462,7 @@ export class AdminSessionManager {
     const sessionId = this.createId("session");
     const successAudit = this.signedAudit({
       ...this.requestAudit(request, requestId),
-      actorType: "oidc_user",
+      actorType: "admin_user",
       actorId: identity.subject,
       organizationId: selection.organizationId,
       projectId: selection.projectId,
@@ -468,7 +491,7 @@ export class AdminSessionManager {
           : "admin_membership_denied";
       await this.audit({
         ...this.requestAudit(request, requestId),
-        actorType: "oidc_user",
+        actorType: "admin_user",
         actorId: identity.subject,
         organizationId: selection.organizationId,
         projectId: selection.projectId,
@@ -481,12 +504,111 @@ export class AdminSessionManager {
     return { context: this.context(record), sessionToken, csrfToken };
   }
 
+  async login(
+    username: string,
+    password: string,
+    request: Request,
+    requestId: string,
+    policy: Readonly<{ maxFailures: number; lockSeconds: number }>,
+  ): Promise<Readonly<{ context: AdminContext; sessionToken: string; csrfToken: string }>> {
+    if (!this.store.findLocalAdminUser || !this.store.recordLocalAdminFailure || !this.store.resetLocalAdminFailures) {
+      throw new AdminAuthenticationError("invalid_admin_credentials", 401);
+    }
+    const user = await this.store.findLocalAdminUser(username);
+    const now = this.now();
+    const locked = user?.lockedUntil && new Date(user.lockedUntil) > now;
+    if (user?.status !== "active" || locked) {
+      await this.audit({
+        ...this.requestAudit(request, requestId),
+        actorType: "anonymous",
+        action: "admin_session.login",
+        outcome: "denied",
+        reasonCode: locked
+          ? "admin_login_locked"
+          : user?.status === "disabled"
+            ? "admin_account_disabled"
+            : "invalid_admin_credentials",
+      });
+      throw new AdminAuthenticationError(
+        locked
+          ? "admin_login_locked"
+          : user?.status === "disabled"
+            ? "admin_account_disabled"
+            : "invalid_admin_credentials",
+        401,
+      );
+    }
+    const verified = await Bun.password.verify(password, user.passwordHash, "argon2id");
+    if (!verified) {
+      await this.store.recordLocalAdminFailure(user.id, now, policy.lockSeconds, policy.maxFailures);
+      await this.audit({
+        ...this.requestAudit(request, requestId),
+        actorType: "anonymous",
+        action: "admin_session.login",
+        outcome: "denied",
+        reasonCode: "invalid_admin_credentials",
+      });
+      throw new AdminAuthenticationError("invalid_admin_credentials", 401);
+    }
+    await this.store.resetLocalAdminFailures(user.id, now);
+    const sessionToken = `astra_as_${randomBytes(32).toString("base64url")}`;
+    const csrfToken = randomBytes(32).toString("base64url");
+    const sessionId = this.createId("session");
+    const identity: VerifiedOidcIdentity = {
+      issuer: "astra-local",
+      subject: user.username,
+      audience: ["astra-admin-local"],
+      groups: [],
+      email: user.email,
+      displayName: user.displayName,
+      expiresAt: new Date(now.getTime() + this.options.sessionTtlSeconds * 1000),
+      tokenHash: sha256(`local-login:${sessionId}`),
+    };
+    const expiresAt = identity.expiresAt;
+    try {
+      const record = await this.store.createAdminSession({
+        id: sessionId,
+        identity,
+        organizationId: user.organizationId,
+        projectId: user.projectId,
+        tokenHash: sha256(sessionToken),
+        csrfHash: sha256(csrfToken),
+        expiresAt,
+        createdAt: now,
+        auditEvent: this.signedAudit({
+          ...this.requestAudit(request, requestId),
+          actorType: "admin_user",
+          actorId: user.username,
+          organizationId: user.organizationId,
+          projectId: user.projectId,
+          action: "admin_session.login",
+          resourceType: "admin_session",
+          resourceId: sessionId,
+          outcome: "success",
+        }),
+      });
+      return { context: this.context(record), sessionToken, csrfToken };
+    } catch {
+      await this.audit({
+        ...this.requestAudit(request, requestId),
+        actorType: "admin_user",
+        actorId: user.username,
+        organizationId: user.organizationId,
+        projectId: user.projectId,
+        action: "admin_session.login",
+        outcome: "denied",
+        reasonCode: "admin_membership_denied",
+      });
+      throw new AdminAuthenticationError("admin_membership_denied", 403);
+    }
+  }
+
   async authenticate(request: Request, requestId: string): Promise<AdminContext> {
     const token = parseCookie(request, this.options.cookieName);
     const record = token ? await this.store.findAdminSession(sha256(token)) : undefined;
     const base = {
       ...this.requestAudit(request, requestId),
-      actorType: record ? ("oidc_user" as const) : ("anonymous" as const),
+      actorType: record ? ("admin_user" as const) : ("anonymous" as const),
       ...(record
         ? { actorId: record.subject, organizationId: record.organizationId, projectId: record.projectId }
         : {}),
@@ -516,7 +638,7 @@ export class AdminSessionManager {
     if (context.permissions.includes(permission)) return;
     await this.audit({
       ...this.requestAudit(request, requestId),
-      actorType: "oidc_user",
+      actorType: "admin_user",
       actorId: context.actorId,
       organizationId: context.organizationId,
       projectId: context.projectId,
@@ -542,7 +664,7 @@ export class AdminSessionManager {
     if (valid) return;
     await this.audit({
       ...this.requestAudit(request, requestId),
-      actorType: "oidc_user",
+      actorType: "admin_user",
       actorId: context.actorId,
       organizationId: context.organizationId,
       projectId: context.projectId,
@@ -556,7 +678,7 @@ export class AdminSessionManager {
   async revoke(context: AdminContext, request: Request, requestId: string): Promise<void> {
     const auditEvent = this.signedAudit({
       ...this.requestAudit(request, requestId),
-      actorType: "oidc_user",
+      actorType: "admin_user",
       actorId: context.actorId,
       organizationId: context.organizationId,
       projectId: context.projectId,
@@ -578,7 +700,7 @@ export class AdminSessionManager {
   ): Promise<void> {
     await this.audit({
       ...this.requestAudit(request, requestId),
-      actorType: "oidc_user",
+      actorType: "admin_user",
       actorId: context.actorId,
       organizationId: context.organizationId,
       projectId: context.projectId,

@@ -959,6 +959,10 @@ function RolloutWorkbench() {
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authError, setAuthError] = useState(false);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [view, setView] = useState<View>("overview");
   const [taskId, setTaskId] = useState<string | null>(null);
   useEffect(
@@ -975,37 +979,45 @@ function App() {
       ],
     [view],
   );
-  const localSignIn = async () => {
-    const tokenResponse = await fetch("/identity/v1/id-tokens", {
+  const localSignIn = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoginBusy(true);
+    setLoginError(null);
+    const response = await fetch("/admin/v1/sessions/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}",
-    });
-    if (!tokenResponse.ok) throw new Error("local_identity_unavailable");
-    const token = (await tokenResponse.json()) as { id_token: string };
-    const exchange = await fetch("/admin/v1/sessions/exchange", {
-      method: "POST",
       credentials: "include",
-      headers: { authorization: `Bearer ${token.id_token}`, "content-type": "application/json" },
-      body: JSON.stringify({ organization_id: "org_local", project_id: "project_local" }),
+      body: JSON.stringify({ username, password }),
     });
-    if (!exchange.ok) throw new Error("local_session_exchange_failed");
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: { code?: string } };
+      setLoginError(payload.error?.code ?? "登录失败");
+      setLoginBusy(false);
+      return;
+    }
     setSession(await api<Session>("/admin/v1/sessions/current"));
     setAuthError(false);
+    setLoginBusy(false);
   };
   if (authError)
     return (
       <main className="auth-state">
         <div className="brand">ASTRA</div>
-        <h1>需要企业身份验证</h1>
-        <a className="primary" href="/oidc/login">
-          登录控制台
-        </a>
-        {import.meta.env.DEV && (
-          <button className="secondary" type="button" onClick={() => void localSignIn()}>
-            本地身份
+        <h1>登录控制台</h1>
+        <form onSubmit={(event) => void localSignIn(event)}>
+          <label>
+            用户名
+            <input required value={username} onChange={(event) => setUsername(event.target.value)} />
+          </label>
+          <label>
+            密码
+            <input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          </label>
+          {loginError && <div className="operation-error">{loginError}</div>}
+          <button className="primary" disabled={loginBusy} type="submit">
+            {loginBusy ? "登录中" : "登录"}
           </button>
-        )}
+        </form>
       </main>
     );
   if (!session)

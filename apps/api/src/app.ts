@@ -12,7 +12,7 @@ import {
 } from "@astra/auth";
 import {
   errorResponse,
-  adminSessionExchangeSchema,
+  adminSessionLoginSchema,
   adminListQuerySchema,
   aliasSwitchSchema,
   budgetPolicyConfigurationSchema,
@@ -79,6 +79,8 @@ export type AdminApiSecurity = Readonly<{
   csrfCookieName: string;
   secureCookies: boolean;
   sessionTtlSeconds: number;
+  loginMaxFailures: number;
+  loginLockSeconds: number;
 }>;
 export type WorkerControlUseCases = Pick<
   WorkerControlService,
@@ -819,20 +821,16 @@ export function createAdminApi(
     return managementService;
   };
 
-  app.post("/admin/v1/sessions/exchange", async (c) => {
-    const parsed = await parseJson(adminSessionExchangeSchema, c.req.raw);
+  app.post("/admin/v1/sessions/login", async (c) => {
+    const parsed = await parseJson(adminSessionLoginSchema, c.req.raw);
     if (parsed.response) return parsed.response;
-    const authorization = c.req.header("authorization");
-    const idToken = authorization?.match(/^Bearer ([^\s]+)$/)?.[1] ?? "";
     try {
-      const issued = await security.sessions.exchange(
-        idToken,
-        {
-          organizationId: parsed.value?.organization_id ?? "",
-          projectId: parsed.value?.project_id ?? "",
-        },
+      const issued = await security.sessions.login(
+        parsed.value?.username ?? "",
+        parsed.value?.password ?? "",
         c.req.raw,
         requestId(c.req.raw),
+        { maxFailures: security.loginMaxFailures, lockSeconds: security.loginLockSeconds },
       );
       c.header(
         "Set-Cookie",

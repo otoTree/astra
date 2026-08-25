@@ -26,7 +26,7 @@ export type ProjectRatePolicy = Readonly<{
 
 export type AuditEventInput = Readonly<{
   id: string;
-  actorType: "anonymous" | "api_key" | "oidc_user" | "service";
+  actorType: "anonymous" | "api_key" | "admin_user" | "oidc_user" | "service";
   actorId?: string;
   apiKeyId?: string;
   organizationId?: string;
@@ -61,6 +61,19 @@ export type StoredApiKeyInput = Readonly<{
 }>;
 
 export type AdminRole = "viewer" | "operator" | "model_releaser" | "security_auditor" | "admin";
+
+export type LocalAdminUser = Readonly<{
+  id: string;
+  username: string;
+  passwordHash: string;
+  displayName: string | null;
+  email: string | null;
+  status: "active" | "disabled";
+  organizationId: string;
+  projectId: string;
+  failedAttempts: number;
+  lockedUntil: Date | string | null;
+}>;
 
 export type VerifiedOidcIdentityInput = Readonly<{
   issuer: string;
@@ -123,6 +136,19 @@ const adminSession = (row: Record<string, unknown>): AdminSessionRecord => ({
   expiresAt: row.expires_at as Date | string,
 });
 
+const localAdminUser = (row: Record<string, unknown>): LocalAdminUser => ({
+  id: String(row.id),
+  username: String(row.username),
+  passwordHash: String(row.password_hash),
+  displayName: row.display_name == null ? null : String(row.display_name),
+  email: row.email == null ? null : String(row.email),
+  status: row.status as LocalAdminUser["status"],
+  organizationId: String(row.organization_id),
+  projectId: String(row.project_id),
+  failedAttempts: Number(row.failed_attempts ?? 0),
+  lockedUntil: (row.locked_until as Date | string | null) ?? null,
+});
+
 export class IdentityRepository {
   constructor(private readonly sql: SqlClient) {}
 
@@ -176,6 +202,55 @@ export class IdentityRepository {
     )`;
   }
 
+  async ensureLocalAdminUser(input: {
+    id: string;
+    username: string;
+    passwordHash: string;
+    displayName: string;
+    organizationId: string;
+    projectId: string;
+    createdAt: Date;
+  }): Promise<void> {
+    await this.sql.begin(async (transaction) => {
+      await transaction`SELECT id FROM organizations WHERE id=${input.organizationId} AND status='active' FOR SHARE`;
+      await transaction`SELECT id FROM projects WHERE id=${input.projectId} AND organization_id=${input.organizationId} AND status='active' FOR SHARE`;
+      await transaction`INSERT INTO admin_users (
+        id, username, password_hash, display_name, status, organization_id, project_id, created_at, updated_at
+      ) VALUES (
+        ${input.id}, ${input.username}, ${input.passwordHash}, ${input.displayName}, 'active',
+        ${input.organizationId}, ${input.projectId}, ${input.createdAt.toISOString()}, ${input.createdAt.toISOString()}
+      ) ON CONFLICT (username) DO NOTHING`;
+      await transaction`INSERT INTO organization_memberships
+        (id, organization_id, subject_type, subject_id, role, created_at)
+        VALUES (${`orgmem_local_${input.username}`}, ${input.organizationId}, 'local_user', ${input.username}, 'admin', now())
+        ON CONFLICT (organization_id, subject_type, subject_id, role) DO NOTHING`;
+      await transaction`INSERT INTO project_memberships
+        (id, organization_id, project_id, subject_type, subject_id, role, created_at)
+        VALUES (${`projmem_local_${input.username}`}, ${input.organizationId}, ${input.projectId}, 'local_user', ${input.username}, 'admin', now())
+        ON CONFLICT (project_id, subject_type, subject_id, role) DO NOTHING`;
+    });
+  }
+
+  async findLocalAdminUser(username: string): Promise<LocalAdminUser | undefined> {
+    const rows = await this.sql`SELECT * FROM admin_users WHERE username=${username} LIMIT 1`;
+    return rows[0] ? localAdminUser(rows[0] as Record<string, unknown>) : undefined;
+  }
+
+  async recordLocalAdminFailure(userId: string, now: Date, lockSeconds: number, maxFailures: number): Promise<void> {
+    await this.sql`UPDATE admin_users
+      SET failed_attempts = failed_attempts + 1,
+          locked_until = CASE WHEN failed_attempts + 1 >= ${maxFailures}
+            THEN ${new Date(now.getTime() + lockSeconds * 1000).toISOString()} ELSE locked_until END,
+          updated_at=${now.toISOString()}
+      WHERE id=${userId} AND status='active'`;
+  }
+
+  async resetLocalAdminFailures(userId: string, now: Date): Promise<void> {
+    await this.sql`UPDATE admin_users
+      SET failed_attempts=0, locked_until=NULL, last_login_at=${now.toISOString()}, updated_at=${now.toISOString()}
+      WHERE id=${userId} AND status='active'`;
+  }
+
   async createApiKey(input: StoredApiKeyInput): Promise<void> {
     await this.sql.begin(async (transaction) => {
       const uniqueProjects = [...new Set(input.projectIds)];
@@ -226,14 +301,14 @@ export class IdentityRepository {
         ARRAY(
           SELECT DISTINCT om.role FROM organization_memberships om
           WHERE om.organization_id=o.id AND (
-            (om.subject_type='oidc_user' AND om.subject_id=${input.identity.subject}) OR
+            (om.subject_type IN ('local_user', 'oidc_user') AND om.subject_id=${input.identity.subject}) OR
             (om.subject_type='oidc_group' AND om.subject_id=ANY(${this.sql.array(groups)}::text[]))
           ) ORDER BY om.role
         ) AS organization_roles,
         ARRAY(
           SELECT DISTINCT pm.role FROM project_memberships pm
           WHERE pm.organization_id=o.id AND pm.project_id=p.id AND (
-            (pm.subject_type='oidc_user' AND pm.subject_id=${input.identity.subject}) OR
+            (pm.subject_type IN ('local_user', 'oidc_user') AND pm.subject_id=${input.identity.subject}) OR
             (pm.subject_type='oidc_group' AND pm.subject_id=ANY(${this.sql.array(groups)}::text[]))
           ) ORDER BY pm.role
         ) AS project_roles
@@ -294,14 +369,14 @@ export class IdentityRepository {
       ARRAY(
         SELECT DISTINCT om.role FROM organization_memberships om
         WHERE om.organization_id=s.organization_id AND (
-          (om.subject_type='oidc_user' AND om.subject_id=s.subject) OR
+          (om.subject_type IN ('local_user', 'oidc_user') AND om.subject_id=s.subject) OR
           (om.subject_type='oidc_group' AND om.subject_id=ANY(s.oidc_groups))
         ) ORDER BY om.role
       ) AS organization_roles,
       ARRAY(
         SELECT DISTINCT pm.role FROM project_memberships pm
         WHERE pm.organization_id=s.organization_id AND pm.project_id=s.project_id AND (
-          (pm.subject_type='oidc_user' AND pm.subject_id=s.subject) OR
+          (pm.subject_type IN ('local_user', 'oidc_user') AND pm.subject_id=s.subject) OR
           (pm.subject_type='oidc_group' AND pm.subject_id=ANY(s.oidc_groups))
         ) ORDER BY pm.role
       ) AS project_roles

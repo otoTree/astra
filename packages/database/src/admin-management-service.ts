@@ -97,7 +97,7 @@ export class AdminManagementService {
     const createdAt = this.now();
     const payload = JSON.stringify({
       id: eventId,
-      actor_type: "oidc_user",
+      actor_type: "admin_user",
       actor_id: actor.actorId,
       api_key_id: null,
       organization_id: actor.organizationId,
@@ -120,7 +120,7 @@ export class AdminManagementService {
       id, actor_type, actor_id, organization_id, project_id, action, resource_type,
       resource_id, outcome, request_id, source_ip, user_agent, trace_id, details, signature, created_at
     ) VALUES (
-      ${eventId}, 'oidc_user', ${actor.actorId}, ${actor.organizationId}, ${actor.projectId}, ${action},
+      ${eventId}, 'admin_user', ${actor.actorId}, ${actor.organizationId}, ${actor.projectId}, ${action},
       ${resourceType}, ${resourceId}, 'success', ${request.requestId}, ${request.sourceIp ?? null},
       ${request.userAgent ?? null}, ${request.traceId ?? null}, ${JSON.stringify({ ...details, reason })},
       ${signature}, ${createdAt.toISOString()}
@@ -895,7 +895,7 @@ export class AdminManagementService {
       await transaction`INSERT INTO rollout_events (
           id, rollout_id, rollout_version, event_type, actor_type, actor_id, reason, details, created_at
         ) VALUES (
-          ${id("rolloutevent")}, ${rolloutId}, 1, 'rollout.created', 'oidc_user', ${actor.actorId},
+          ${id("rolloutevent")}, ${rolloutId}, 1, 'rollout.created', 'admin_user', ${actor.actorId},
           ${input.reason}, ${JSON.stringify({ preview_id: input.preview_id, direction: "forward" })},
           ${createdAt.toISOString()}
         )`;
@@ -973,7 +973,7 @@ export class AdminManagementService {
       await transaction`INSERT INTO rollout_events (
           id, rollout_id, rollout_version, event_type, actor_type, actor_id, reason, details, created_at
         ) VALUES (
-          ${id("rolloutevent")}, ${rolloutId}, ${nextVersion}, ${`rollout.${action}`}, 'oidc_user',
+          ${id("rolloutevent")}, ${rolloutId}, ${nextVersion}, ${`rollout.${action}`}, 'admin_user',
           ${actor.actorId}, ${input.reason}, ${JSON.stringify({ previous_status: current, status: nextStatus })},
           ${timestamp.toISOString()}
         )`;

@@ -4,6 +4,8 @@
 
 启动前先确认端口和项目归属：
 
+`.env.local` 还必须提供 `ASTRA_LOCAL_ADMIN_BOOTSTRAP_USERNAME`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_PASSWORD`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_ORGANIZATION_ID` 和 `ASTRA_LOCAL_ADMIN_BOOTSTRAP_PROJECT_ID`。密码只在管理员不存在时初始化，数据库只保存 Argon2id 哈希。
+
 ```bash
 docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml ps
 docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml up -d
@@ -20,7 +22,7 @@ docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-com
 - Provider Controller health/metrics: `http://127.0.0.1:54111`
 - PostgreSQL: `localhost:55432`
 - Redis Cluster seed: `localhost:56379`
-- Kafka-compatible Redpanda: `localhost:59092`
+- Redis Streams: `redis://localhost:<ASTRA_LOCAL_REDIS_PORT>`
 - MinIO API/Console: `localhost:59000` / `localhost:59001`
 
 未知进程占用端口时不要停止它；应改 `.env.local` 或 Compose 端口映射。只允许对明确属于 `astra-local` 的服务执行：
@@ -35,5 +37,5 @@ docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-com
 bun run test:integration:events
 ```
 
-该命令使用临时 PostgreSQL schema、独立 Redis namespace 和随机 Kafka consumer group，结束后精确清理
+该命令使用临时 PostgreSQL schema、独立 Redis namespace 和 Redis Stream consumer group，结束后精确清理
 临时资源；不会执行 `FLUSHALL`、复用其他项目网络或访问真实 Provider/模型。

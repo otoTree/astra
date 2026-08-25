@@ -16,7 +16,7 @@ kubectl apply --dry-run=client -f /tmp/astra-rendered.yaml
 - 三 API、Scheduler、Provider Controller、Event Relay 使用独立 Deployment/ServiceAccount；PDB 至少保留一个副本。
 - 数据库迁移只通过 pre-install/pre-upgrade Job，应用启动不自动迁移。
 - ExternalSecret 默认关闭；生产启用后 Secret 只来自 SecretStore，不进入 values/Git/日志。
-- 默认拒绝 NetworkPolicy 后，三个 API 按信任域/端口分别放行；控制面指标只允许观测命名空间；DNS、PostgreSQL、Redis、Kafka、S3、OIDC、Provider 和监控端点必须显式配置。Model App 无外网。
+- 默认拒绝 NetworkPolicy 后，三个 API 按信任域/端口分别放行；控制面指标只允许观测命名空间；DNS、PostgreSQL、Redis Streams、S3、Provider 和监控端点必须显式配置。Model App 无外网。
 - CI 生成 SBOM、签名、漏洞报告并在准入层验证 digest、签名和严重漏洞阈值。
 - 生产手动工作流 `.github/workflows/production-supply-chain.yml` 以外部镜像 digest 为输入，输出 `astra-sbom.cdx.json` 和 `astra-trivy.sarif`，并要求部署方提供 Cosign 公钥；工作流不构建、不下载模型权重。
 
@@ -26,7 +26,7 @@ kubectl apply --dry-run=client -f /tmp/astra-rendered.yaml
 | --- | --- |
 | PostgreSQL 主从切换 | Task/Attempt/Lease/审计连续；应用只校验 schema 版本，不执行隐式迁移 |
 | Redis 全量丢失 | 从 PostgreSQL 重建 generation；不重复领取，不丢 queued Task |
-| Kafka 延迟/重复/乱序 | Outbox 保留，Consumer 按事件 ID 去重，状态仍由 PostgreSQL 决定 |
+| Redis Streams 延迟/重复/乱序 | Outbox 保留，Consumer 按事件 ID 去重，状态仍由 PostgreSQL 决定 |
 | Worker 失联 | 先 `unknown`，等待 orphan grace；可恢复则续租，否则按 Retry Policy 回队 |
 | Provider 超时 | operation key reconcile；不因响应丢失创建重复实例 |
 | S3 上传失败 | 文件保持可重试状态；Task 不伪造 completed |

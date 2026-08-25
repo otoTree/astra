@@ -5,9 +5,9 @@
 - 唯一顺序是：现有接口 -> 安全与管理面 -> 事件与最小调度 -> Worker -> 共绩 -> 发布 -> 高级算法 -> 生产验收 -> 真实模型。
 - 每阶段必须独立可部署、可观测、可回滚；未通过退出条件不得启动依赖阶段。
 - 每个合并批次必须包含合同、实现、迁移、正常/失败/幂等/恢复测试、指标和回滚说明。
-- 本地只运行真实 PostgreSQL、Redis Cluster、Kafka/Redpanda、MinIO 与合同参考实现，不调用 GPU、真实模型或共绩。
+- 本地只运行真实 PostgreSQL、Redis Cluster/Streams、MinIO 与合同参考实现，不调用 GPU、真实模型或共绩。
 - 阶段 0-13 不下载任何模型、VAE、LoRA 或文本编码器权重；阶段 14 也必须经显式授权后在隔离环境按哈希拉取，权重不进入开发机默认流程或 Git。
-- PostgreSQL 是状态真源，S3 是二进制真源；Redis、Kafka、供应商状态和 Worker 本地磁盘不得成为永久事实。
+- PostgreSQL 是状态真源，S3 是二进制真源；Redis、Redis Streams、供应商状态和 Worker 本地磁盘不得成为永久事实。
 
 ## 2. 阶段状态
 
@@ -18,7 +18,7 @@
 | 2 | API Key、配额、限流、审计 | 完成 | 1 |
 | 3 | Admin API 与管理台只读能力 | 完成 | 2 |
 | 4 | Model/Release/Pool/Policy 写能力 | 完成 | 3 |
-| 5 | Outbox、Kafka、Redis 重建 | 完成 | 4 |
+| 5 | Outbox、Redis Streams、Redis 重建 | 完成 | 4 |
 | 6 | 最小确定性调度与租约 | 完成 | 5 |
 | 7 | Worker Control 与 Agent 执行环 | 完成 | 6 |
 | 8 | 共绩 Transport 与只读快照 | 完成 | 7 |
@@ -57,7 +57,7 @@
 
 ### 阶段 2：鉴权、配额与审计
 
-交付：Argon2id API Key、轮换/吊销/scope、组织项目角色、OIDC、权威用量账本、Redis 限流、并发/预算 Admission Control、敏感读取审计。
+交付：Argon2id API Key、轮换/吊销/scope、平台管理员账号、组织项目角色、权威用量账本、Redis 限流、并发/预算 Admission Control、敏感读取审计。
 
 退出条件：轮换、吊销、越权、跨项目、限流恢复、重复请求不重复占额和审计不可篡改测试通过。
 
@@ -85,7 +85,7 @@
 
 阶段 2 完成证据（2026-08-21）：
 
-- 新增 RS256 OIDC issuer/audience/时间声明验证与 JWKS 缓存；ID Token 仅能交换一次。
+- 新增平台管理员 Argon2id 密码校验、失败锁定、Session/CSRF 和登录审计；bootstrap 密码仅首次初始化使用。
 - Admin API 使用数据库不透明会话、HttpOnly/SameSite Cookie、双提交 CSRF、即时吊销和独立信任域；生产强制 `Secure` 与 `__Host-` Cookie。
 - 组织和项目成员角色在每次请求时重新读取并取权限交集；敏感 Task 请求要求 `tasks:read_sensitive` 与显式读取用途。
 - 会话创建/吊销和成功审计在同一 PostgreSQL 事务提交；审计失败时状态变更回滚，会话记录禁止删除。
@@ -102,7 +102,7 @@
 - PostgreSQL 新增 Model、Pool、区域、库存、Replica、Worker、Provider Operation 与 Rollout 观察实体；Task、Attempt、Lease 与状态事件保留权威关联和有界索引。
 - Admin API 提供 Task 时间线、Model/Release/Pool、Worker/Replica、区域库存、Provider Operation、Rollout、当日成本和不可变审计查询；列表统一使用绑定项目与资源类型的签名游标。
 - 普通 Task 详情只返回请求哈希和执行时间线，不返回请求密文或解密提示词；敏感请求继续由独立权限接口和读取用途审计保护。
-- Admin Web 已接入真实只读 API，覆盖概览、Task 排障、容量、发布和审计；本地开发通过短期 RS256 参考身份进入正式 Session Exchange，生产构建只保留企业 OIDC 入口。
+- Admin Web 已接入真实只读 API，覆盖概览、Task 排障、容量、发布和审计；本地与生产均使用平台管理员账号进入正式 Session。
 - 验收通过 41 项普通测试、20 项 PostgreSQL、6 项 MinIO/媒体、7 项真实 HTTP；执行计划命中项目游标索引。浏览器验证 1440px 与 390px 视口无页面横向溢出，Task 抽屉可用且控制台无错误。
 
 回滚使用应用回滚并保留 `0007_admin_observability.sql` 新增表。旧应用忽略这些结构；观察记录不得因回滚删除。恢复本批应用后从 PostgreSQL 与 Provider 快照重新填充可重建观察数据。
@@ -129,25 +129,25 @@
 
 ### 阶段 5：事件与重建
 
-交付：PostgreSQL Outbox 到 Kafka、确定性事件去重/重放/死信、Redis 候选和限流索引、从 PostgreSQL 分批重建、backlog/age/retry 指标。
+交付：PostgreSQL Outbox 到 Redis Streams、确定性事件去重/重放/死信、Redis 候选和限流索引、从 PostgreSQL 分批重建、backlog/age/retry 指标。
 
-退出条件：Redis 全量丢失可在线重建；Kafka 停机、重复、乱序不改变数据库最终状态；业务写与 Outbox 同事务。
+退出条件：Redis 全量丢失可在线重建；Redis Streams 停机、重复、乱序不改变数据库最终状态；业务写与 Outbox 同事务。
 
 阶段 5 完成证据（2026-08-21）：
 
-- `event_relay_deliveries` 对 Kafka/Redis 分别维护短租约、重试、目标元数据和死信；Outbox 插入与
+- `event_relay_deliveries` 对 Redis Streams/Redis 分别维护短租约、重试、目标元数据和死信；Outbox 插入与
   Task 状态在同一事务，供应商或消息系统调用不进入事务。
-- Kafka 多实例领取阻止同聚合后继越过前序，message key 固定为 `aggregate_id`；消费者以
+- Redis Streams 多实例领取阻止同聚合后继越过前序，entry 固定包含 `aggregate_id`；消费者以
   `(consumer_name,event_id,payload_hash)` 在 PostgreSQL 事务内去重并拒绝 payload 冲突。
 - Redis 候选只保存可重建数据。重建使用 PostgreSQL 独占短租约、Task 游标、Outbox 高水位增量回放、
   数量校验和 generation 指针切换；运行期指针丢失立即重建，稳定数量不一致触发受迟滞保护的重建。
-- Compose 显式创建五个 Kafka topic，并提供独立 Event Relay、健康检查、backlog/age/retry/dead-letter/
-  delivery duration/rebuild 指标；KafkaJS 在 Bun 下的空队列负 timeout 已通过最小依赖 patch 消除。
+- Compose 使用五个 Redis Stream，并提供独立 Event Relay、健康检查、backlog/age/retry/dead-letter/
+  delivery duration/rebuild 指标。
 - `bun run check` 通过：50 项普通测试通过，strict TypeScript、依赖边界、三份 OpenAPI、迁移 checksum
   和生产构建均成功。事件合同容器 7 项真实集成测试通过，覆盖 PostgreSQL 并发 claim、租约接管、
-  DLQ/replay、Consumer 去重、Redis 幂等与全量丢失重建、Redpanda 同聚合顺序。
-- 实际故障演练中停止 `astra-local` Redpanda 后，Task 仍成功提交为 queued，Redis delivery 已完成而
-  Kafka delivery 保持积压；Redpanda 恢复后同一事件收敛为双 sink delivered，Event Relay readiness
+  DLQ/replay、Consumer 去重、Redis 幂等与全量丢失重建、Redis Streams 同聚合顺序。
+- 实际故障演练中停止 `astra-local` Redis 后，Task 仍成功提交为 queued，Redis index delivery 已完成而
+  Redis Streams delivery 保持积压；Redis 恢复后同一事件收敛为双 sink delivered，Event Relay readiness
   恢复且未产生死信。
 - 运行期完整性演练观测到 Redis 比 PostgreSQL 少 12 条候选：首轮只记录差异，第二轮自动创建新
   generation，并从 366 条恢复到权威的 378 条，`scanned/indexed` 指标均为 378，全程未把 Redis 当作
@@ -156,7 +156,7 @@
 本阶段新增并已应用迁移 `0010_event_delivery_and_rebuild.sql`（checksum
 `7ad4a1b9cb8cf9a900cda5202de826002a33758ef3580f51f88ede7ab3f5bd0b`），后续禁止修改。回滚采用应用
 回滚并保留 delivery、死信、消费收据和 generation 历史；旧应用可继续只读取 `published_at`，但不得
-删除新表或将 Redis/Kafka 提升为状态真源。
+删除新表或将 Redis/Redis Streams 提升为状态真源。
 
 ### 阶段 6：最小确定性调度
 
@@ -179,7 +179,7 @@
 - 独立 Scheduler 支持横向副本、短轮询、批量、reservation TTL 和 Worker 新鲜度配置，并暴露 readiness、
   迭代耗时、候选数、成功预留、CAS 冲突和过期指标。Task 排障接口同步展示 decision 和租约绑定详情。
 - `bun run check` 通过 53 项普通测试；24 项真实 PostgreSQL 测试通过，其中覆盖双 Scheduler 并发收敛、
-  stale Task/Replica CAS、decision 防篡改和 reservation 过期回队；7 项 Redis Cluster/Redpanda 事件测试通过。
+  stale Task/Replica CAS、decision 防篡改和 reservation 过期回队；7 项 Redis Cluster/Streams 事件测试通过。
   本地 Scheduler readiness 为 ready，在 100 个排队 Task、0 个新鲜 Replica 时保持 0 reservation。
 
 本阶段新增并已应用迁移 `0011_deterministic_scheduling.sql`（checksum
@@ -209,7 +209,7 @@
   `completed`、Lease 为 `released`、File 为 `available`；Worker 文件、S3 下载与 Manifest 的 SHA-256 均为
   `bffd27f216a33c487664b443b116c6d090974e7f663897728a23cdc161eb062f`，证明未发生平台转码或字节改写。
 - `bun run check` 通过 65 项常规测试；完整本地门通过 27 项 PostgreSQL、6 项 MinIO/严格媒体、7 项
-  Redis Cluster/Redpanda 和 8 项 HTTP 集成测试。Token 轮换外键顺序和 unknown 恢复门控均由回归测试固定。
+  Redis Cluster/Streams 和 8 项 HTTP 集成测试。Token 轮换外键顺序和 unknown 恢复门控均由回归测试固定。
 
 回滚采用应用回滚并停止 Worker Agent/Worker Control；保留 `0012` 新增的 Session、Receipt、输出与状态历史，
 不删除已上传对象或改写 Attempt。恢复本阶段应用后，仍在宽限期内的 Worker 通过原 Session/Attempt 恢复，
@@ -279,7 +279,7 @@
 阶段 10 完成证据（2026-08-22）：
 
 - Admin Contract、API 和管理台已提供 Rollout 影响预览、创建、详情、暂停、恢复和回滚。写操作统一执行
-  OIDC/RBAC、CSRF、`Idempotency-Key` 与 `If-Match`，同一 Pool 只允许一个活动 Rollout。
+  管理员账号/RBAC、CSRF、`Idempotency-Key` 与 `If-Match`，同一 Pool 只允许一个活动 Rollout。
 - Rollout Controller 通过 PostgreSQL HA 租约逐步执行固定 digest 预热、`rollout_reserved` 新 Replica、Worker
   readiness/capabilities/smoke/output contract 验证、Alias/双接单门切换、旧版本队列排空、Worker drain 和
   Provider 回收。运行中的 Attempt 不被发布流程终止，持续排队时使用受 `maximum_extra_cost_minor` 约束的独立
@@ -364,7 +364,7 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 
 交付：完整 Helm、独立三 API 信任域、Migration Job、PDB/HPA、默认拒绝 NetworkPolicy、External Secret、非 root/SBOM/签名/漏洞门、监控告警、备份恢复和值班手册。
 
-退出条件：PostgreSQL 切换、Redis 丢失、Kafka 延迟、Worker 失联演练通过；10-50 GPU 容量满足 SLO。
+退出条件：PostgreSQL 切换、Redis 丢失、Redis Streams 延迟、Worker 失联演练通过；10-50 GPU 容量满足 SLO。
 
 阶段 13 当前进度（2026-08-22）：
 
@@ -399,4 +399,4 @@ Controller。保留 Rollout/Step/Event、Provider Operation、Replica 和加密�
 - 参考 Model App 已覆盖 PNG 图片产物、视频产物、取消、超时、重复 `execution_key` 和严格输出 manifest；没有加载模型权重。
 - `packages/queue/src/scale-acceptance.test.ts` 使用 300 个混合在线/批量任务和 256 个单槽 Replica 验证确定性排序、单任务单槽位和无重复分配；同一输入反转顺序得到完全相同的计划。该测试验证平台算法，不替代真实 GPU 容量报告。
 
-真实数百 GPU 压测、数据库分片/分区容量、Kafka/Redis/Provider 生产限流和模型质量仍需在隔离环境执行；平台仓库不下载或保存权重。
+真实数百 GPU 压测、数据库分片/分区容量、Redis Streams/Provider 生产限流和模型质量仍需在隔离环境执行；平台仓库不下载或保存权重。

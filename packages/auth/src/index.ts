@@ -49,7 +49,7 @@ export type ApiKeyCandidate = Readonly<{
 
 export type AuditEvent = Readonly<{
   id: string;
-  actorType: "anonymous" | "api_key" | "oidc_user" | "service";
+  actorType: "anonymous" | "api_key" | "admin_user" | "oidc_user" | "service";
   actorId?: string;
   apiKeyId?: string;
   organizationId?: string;

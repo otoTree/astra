@@ -1,5 +1,5 @@
 import { loadAdminApiConfig } from "@astra/config";
-import { AdminSessionManager, RemoteOidcTokenVerifier } from "@astra/auth";
+import { AdminSessionManager } from "@astra/auth";
 import {
   AdminManagementService,
   AdminQueryService,
@@ -15,23 +15,28 @@ import { serve } from "./server.ts";
 const config = loadAdminApiConfig();
 const database = createDatabase(config.DATABASE_URL);
 const identityRepository = new IdentityRepository(database.client);
+const bootstrapPasswordHash = await Bun.password.hash(config.ADMIN_BOOTSTRAP_PASSWORD, {
+  algorithm: "argon2id",
+  memoryCost: 65_536,
+  timeCost: 3,
+});
+await identityRepository.ensureLocalAdminUser({
+  id: "admin_bootstrap",
+  username: config.ADMIN_BOOTSTRAP_USERNAME,
+  passwordHash: bootstrapPasswordHash,
+  displayName: config.ADMIN_BOOTSTRAP_DISPLAY_NAME,
+  organizationId: config.ADMIN_BOOTSTRAP_ORGANIZATION_ID,
+  projectId: config.ADMIN_BOOTSTRAP_PROJECT_ID,
+  createdAt: new Date(),
+});
 const sessionCookieName = config.ASTRA_ENV === "production" ? "__Host-astra_admin_session" : "astra_admin_session";
 const csrfCookieName = config.ASTRA_ENV === "production" ? "__Host-astra_admin_csrf" : "astra_admin_csrf";
-const sessions = new AdminSessionManager(
-  identityRepository,
-  new RemoteOidcTokenVerifier({
-    issuer: config.OIDC_ISSUER,
-    audience: config.OIDC_AUDIENCE,
-    jwksUrl: config.OIDC_JWKS_URL,
-    clockSkewSeconds: config.OIDC_CLOCK_SKEW_SECONDS,
-  }),
-  {
-    auditSigningKey: config.ASTRA_AUDIT_SIGNING_KEY,
-    cookieName: sessionCookieName,
-    csrfCookieName,
-    sessionTtlSeconds: config.ADMIN_SESSION_TTL_SECONDS,
-  },
-);
+const sessions = new AdminSessionManager(identityRepository, undefined, {
+  auditSigningKey: config.ASTRA_AUDIT_SIGNING_KEY,
+  cookieName: sessionCookieName,
+  csrfCookieName,
+  sessionTtlSeconds: config.ADMIN_SESSION_TTL_SECONDS,
+});
 const taskService = new TaskService(database.client, {
   requestEncryptionKey: config.ASTRA_REQUEST_ENCRYPTION_KEY,
   enforceAdmission: false,
@@ -55,6 +60,8 @@ serve(
         csrfCookieName,
         secureCookies: config.ASTRA_ENV === "production",
         sessionTtlSeconds: config.ADMIN_SESSION_TTL_SECONDS,
+        loginMaxFailures: config.ADMIN_LOGIN_MAX_FAILURES,
+        loginLockSeconds: config.ADMIN_LOGIN_LOCK_SECONDS,
       },
       taskService,
       queryService,

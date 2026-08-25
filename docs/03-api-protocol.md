@@ -46,9 +46,9 @@ API Key 绑定组织和默认项目。调用方可以传 `X-Project-Id` 选择�
 | `tasks:cancel` | 取消本项目 Task |
 | `models:read` | 查询项目可用模型 |
 
-管理台人员通过 OIDC 登录，角色至少包含 `viewer`、`operator`、`model_releaser`、`security_auditor` 和 `admin`。查看永久保存的原始请求需要单独的 `tasks:read_sensitive` 权限并写审计日志。
+管理台人员通过平台账号密码登录，角色至少包含 `viewer`、`operator`、`model_releaser`、`security_auditor` 和 `admin`。查看永久保存的原始请求需要单独的 `tasks:read_sensitive` 权限并写审计日志。
 
-管理端 OIDC ID Token 只允许提交到 `POST /admin/v1/sessions/exchange` 一次。服务端验证 RS256 签名、issuer、audience、有效期与成员关系后，建立数据库会话并返回 `HttpOnly`、`SameSite=Strict` 的不透明 Session Cookie；生产 Cookie 使用 `Secure` 与 `__Host-` 前缀。写操作同时校验 `X-CSRF-Token` 与独立 CSRF Cookie。权限取组织角色和当前项目角色所授权限的交集，并在每次请求时重新求值，因此成员撤销即时生效。
+管理员将用户名和密码提交到 `POST /admin/v1/sessions/login`。服务端使用 Argon2id 校验密码和本地成员关系，建立数据库会话并返回 `HttpOnly`、`SameSite=Strict` 的不透明 Session Cookie；生产 Cookie 使用 `Secure` 与 `__Host-` 前缀。写操作同时校验 `X-CSRF-Token` 与独立 CSRF Cookie。权限取组织角色和当前项目角色所授权限的交集，并在每次请求时重新求值，因此成员撤销即时生效。
 
 敏感请求读取使用 `GET /admin/v1/tasks/{task_id}/sensitive-request`，要求 `tasks:read_sensitive` 与 8-500 字符的 `X-Access-Purpose`。响应禁止缓存，读取目的、人员、会话、Task 和结果必须写入不可变审计。
 
@@ -646,7 +646,7 @@ PostgreSQL 在 Task/File 创建事务内执行权威 Admission Control。幂等�
 
 ## 13. 管理 API 摘要
 
-管理 API 位于 `/admin/v1`，使用 OIDC，不与公共 API Key 混用：
+管理 API 位于 `/admin/v1`，使用平台管理员 Session，不与公共 API Key 混用：
 
 - `/models`、`/model-releases`、`/model-aliases`。
 - `/model-pools`、`/scaling-policies`、`/placement-policies`。

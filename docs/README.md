@@ -24,7 +24,7 @@
 
 ## 设计原则
 
-1. **PostgreSQL 是唯一真源**：任务状态、租约、策略、发布记录和审计均以数据库为准。Redis 与 Kafka 都可以重建或重放，不能决定最终业务状态。
+1. **PostgreSQL 是唯一真源**：任务状态、租约、策略、发布记录和审计均以数据库为准。Redis Streams 可以重建或重放，不能决定最终业务状态。
 2. **创建分模态，生命周期统一**：图片和视频有独立请求 Schema，但创建后都转化为相同 Task 状态机。
 3. **控制面与模型隔离**：模型进程只和同实例的 Worker Agent 通信，不直接访问数据库、消息系统或供应商 API。
 4. **供应商可替换**：调度器只依赖 Provider Contract；共绩签名、状态码和资源标识封装在适配器内。
@@ -45,7 +45,7 @@
 | [03-api-protocol.md](./03-api-protocol.md) | 文件、图片、视频、统一任务和管理 API | API 调用方、后端 |
 | [04-task-scheduling-and-autoscaling.md](./04-task-scheduling-and-autoscaling.md) | 公平队列、放置决策、扩缩容公式与伪代码 | 调度研发、SRE |
 | [05-model-worker-contract.md](./05-model-worker-contract.md) | Worker Agent 和任意语言模型应用的 HTTP 合同 | 模型工程、平台研发 |
-| [06-data-and-event-architecture.md](./06-data-and-event-architecture.md) | PostgreSQL、Redis、Kafka、S3 与一致性 | 后端、数据、SRE |
+| [06-data-and-event-architecture.md](./06-data-and-event-architecture.md) | PostgreSQL、Redis Streams、S3 与一致性 | 后端、数据、SRE |
 | [07-deployment-security-observability.md](./07-deployment-security-observability.md) | K8s、Compose、安全、监控、告警与恢复 | SRE、安全、后端 |
 | [08-model-release-and-roadmap.md](./08-model-release-and-roadmap.md) | 模型发布、灰度、回滚、阶段路线与验收 | 模型工程、QA、产品 |
 | [09-development-standards.md](./09-development-standards.md) | AI 代码生成、工程边界、测试、审查和生产质量门 | 全体研发、AI Agent、SRE |
@@ -61,7 +61,7 @@
 | [19-model-team-handoff-without-weights.md](./19-model-team-handoff-without-weights.md) | 无模型权重的 Model App 交接合同、验收清单和人类推理边界 | 模型团队、平台研发、QA |
 | [20-work-fisher-h3-model-app-preparation.md](./20-work-fisher-h3-model-app-preparation.md) | Work-Fisher H3 参考媒体工作流、三档分辨率、远端权重启动和 Model App 准备方案 | 模型工程、平台研发、SRE、QA |
 | [runbooks/model-rollout.md](./runbooks/model-rollout.md) | 固定 digest 模型发布、暂停、排空、回滚和故障处置手册 | SRE、发布人员、值班人员 |
-| [runbooks/disaster-recovery.md](./runbooks/disaster-recovery.md) | PostgreSQL、Redis、Kafka、S3、Provider 和 Worker 灾难恢复顺序 | SRE、值班人员 |
+| [runbooks/disaster-recovery.md](./runbooks/disaster-recovery.md) | PostgreSQL、Redis Streams、S3、Provider 和 Worker 灾难恢复顺序 | SRE、值班人员 |
 | [providers/gongji/README.md](./providers/gongji/README.md) | 共绩算力 67 个 Open API 的本地原始文档、接口索引和 Adapter 说明 | Provider、调度、SRE |
 | [workflows/README.md](./workflows/README.md) | ComfyUI 工作流 JSON 资料及哈希 | 模型工程、平台研发、QA |
 | [third-party/README.md](./third-party/README.md) | ComfyUI 上游源码快照及版本说明 | 模型工程、平台研发 |
@@ -76,6 +76,7 @@
 - [ADR-0006：模型输出字节保真与显式后处理](./adr/0006-model-output-byte-preservation.md)
 - [ADR-0007：独立媒体验证与文件过期协调](./adr/0007-isolated-media-validation-and-expiration.md)
 - [ADR-0008：真实模型运行时由人类模型团队交付](./adr/0008-human-owned-model-runtime-delivery.md)
+- [ADR-0010：平台自管理管理员身份](./adr/0010-platform-managed-admin-identity.md)
 
 ## 核心术语
 

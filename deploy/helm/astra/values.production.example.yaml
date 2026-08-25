@@ -1,5 +1,7 @@
 # Production example. Copy into an external deployment repository and replace
 # every placeholder through the deployment system; do not commit secrets here.
+# The referenced Secret must contain ADMIN_BOOTSTRAP_USERNAME, ADMIN_BOOTSTRAP_PASSWORD,
+# ADMIN_BOOTSTRAP_ORGANIZATION_ID and ADMIN_BOOTSTRAP_PROJECT_ID for the admin-api.
 image:
   repository: registry.example.internal/astra/control-plane
   tag: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -47,7 +49,7 @@ monitoring:
 networkPolicy:
   enabled: true
   # Replace these selectors with the namespace/pod identities of the
-  # production database, Redis, Kafka, observability and egress gateways.
+  # production database, Redis Streams, observability and egress gateways.
   allowedIngressNamespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: astra-gateway
@@ -81,14 +83,6 @@ networkPolicy:
         matchLabels:
           app.kubernetes.io/name: redis
       ports: [{ protocol: TCP, port: 6379 }]
-    - name: kafka
-      namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: astra-data
-      podSelector:
-        matchLabels:
-          app.kubernetes.io/name: redpanda
-      ports: [{ protocol: TCP, port: 9092 }]
     - name: egress-gateway
       namespaceSelector:
         matchLabels:

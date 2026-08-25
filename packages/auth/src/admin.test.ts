@@ -46,6 +46,20 @@ class RecordingAdminStore implements AdminIdentityStore {
   readonly audits: AuditEvent[] = [];
   session: AdminSessionRecord | undefined;
   tokenHash = "";
+  localUser:
+    | {
+        id: string;
+        username: string;
+        passwordHash: string;
+        displayName: string | null;
+        email: string | null;
+        status: "active" | "disabled";
+        organizationId: string;
+        projectId: string;
+        failedAttempts: number;
+        lockedUntil: Date | string | null;
+      }
+    | undefined;
 
   async createAdminSession(input: Parameters<AdminIdentityStore["createAdminSession"]>[0]) {
     if (input.organizationId !== "org_1" || input.projectId !== "project_1") {
@@ -89,6 +103,23 @@ class RecordingAdminStore implements AdminIdentityStore {
   }
   async insertAuditEvent(event: AuditEvent) {
     this.audits.push(event);
+  }
+  async findLocalAdminUser(username: string) {
+    return this.localUser?.username === username ? this.localUser : undefined;
+  }
+  async recordLocalAdminFailure(userId: string, failedAt: Date, lockSeconds: number, maxFailures: number) {
+    if (!this.localUser || this.localUser.id !== userId) return;
+    this.localUser = {
+      ...this.localUser,
+      failedAttempts: this.localUser.failedAttempts + 1,
+      lockedUntil:
+        this.localUser.failedAttempts + 1 >= maxFailures
+          ? new Date(failedAt.getTime() + lockSeconds * 1000)
+          : this.localUser.lockedUntil,
+    };
+  }
+  async resetLocalAdminFailures(userId: string) {
+    if (this.localUser?.id === userId) this.localUser = { ...this.localUser, failedAttempts: 0, lockedUntil: null };
   }
 }
 
@@ -177,5 +208,52 @@ describe("admin RBAC and sessions", () => {
     });
     expect(store.audits.every((event) => event.signature.length === 43)).toBe(true);
     expect(store.audits.map((event) => event.action)).toContain("admin_session.revoke");
+  });
+
+  test("logs in with the platform-managed password and locks repeated failures", async () => {
+    const store = new RecordingAdminStore();
+    store.localUser = {
+      id: "admin_1",
+      username: "admin",
+      passwordHash: await Bun.password.hash("correct-password", {
+        algorithm: "argon2id",
+        memoryCost: 16_384,
+        timeCost: 1,
+      }),
+      displayName: "Administrator",
+      email: null,
+      status: "active",
+      organizationId: "org_1",
+      projectId: "project_1",
+      failedAttempts: 0,
+      lockedUntil: null,
+    };
+    const manager = new AdminSessionManager(store, undefined, {
+      auditSigningKey: "a".repeat(32),
+      cookieName: "astra_admin_session",
+      csrfCookieName: "astra_admin_csrf",
+      sessionTtlSeconds: 3600,
+      now: () => now,
+      createId: (prefix) => `${prefix}_local`,
+    });
+    await expect(
+      manager.login("admin", "wrong", new Request("https://admin.test/login"), "req_bad", {
+        maxFailures: 2,
+        lockSeconds: 900,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_admin_credentials" });
+    await expect(
+      manager.login("admin", "wrong", new Request("https://admin.test/login"), "req_locked", {
+        maxFailures: 2,
+        lockSeconds: 900,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_admin_credentials" });
+    await expect(
+      manager.login("admin", "wrong", new Request("https://admin.test/login"), "req_blocked", {
+        maxFailures: 2,
+        lockSeconds: 900,
+      }),
+    ).rejects.toMatchObject({ code: "admin_login_locked" });
+    expect(store.localUser.lockedUntil).toBeTruthy();
   });
 });

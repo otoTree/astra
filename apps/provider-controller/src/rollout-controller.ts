@@ -508,7 +508,7 @@ export class RolloutController {
     sql: postgres.TransactionSql,
     row: RolloutRow,
     eventType: string,
-    actorType: "oidc_user" | "controller" | "worker",
+    actorType: "admin_user" | "oidc_user" | "controller" | "worker",
     actorId: string,
     reason: string,
     details: Record<string, unknown>,

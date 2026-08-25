@@ -14,10 +14,10 @@
 
 - 本地开发默认禁止真实模型推理和真实 GPU 调用。Compose 中的 Model App 合同参考实现必须遵循同一 Worker Contract，返回可重复、可校验的图片/视频测试产物。
 - 本地不得调用共绩或其他真实 Provider API。Provider Adapter 合同参考实现必须覆盖创建、预热、扩缩容、排空、回收、超时和错误响应，使接口和状态机可以端到端验证。
-- 本地 Compose 使用真实的 PostgreSQL、Redis Cluster、Kafka 和 S3 兼容服务（MinIO），不能用进程内对象替代这些一致性边界。
+- 本地 Compose 使用真实的 PostgreSQL、Redis Cluster/Streams 和 S3 兼容服务（MinIO），不能用进程内对象替代这些一致性边界。
 - Compose 必须使用显式 project name（推荐 `astra-local`）、专用网络、前缀为 `astra-local-` 的 volume 和本地端口配置，禁止连接或复用其他项目的数据库、网络和 volume。
 - 启动服务前检查端口和 Compose project 所属关系。端口属于本项目时可以使用带明确 `-p astra-local` 的 `docker compose down` 后重启；端口属于未知或其他项目时不得停止进程或执行全局 prune，改用其他端口并记录配置。
-- 本地凭证只来自仓库外 `.env.local`；不得使用生产 API Key、OIDC 密钥、Provider 密钥或真实用户素材。
+- 本地凭证只来自仓库外 `.env.local`；不得使用生产 API Key、管理员生产密码、Provider 密钥或真实用户素材。
 - 本地接口正确性通过 Schema/OpenAPI、Worker Agent、Provider Adapter 合同参考实现、Model App 合同参考实现和最小端到端 Task 流程验证；“没有真实模型”不是跳过合同测试的理由。
 - 生产代码、组件、目录、脚本和开发文档必须采用正式领域名称；测试专用实现按具体技术特征或用途命名，例如 `InMemoryProviderAdapter`、`ManualClock` 和 `reference-model-app`。
 - 真实 H3 或其他 GPU 模型只能作为显式、隔离、非默认的可选 profile，不能成为 `bun run dev` 或普通 Compose 启动的隐式依赖。
@@ -30,11 +30,11 @@
 - `apps/api` 在代码层共享用例，但生产生成三个独立 Deployment：`public-api`、`admin-api`、`worker-control-api`。不得用路由参数切换信任域。
 - `scheduler` 只生成不可变 `scheduling_decision` 和 `capacity_plan`，不直接调用 Provider。
 - `provider-controller` 是唯一供应商 API 出口；共绩签名、DTO、重试和错误码只能位于 Provider Adapter。
-- `event-relay` 只从 PostgreSQL Outbox 发布 Kafka/Redis 事件，不参与任务领取，也不是真源。
-- PostgreSQL 是 Task、Attempt、Lease、策略、发布和审计的唯一真源。Redis 只保存可重建索引、限流和短缓存；Kafka 只做事件分发；S3 是二进制唯一存储。
-- Model App 不得连接 PostgreSQL、Redis、Kafka、Provider 或管理 API。任意语言模型通过 localhost Worker Contract 接入。
+- `event-relay` 只从 PostgreSQL Outbox 发布 Redis Streams/Redis 事件，不参与任务领取，也不是真源。
+- PostgreSQL 是 Task、Attempt、Lease、策略、发布和审计的唯一真源。Redis 只保存可重建索引、Streams 事件、限流和短缓存；S3 是二进制唯一存储。
+- Model App 不得连接 PostgreSQL、Redis、Redis Streams、Provider 或管理 API。任意语言模型通过 localhost Worker Contract 接入。
 - `packages/provider-core` 不得依赖共绩 DTO；`packages/queue` 不得拥有 Task 状态转换；数据库包不得依赖应用层。
-- 应用之间使用数据库期望状态、Kafka 事件或已版本化 HTTP Contract 协作，不直接导入其他应用源码。
+- 应用之间使用数据库期望状态、Redis Streams 事件或已版本化 HTTP Contract 协作，不直接导入其他应用源码。
 
 ## 协议和 API
 
@@ -56,7 +56,7 @@
 - 不在应用启动时自动执行生产数据库迁移。迁移使用独立 Job，应用只校验 schema 版本。
 - 破坏性迁移采用 expand -> backfill -> contract；大表迁移说明锁、批量大小、回滚和监控。
 - 原始提示词和敏感请求字段使用字段级信封加密，读取需要 RBAC 和审计。
-- 不把 Redis、Kafka、Provider 状态或本地磁盘当作永久事实；必须能从 PostgreSQL/S3 重建。
+- 不把 Redis、Redis Streams、Provider 状态或本地磁盘当作永久事实；必须能从 PostgreSQL/S3 重建。
 
 ## 调度和容量
 

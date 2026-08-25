@@ -314,4 +314,4 @@ Batch Job 不做运行中换镜像：已启动 Job 使用旧 digest 完成，新
 - Worker：任意语言合同、失联、取消、输出上传和旧租约保护通过。
 - H3：批准能力矩阵、严格解码、显存安全和人工质量通过。
 - 运维：镜像一键导入、逐机滚动、失败暂停、反向滚动、数据库恢复、Redis 重建和单区故障演练通过。
-- 安全：API Key/OIDC/RBAC、NetworkPolicy、Secret、镜像和敏感读取审计通过。
+- 安全：API Key/管理员账号/RBAC、NetworkPolicy、Secret、镜像和敏感读取审计通过。

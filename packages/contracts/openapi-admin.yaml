@@ -2,22 +2,21 @@ openapi: 3.1.0
 info:
   title: Astra Admin API
   version: 1.0.0
-  description: Versioned operations API for Astra administrators. OIDC authentication and RBAC are required.
+  description: Versioned operations API for Astra administrators. Platform-managed username/password sessions, CSRF and RBAC are required.
 servers:
   - url: https://astra-admin.internal.example/admin/v1
 security:
   - adminSession: []
 paths:
-  /sessions/exchange:
+  /sessions/login:
     post:
-      operationId: exchangeAdminSession
-      security:
-        - oidc: []
+      operationId: loginAdminSession
+      security: []
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AdminSessionExchange' }
+            schema: { $ref: '#/components/schemas/AdminSessionLogin' }
       responses:
         '201':
           description: Server-side admin session created
@@ -436,9 +435,6 @@ paths:
         default: { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
-    oidc:
-      type: openIdConnect
-      openIdConnectUrl: https://identity.internal.example/.well-known/openid-configuration
     adminSession:
       type: apiKey
       in: cookie
@@ -514,13 +510,13 @@ components:
       required: true
       schema: { type: string, minLength: 8, maxLength: 500 }
   schemas:
-    AdminSessionExchange:
+    AdminSessionLogin:
       type: object
       additionalProperties: false
-      required: [organization_id, project_id]
+      required: [username, password]
       properties:
-        organization_id: { type: string, minLength: 1, maxLength: 128 }
-        project_id: { type: string, minLength: 1, maxLength: 128 }
+        username: { type: string, minLength: 3, maxLength: 128 }
+        password: { type: string, minLength: 1, maxLength: 1024, writeOnly: true }
     AdminSession:
       type: object
       additionalProperties: false

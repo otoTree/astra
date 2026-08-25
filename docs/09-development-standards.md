@@ -24,7 +24,7 @@ Provider Adapter 参考实现 + Worker Agent + Model App 参考实现
 
 - Model App 合同参考实现遵循与 GPU Model App 相同的 localhost Worker Contract，支持能力发现、接受任务、进度、取消、超时、输出 manifest、幂等执行和可控失败；输出使用确定性小型图片/视频样本，接口字段和媒体校验仍走生产路径。
 - Provider Adapter 合同参考实现遵循共绩 Adapter 的通用 Provider Contract，覆盖预热、创建 Replica、扩容、缩容、drain、回收、库存耗尽、限流、超时和回滚；本地不发送任何真实供应商请求。
-- PostgreSQL、Redis Cluster、Kafka 和 MinIO 必须通过 Docker Compose 启动，不能用应用内内存对象代替数据库、队列或对象存储一致性边界。
+- PostgreSQL、Redis Cluster/Streams 和 MinIO 必须通过 Docker Compose 启动，不能用应用内内存对象代替数据库、队列或对象存储一致性边界。
 - Compose 使用显式项目名（推荐 `astra-local`）、隔离网络、`astra-local-` volume 前缀和专用端口。所有连接串、端口和本地运行配置来自仓库外 `.env.local`，不得引用其他项目或生产配置。
 - 启动前先检查 `docker compose -p astra-local ps` 和端口占用。只有确认端口属于本项目时，才允许 `docker compose -p astra-local down` 后重新启动；未知占用改端口，不执行全局 `docker compose down`、`docker system prune` 或 `docker volume prune`。
 - 允许 AI 在本地启动开发服务、Compose 依赖和测试进程，但必须使用可识别的 project name，并在交付说明中报告启动、停止和端口变更。
@@ -41,7 +41,7 @@ apps/
   api/                    # public/admin/worker-control 三种运行模式
   scheduler/              # 调度和容量决策
   provider-controller/    # 供应商 reconcile、预热、回收和发布
-  event-relay/            # Outbox 到 Kafka/Redis
+  event-relay/            # Outbox 到 Redis Streams/Redis
   worker-agent/           # 标准 Bun Agent
   admin-web/              # React/Vite 管理台
 packages/
@@ -64,16 +64,16 @@ testkit -> all test targets
 - `apps/api` 可以共享用例，但 `public-api`、`admin-api`、`worker-control-api` 是三个独立生产 Deployment。它们分别拥有认证、ServiceAccount、NetworkPolicy、限流和 HPA。
 - `scheduler` 不调用供应商 API；它写入 PostgreSQL 期望状态和 Capacity Plan。
 - `provider-controller` 是唯一供应商出口；共绩协议只能在 `provider-gongji` 内部出现。
-- `event-relay` 不参与任务领取，Kafka 不是真源。
+- `event-relay` 不参与任务领取，Redis Streams 不是真源。
 - `database` 不依赖应用层；事务函数接受明确 command 对象，返回领域结果。
-- 应用之间不得源码互相导入业务实现，只能通过共享包、数据库期望状态、Kafka 事件或版本化 HTTP 合同协作。
+- 应用之间不得源码互相导入业务实现，只能通过共享包、数据库期望状态、Redis Streams 事件或版本化 HTTP 合同协作。
 
 ## 4. TypeScript、Bun 和实现风格
 
 - 使用 Bun workspace、TypeScript strict、Hono、Drizzle、React/Vite；新增运行时、框架或基础设施必须先有 ADR。
 - 禁止 `any`、隐式 `unknown` 转型、非空断言逃避校验和空 catch。第三方输入先解析为未知值，再通过 Schema 转为领域类型。
 - 领域函数优先纯函数和不可变输入；时间、随机数、UUID、Provider Client 和数据库连接通过依赖注入提供，便于仿真和测试。
-- 业务错误使用带 code、category、retryable、safe_message 和 metadata 的结构化错误；HTTP、Kafka 和日志边界分别映射，不能透传异常文本。
+- 业务错误使用带 code、category、retryable、safe_message 和 metadata 的结构化错误；HTTP、Redis Streams 和日志边界分别映射，不能透传异常文本。
 - 每个包只从公开入口导入；禁止跨包深层路径和循环依赖。
 - 公共函数明确输入、输出、错误和幂等语义；复杂算法必须有短注释解释不变量和边界，不写叙述性废话。
 - 配置分为静态环境配置和数据库版本化策略。生产业务默认值不得藏在代码、环境变量或 Helm 模板中。
@@ -104,7 +104,7 @@ testkit -> all test targets
 - 所有异步消费者按至少一次交付实现：事件 ID、操作 ID、消费游标和业务幂等键必须可追踪。
 - Schema 迁移采用 expand -> backfill -> contract；不得在应用启动时隐式执行生产迁移。
 - 大表操作说明索引、锁等待、批量大小、回滚方案和监控；查询必须有执行计划意识，禁止无界全表扫描。
-- Redis 数据必须可由 PostgreSQL 重建；Kafka 延迟或重复不能改变业务最终状态；S3 只保存二进制和可校验 manifest。
+- Redis 数据必须可由 PostgreSQL 重建；Redis Streams 延迟或重复不能改变业务最终状态；S3 只保存二进制和可校验 manifest。
 
 ## 7. 调度器和扩缩容实现
 
@@ -137,7 +137,7 @@ testkit -> all test targets
 ## 10. 安全、日志和管理台
 
 - 默认拒绝 NetworkPolicy；Model App 无外网，Worker 只访问许可的控制面、S3、DNS、时间和日志端点。
-- API Key、Worker Token、OIDC 凭证、Provider 密钥和预签名 URL 只能来自 Secret 管理系统，禁止进入源码、测试夹具和日志。
+- API Key、Worker Token、管理员 bootstrap 密码、Provider 密钥和预签名 URL 只能来自 Secret 管理系统，禁止进入源码、测试夹具和日志。
 - 日志结构化并带 `request_id`、`task_id`、`attempt_id`、`release_id`、`pool_id`、`provider_operation_id`；敏感提示词和素材内容按字段级加密与审计读取。
 - 新管理操作必须有 RBAC、审计、影响预览、版本号和回滚路径；删除、禁用、回收、取消属于高风险操作。
 - 指标至少包含请求、队列、租约、Worker、GPU、Provider、成本、发布和数据完整性；告警包含影响范围和处理建议。
@@ -147,7 +147,7 @@ testkit -> all test targets
 ### 11.1 必须覆盖的测试
 
 - 单元：状态机、Schema、错误映射、游标、幂等键、CAS 命令和成本公式。
-- 集成：PostgreSQL 事务/迁移、Redis 重建、Kafka Outbox、S3 上传确认和权限策略。
+- 集成：PostgreSQL 事务/迁移、Redis 重建、Redis Streams Outbox、S3 上传确认和权限策略。
 - 合同：API、Worker Agent/Model App、Provider Adapter；使用录制响应和无真实密钥夹具。
 - 仿真：长短视频混合、在线/批量公平、突发、无库存、跨区涨价、预算封顶、冷启动、缩容迟滞和重复消息。
 - 故障：Worker 失联、租约过期、旧结果、Provider 超时、预热失败、镜像 digest 不符、回滚、数据库切换和上传失败。
@@ -175,7 +175,7 @@ bun run test:e2e:smoke
 | 变更类型 | 额外要求 |
 | --- | --- |
 | 文案、注释、测试 | 常规检查；不得改变合同或日志敏感性 |
-| API/Worker/Kafka 合同 | Schema 兼容检查、迁移说明、旧版本合同测试 |
+| API/Worker/Redis Streams 合同 | Schema 兼容检查、迁移说明、旧版本合同测试 |
 | 数据库/状态机/租约 | 事务测试、故障测试、回滚方案、运维告警 |
 | 调度/扩缩容/成本 | 确定性仿真、边界参数、容量和成本影响预估 |
 | Provider/发布/回滚 | 录制合同、熔断测试、预热/排空/回收演练 |

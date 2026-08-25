@@ -2,10 +2,10 @@ import { z } from "zod";
 
 export const adminRoleSchema = z.enum(["viewer", "operator", "model_releaser", "security_auditor", "admin"]);
 
-export const adminSessionExchangeSchema = z
+export const adminSessionLoginSchema = z
   .object({
-    organization_id: z.string().min(1).max(128),
-    project_id: z.string().min(1).max(128),
+    username: z.string().min(3).max(128),
+    password: z.string().min(1).max(1024),
   })
   .strict();
 
