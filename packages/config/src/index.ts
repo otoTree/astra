@@ -29,10 +29,13 @@ export const adminApiConfigSchema = environmentSchema.extend({
   DATABASE_URL: requiredUrl,
   ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
   ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
-  OIDC_ISSUER: requiredUrl,
-  OIDC_AUDIENCE: z.string().min(1).max(256),
-  OIDC_JWKS_URL: requiredUrl,
-  OIDC_CLOCK_SKEW_SECONDS: z.coerce.number().int().min(0).max(300).default(60),
+  ADMIN_BOOTSTRAP_USERNAME: z.string().min(3).max(128),
+  ADMIN_BOOTSTRAP_PASSWORD: z.string().min(16).max(1024),
+  ADMIN_BOOTSTRAP_ORGANIZATION_ID: z.string().min(1).max(128),
+  ADMIN_BOOTSTRAP_PROJECT_ID: z.string().min(1).max(128),
+  ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().min(1).max(500).default("Administrator"),
+  ADMIN_LOGIN_MAX_FAILURES: z.coerce.number().int().min(3).max(20).default(5),
+  ADMIN_LOGIN_LOCK_SECONDS: z.coerce.number().int().min(60).max(86400).default(900),
   ADMIN_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(28800),
   OCI_REGISTRY_ALLOW_PLAIN_HTTP: z
     .enum(["true", "false"])
@@ -79,8 +82,10 @@ export const providerControllerConfigSchema = environmentSchema
     DATABASE_URL: requiredUrl,
     PROVIDER_DRIVER: z.enum(["reference", "gongji"]),
     GONGJI_ENDPOINT: requiredUrl.optional(),
+    /** Deprecated local bootstrap input. Production reads the encrypted DB credential. */
     GONGJI_TOKEN: z.string().min(1).optional(),
     GONGJI_PRIVATE_KEY_PEM: z.string().min(64).optional(),
+    PROVIDER_CREDENTIAL_ENCRYPTION_KEY: z.string().min(32).optional(),
     PROVIDER_SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
     PROVIDER_SNAPSHOT_STALE_SECONDS: z.coerce.number().int().min(30).max(86400).default(300),
     PROVIDER_REQUEST_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(120).default(15),
@@ -100,7 +105,7 @@ export const providerControllerConfigSchema = environmentSchema
   })
   .superRefine((config, context) => {
     if (config.PROVIDER_DRIVER === "gongji") {
-      for (const name of ["GONGJI_ENDPOINT", "GONGJI_TOKEN", "GONGJI_PRIVATE_KEY_PEM"] as const) {
+      for (const name of ["GONGJI_ENDPOINT"] as const) {
         if (!config[name]) {
           context.addIssue({
             code: z.ZodIssueCode.custom,
@@ -108,6 +113,13 @@ export const providerControllerConfigSchema = environmentSchema
             message: `${name} is required when PROVIDER_DRIVER=gongji`,
           });
         }
+      }
+      if (!config.PROVIDER_CREDENTIAL_ENCRYPTION_KEY) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["PROVIDER_CREDENTIAL_ENCRYPTION_KEY"],
+          message: "PROVIDER_CREDENTIAL_ENCRYPTION_KEY is required when PROVIDER_DRIVER=gongji",
+        });
       }
       if (
         config.ASTRA_ENV === "production" &&
@@ -134,13 +146,13 @@ export const eventRelayConfigSchema = environmentSchema.extend({
   EVENT_RELAY_METRICS_PORT: port(4112),
   DATABASE_URL: requiredUrl,
   REDIS_URL: requiredUrl,
-  KAFKA_BROKERS: z.string().min(1),
-  KAFKA_CLIENT_ID: z.string().min(1).max(128).default("astra-event-relay"),
-  KAFKA_TASK_TOPIC: z.string().min(1).default("astra.task-lifecycle.v1"),
-  KAFKA_CAPACITY_TOPIC: z.string().min(1).default("astra.capacity.v1"),
-  KAFKA_USAGE_TOPIC: z.string().min(1).default("astra.usage.v1"),
-  KAFKA_AUDIT_TOPIC: z.string().min(1).default("astra.audit.v1"),
-  KAFKA_CONTROL_TOPIC: z.string().min(1).default("astra.control.v1"),
+  REDIS_EVENT_TASK_STREAM: z.string().min(1).default("astra:{events}:task:v1"),
+  REDIS_EVENT_CAPACITY_STREAM: z.string().min(1).default("astra:{events}:capacity:v1"),
+  REDIS_EVENT_USAGE_STREAM: z.string().min(1).default("astra:{events}:usage:v1"),
+  REDIS_EVENT_AUDIT_STREAM: z.string().min(1).default("astra:{events}:audit:v1"),
+  REDIS_EVENT_CONTROL_STREAM: z.string().min(1).default("astra:{events}:control:v1"),
+  REDIS_EVENT_STREAM_MAXLEN: z.coerce.number().int().min(1000).max(10_000_000).default(100_000),
+  REDIS_EVENT_STREAM_RETENTION_SECONDS: z.coerce.number().int().min(3600).max(2_592_000).default(604_800),
   EVENT_RELAY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
   EVENT_RELAY_LEASE_SECONDS: z.coerce.number().int().min(5).max(300).default(30),
   EVENT_RELAY_MAXIMUM_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(12),

@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | PostgreSQL | Task、Attempt、Lease、模型、策略、容量期望、幂等、审计、Outbox | 大文件、实时 GPU 时序指标 |
 | Redis Cluster | 可重建队列排序、候选索引、短期限流与缓存 | 最终 Task 状态、永久租约、审计 |
-| Kafka | 领域事件分发、异步分析、成本和审计订阅 | 执行队列、同步事务真源 |
+| Redis Streams | 领域事件分发、异步分析、成本和审计订阅 | 执行队列、同步事务真源 |
 | S3 兼容存储 | 输入与输出二进制的 24 小时权威存储 | 永久任务记录、任务状态 |
 | 指标/日志后端 | 时序指标、结构化日志与 Trace | 业务状态判断 |
 
@@ -144,18 +144,18 @@ COMMIT
 
 ### 3.2 Outbox Relay
 
-每个 Outbox 事件在数据库触发器中建立 `kafka` 和 `redis` 两条独立 delivery。每条 delivery 拥有
+每个 Outbox 事件在数据库触发器中建立 `redis_streams` 和 `redis` 两条独立 delivery。每条 delivery 拥有
 `pending -> leased -> retry_wait -> delivered/dead_letter` 状态、短租约、尝试次数、下一次重试时间和
-目标元数据；任一 sink 故障都不会伪造另一 sink 已完成。`outbox_events.published_at` 只保留为 Kafka
+目标元数据；任一 sink 故障都不会伪造另一 sink 已完成。`outbox_events.published_at` 只保留为历史
 兼容观察字段，不能表示全部 sink 已完成。
 
-Relay 使用 `FOR UPDATE SKIP LOCKED` 批量领取。Kafka 领取 SQL 会阻止同一 `aggregate_id` 的后继事件
-越过未 delivered 的前序事件，Kafka message key 同样使用 `aggregate_id`，因此多 Relay 实例仍保持
-单聚合顺序。Redis sink 不相信事件 payload 中的状态，而是重新读取 PostgreSQL Task 当前版本后幂等
+Relay 使用 `FOR UPDATE SKIP LOCKED` 批量领取。Redis Streams 领取 SQL 会阻止同一 `aggregate_id` 的后继事件
+越过未 delivered 的前序事件，Stream entry 保留 `aggregate_id`，因此多 Relay 实例仍保持
+单聚合顺序。Redis index sink 不相信事件 payload 中的状态，而是重新读取 PostgreSQL Task 当前版本后幂等
 收敛候选索引。
 
 ```text
-for sink in [kafka, redis]:
+for sink in [redis_streams, redis]:
   rows = claim due delivery rows with short lease
   for row in rows:
     publish or converge sink
@@ -164,12 +164,12 @@ for sink in [kafka, redis]:
     on deterministic failure or attempts exhausted: leased -> dead_letter
 ```
 
-数据库提交后 Relay 崩溃可能重复发送，消费者必须在业务事务内写
+数据库提交后 Relay 崩溃可能重复发送，Redis Streams 消费者必须在业务事务内写
 `event_consumer_receipts(consumer_name,event_id,payload_hash)`；相同 ID、相同 payload 返回 duplicate，
 相同 ID、不同 payload 进入冲突告警。死信可显式 replay，replay 只重置对应 sink 的 delivery。禁止先标
-发布再发 Kafka，也禁止 Kafka/Redis 故障回滚已提交业务事务。
+发布再发 Redis Streams，也禁止 Redis/Streams 故障回滚已提交业务事务。
 
-## 4. Redis Cluster
+## 4. Redis Cluster 与 Streams
 
 ### 4.1 使用范围
 
@@ -178,6 +178,9 @@ for sink in [kafka, redis]:
 - API Key/项目滑动窗口限流。
 - 短期模型、能力和策略缓存。
 - Scheduler leader hint；最终所有权仍由 PostgreSQL 锁决定。
+- Redis Streams 事件流：`astra:{events}:task:v1`、`capacity:v1`、`usage:v1`、`audit:v1`、`control:v1`。
+  Event Relay 通过 `XADD` 写入并设置最大长度和时间保留；消费者使用 Consumer Group、Pending Entries
+  与 ACK，消费幂等仍由 `event_consumer_receipts` 保证。Redis 丢失后由 PostgreSQL Outbox 重放。
 
 Redis 不保存唯一副本的请求、状态、Lease Token 或审计。
 
@@ -214,7 +217,7 @@ active generation 指针；指针丢失立即重建，候选数量在无 Redis d
 - 大 key 告警：单项目队列超过阈值时分桶，但公平队首索引保持稳定。
 - 本地 Compose 使用真实 Cluster 模式验证 MOVED/ASK 和节点故障。
 
-## 5. Kafka 事件
+## 5. Redis Streams 事件
 
 ### 5.1 Envelope
 
@@ -237,24 +240,24 @@ active generation 指针；指针丢失立即重建，候选数量在无 Redis d
 
 事件不包含完整 prompt、预签名 URL、API Key 或供应商密钥。需要敏感内容的授权系统通过管理 API 按审计流程读取。
 
-### 5.2 Topic
+### 5.2 Stream
 
-| Topic | Key | 事件 |
+| Stream | Key 字段 | 事件 |
 | --- | --- | --- |
-| `astra.task-lifecycle.v1` | `task_id` | queued、started、completed、failed、canceled、expired |
-| `astra.capacity.v1` | `model_pool_id` | plan、replica、provider operation、circuit breaker |
-| `astra.usage.v1` | `project_id` | GPU 秒、估算和实际费用、存储用量 |
-| `astra.audit.v1` | `organization_id` | API Key 与人员高风险操作 |
-| `astra.control.v1` | 控制资源 ID | approved、rollout、rollback、disabled、rebuild |
+| `astra:{events}:task:v1` | `aggregate_id` | queued、started、completed、failed、canceled、expired |
+| `astra:{events}:capacity:v1` | `aggregate_id` | plan、replica、provider operation、circuit breaker |
+| `astra:{events}:usage:v1` | `aggregate_id` | GPU 秒、估算和实际费用、存储用量 |
+| `astra:{events}:audit:v1` | `aggregate_id` | API Key 与人员高风险操作 |
+| `astra:{events}:control:v1` | `aggregate_id` | approved、rollout、rollback、disabled、rebuild |
 
-分区数按消费者吞吐设置，业务顺序只保证同 key。Topic 保留期不替代 PostgreSQL 永久记录。
+Stream 通过 Consumer Group 扩展消费者，业务顺序只保证同 aggregate。长度和时间保留不替代 PostgreSQL 永久记录。
 
 ### 5.3 消费语义
 
 - 至少一次交付。
 - 消费者保存 `event_id` 去重，或使用幂等 upsert。
-- `aggregate_version` 小于等于已处理版本时可以跳过；出现版本间隙时从 API/数据库投影恢复，不能假设 Kafka 严格全局有序。
-- 死信 Topic 只用于隔离持续失败事件，原事件仍可从 Outbox/源表重放。
+- `aggregate_version` 小于等于已处理版本时可以跳过；出现版本间隙时从 API/数据库投影恢复，不能假设 Streams 全局有序。
+- Pending Entries 和应用层死信只用于隔离持续失败事件，原事件仍可从 Outbox/源表重放。
 
 ## 6. S3 对象存储
 
@@ -348,7 +351,7 @@ File 状态仍为 pending/available，Attempt 未完成。Agent 使用相同 Att
 
 ### 8.5 Task completed 事件重复
 
-Kafka 消费者按 `event_id` 去重；Task 聚合版本保证投影不倒退。
+Redis Streams 消费者按 `event_id` 去重；Task 聚合版本保证投影不倒退。
 
 ### 8.6 供应商创建成功但响应超时
 
@@ -358,7 +361,7 @@ Provider Operation 预先保存幂等 operation key。Controller 先按标签/�
 
 - PostgreSQL：持续 WAL 归档和每日全量备份，目标 RPO 5 分钟、RTO 30 分钟；季度做恢复演练。
 - Redis：不承担业务 RPO；可启用 AOF 加速恢复，但正式恢复路径是 PostgreSQL 重建。
-- Kafka：多副本与跨节点存储；事件可由 PostgreSQL Outbox 在保留窗口内重放。
+- Redis Streams：Cluster 多副本与 AOF；事件可由 PostgreSQL Outbox 在保留窗口内重放。
 - S3：资产仅保留 24 小时，使用存储系统自身冗余；不做跨区域长期归档。
 - KMS/Secret：密钥元数据与恢复权限纳入独立灾难恢复流程，否则数据库备份不可解密。
 
@@ -367,7 +370,7 @@ Provider Operation 预先保存幂等 operation key。Controller 先按标签/�
 ## 10. 数据验收
 
 - 状态机数据库属性测试：任何并发序列不能产生两个有效 Lease 或终态倒退。
-- Outbox 故障注入：提交前/后崩溃、Kafka 超时和重复发布。
+- Outbox 故障注入：提交前/后崩溃、Redis Streams 超时和重复发布。
 - Redis 全量删除并从 PostgreSQL 恢复，恢复前后候选集合一致。
 - 月分区、游标跨分区、同时间戳 UUIDv7 排序与大数据量查询计划。
 - S3 上传篡改、过期、孤儿、重复完成和 Lifecycle 延迟。

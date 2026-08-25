@@ -12,7 +12,7 @@ astra-data         # 若基础组件由本集群托管
 astra-observability
 ```
 
-生产推荐将 PostgreSQL、Kafka、Redis Cluster 和 S3 使用成熟托管服务或独立高可用集群，不与 GPU 数据面共故障域。
+生产推荐将 PostgreSQL、Redis Cluster（包含 Streams）和 S3 使用成熟托管服务或独立高可用集群，不与 GPU 数据面共故障域。
 
 ```mermaid
 flowchart TB
@@ -28,13 +28,13 @@ flowchart TB
       WorkerAPI
       Scheduler["scheduler x N"]
       ProviderCtl["provider-controller x N"]
-      KafkaRelay["event-relay kafka x N"]
+      RedisStreamRelay["event-relay redis streams x N"]
       RedisRelay["event-relay redis x N"]
     end
 
     K8s --> PG[("PostgreSQL HA")]
-    K8s --> Redis[("Redis Cluster")]
-    K8s --> Kafka[("Kafka")]
+    K8s --> RedisCluster[("Redis Cluster")]
+    K8s --> RedisStreams[("Redis Cluster / Streams")]
     K8s --> S3[("S3")]
 ```
 
@@ -53,10 +53,10 @@ Deployment 基线：
 
 - PostgreSQL 单实例。
 - 3 主节点 Redis Cluster，用于验证 slot、MOVED/ASK 和 hash tag。
-- Kafka 单 broker KRaft 模式。
+- Redis Streams 使用 Consumer Group、Pending Entries 和 ACK；事件可由 PostgreSQL Outbox 重放。
 - MinIO 作为 S3。
 - 独立 Media Validator 与 File Sweeper，用于验证实际媒体字节和执行到期补偿。
-- OIDC 开发提供方。
+- 平台管理的本地管理员账号（仅首次初始化读取 bootstrap 密码）。
 - public/admin/worker API、Scheduler、Provider Controller、Relay、Admin Web。
 - Provider Adapter 与 Model App 合同参考实现；真实 H3 可按需单独接入。
 
@@ -67,7 +67,7 @@ Deployment 基线：
 ```text
 COMPOSE_PROJECT_NAME=astra-local
 network: astra-local-net
-volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-local-minio
+volumes: astra-local-postgres, astra-local-redis-*, astra-local-minio
 ```
 
 端口由 `.env.local` 配置并在启动前检查。只有端口和容器确认属于 `astra-local` 时，才可以执行本项目范围的 `docker compose -p astra-local down` 后重启；不得停止未知项目、连接其他项目数据库或使用全局 volume 清理命令。默认开发流程启用 Model App 和 Provider Adapter 合同参考实现，不向共绩或其他真实 Provider 发请求。Model App 的 `/work` 使用限定 UID/GID 的临时文件系统；任务中间文件在容器重建后丢失是预期行为，PostgreSQL 与 S3 才是本地权威持久层。
@@ -77,7 +77,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 ### 2.1 入口
 
 - public-api 只允许内部业务网段或服务网格访问。
-- admin-web/admin-api 只允许公司身份网络，必须 OIDC。
+- admin-web/admin-api 只允许公司身份网络，使用平台本地账号、Session Cookie、CSRF 和 RBAC。
 - worker-control-api 对供应商数据面可达，但只接受 TLS、短期 Worker Token 和注册实例绑定。
 - Prometheus、健康和调试端口不通过公共 Ingress 暴露。
 
@@ -101,11 +101,13 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 - Key 可以立即吊销；Redis 认证缓存最长 60 秒并订阅吊销事件失效。
 - 禁止 URL query 传 Key，日志和 Trace 自动脱敏 Authorization。
 
-### 3.2 OIDC 与 RBAC
+### 3.2 平台账号与 RBAC
 
-- 使用 Authorization Code + PKCE。
+- 管理台使用平台自管理的用户名/密码；密码只以 Argon2id 哈希保存，不接受 OIDC token 或外部身份交换。
+- `ADMIN_BOOTSTRAP_PASSWORD` 只在首次初始化不存在的管理员时使用，启动后不会覆盖已有密码，生产初始化完成后应从运行环境移除。
 - Session 使用短期 HttpOnly、Secure、SameSite Cookie；管理 API 校验 CSRF。
-- OIDC group 映射组织角色，项目权限保存在 Astra；两者取交集。
+- 用户的组织、项目和角色均保存在 Astra，权限取组织角色与项目角色交集。
+- 登录失败按账号累计，达到阈值后短期锁定；成功登录清零失败计数。
 - 敏感 Task 请求、API Key、策略发布、模型批准和回滚均单独授权。
 
 ### 3.3 Worker 身份
@@ -119,8 +121,8 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 ### 3.4 Secret 管理
 
 - 生产通过 External Secrets 从公司 Secret Manager/KMS 注入。
-- 共绩 token 仅 Provider Controller 可读。
-- 数据库、Kafka、Redis、S3 使用独立最小权限账户。
+- 共绩 Token 密文位于 PostgreSQL，只有 Provider Controller 读取 `PROVIDER_CREDENTIAL_ENCRYPTION_KEY` 并解密 active 凭证。
+- 数据库、Redis、S3 使用独立最小权限账户。
 - Secret 不进入镜像、Git、日志、异常详情或管理台前端。
 - 轮换和 break-glass 操作写不可篡改审计。
 
@@ -134,14 +136,14 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 
 审计事件至少包含：
 
-- `actor_type`、`actor_id`、OIDC session/API Key ID。
+- `actor_type`、`actor_id`、平台管理员 Session/API Key ID。
 - organization/project、动作、资源类型和 ID。
 - 成功/失败、来源 IP、User-Agent、request/trace ID。
 - 策略和发布变更的 before/after 差异或差异哈希。
 - 敏感内容读取的用途说明。
 - UTC 时间和服务签名。
 
-审计写入 PostgreSQL 与 Kafka；安全日志后端使用不可变保留策略。审计失败时，高风险管理写操作 fail closed；普通 Task 查询可继续但产生高优先级告警。
+审计写入 PostgreSQL 与 Redis Streams；安全日志后端使用不可变保留策略。审计失败时，高风险管理写操作 fail closed；普通 Task 查询可继续但产生高优先级告警。
 
 ## 5. 应用安全
 
@@ -161,7 +163,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 
 - HTTP 接入提取/生成 W3C Trace Context。
 - `request_id`、`trace_id`、`task_id`、`attempt_id`、`pool_id` 和 `provider_operation_id` 贯穿日志。
-- Kafka event envelope 携带 trace ID，消费者创建 linked span。
+- Redis Streams event envelope 携带 trace ID，消费者创建 linked span。
 - Worker 心跳不为每次请求生成完整长 Trace；使用采样 span 和 Metrics，Task 阶段产生关键 span。
 - prompt、请求密文和预签名 URL 不作为 span attribute。
 
@@ -195,7 +197,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 
 - PostgreSQL 连接、事务、锁等待、复制延迟、分区和备份年龄。
 - Redis Cluster slot、节点、内存、命令延迟、重建进度。
-- Kafka consumer lag、Outbox 未发布年龄、重复和 DLQ。
+- Redis Streams consumer pending、Outbox 未发布年龄、重复和 DLQ。
 - S3 PUT/GET/HEAD 失败、孤儿、到期未删除字节。
 
 ## 8. SLO 与告警
@@ -205,7 +207,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 - 公共 API 月可用性 99.9%。
 - Task 查询 P95 小于 300 ms，不含 S3 下载。
 - 已提交 Task 持久化丢失为 0。
-- Task 状态事件发布到 Kafka P95 小于 60 秒。
+- Task 状态事件发布到 Redis Streams P95 小于 60 秒。
 - 有效 Worker 心跳状态传播小于 30 秒。
 
 高优先级告警：
@@ -214,10 +216,10 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 - 共绩鉴权/签名错误导致全局写熔断。
 - 同一 Task 出现两个有效 Lease 的不变量违规。
 - S3 对象可公开访问或 KMS 失败。
-- OIDC/RBAC/审计写入失败。
+- 管理员账号/RBAC/审计写入失败。
 - 运行任务大量失联、GPU Xid/OOM 激增。
 
-中优先级告警：排队目标违约、预算接近上限、Outbox/Kafka lag、Redis 重建、区域库存快照过期、资产到期清理延迟和预测误差扩大。
+中优先级告警：排队目标违约、预算接近上限、Outbox/Redis Streams pending、Redis 重建、区域库存快照过期、资产到期清理延迟和预测误差扩大。
 
 ## 9. 日志与诊断保留
 
@@ -249,7 +251,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 3. Provider Controller 只观察供应商既有资源并完成资源归属核对。
 4. 重建 Redis Queue generation。
 5. 启动 Worker Control API，接受原 Worker 重新注册但不立即发新 Lease。
-6. 启动 Scheduler、Kafka Relay，检查 Outbox 水位。
+6. 启动 Scheduler、Redis Streams Relay，检查 Outbox 水位。
 7. 开放新 Task 和容量写操作。
 
 灾难恢复绝不能先扩容，否则可能因供应商中已有未同步实例而重复计费。每季度演练数据库恢复、Redis 全量重建、供应商资源接管和 Worker 旧租约拒绝。
@@ -258,8 +260,8 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-kafka, astra-loc
 
 - Helm 在目标 Kubernetes 版本 render 和部署通过。
 - NetworkPolicy 验证 Model App 无外网、Worker 仅能访问许可目标。
-- API Key/OIDC/RBAC、吊销、轮换和敏感读取审计通过。
+- API Key/管理员账号/RBAC、吊销、轮换和敏感读取审计通过。
 - Compose 一条命令启动并运行 Video/Image 端到端任务。
 - OTel Trace 可以从 API 请求关联到 Task、Attempt、Worker 和 Provider Operation。
-- Redis、Kafka、S3、Provider、Worker、单区故障演练符合架构降级行为。
+- Redis Streams、S3、Provider、Worker、单区故障演练符合架构降级行为。
 - 备份恢复达到 RPO/RTO，恢复过程不创建重复供应商资源。

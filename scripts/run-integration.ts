@@ -51,14 +51,12 @@ const configuration =
             files: [
               "packages/database/src/event-repository.integration.test.ts",
               "packages/queue/src/candidate-index.integration.test.ts",
-              "apps/event-relay/src/kafka.integration.test.ts",
+              "apps/event-relay/src/redis-streams.integration.test.ts",
               "apps/event-relay/src/redis-rebuild.integration.test.ts",
             ],
             env: {
               ...common,
               ASTRA_TEST_REDIS_URL: required("REDIS_URL"),
-              ASTRA_TEST_KAFKA_BROKERS: required("KAFKA_BROKERS"),
-              ASTRA_TEST_KAFKA_TASK_TOPIC: process.env.KAFKA_TASK_TOPIC ?? "astra.task-lifecycle.v1",
             },
           }
         : suite === "http"

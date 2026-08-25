@@ -5,7 +5,7 @@
 模型应用可以使用任何语言、框架和推理引擎。平台通过标准 Bun Worker Agent 隔离以下复杂度：
 
 - 平台身份、任务租约和心跳。
-- Redis/PostgreSQL/Kafka 与供应商差异。
+- Redis/PostgreSQL/Redis Streams 与供应商差异。
 - S3 预签名下载和上传。
 - 输入校验、临时目录、输出验收和审计。
 - 重试、取消、进度和 Worker 生命周期。

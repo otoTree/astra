@@ -39,17 +39,10 @@ export class GongjiWriteTransport {
   async post(path: string, body: JsonObject, context: ProviderOperationContext): Promise<unknown> {
     if (this.now().getTime() < this.circuitOpenUntil) throw new ProviderError("provider_unavailable", true);
     const credentials = await this.options.credentials();
+    if (!credentials.token) throw new ProviderError("authentication_failed", false);
     const timestampMilliseconds = this.now().getTime();
     const version = "1.0.0";
     const serialized = JSON.stringify(body);
-    const signature = signGongjiRequest({
-      path,
-      version,
-      timestampMilliseconds,
-      token: credentials.token,
-      body: serialized,
-      privateKeyPem: credentials.privateKeyPem,
-    });
     const controller = new AbortController();
     const timeout = Math.max(
       1,
@@ -57,16 +50,26 @@ export class GongjiWriteTransport {
     );
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
+      const headers: Record<string, string> = {
+        accept: "application/json",
+        "content-type": "application/json",
+        token: credentials.token,
+      };
+      if (credentials.privateKeyPem) {
+        headers.timestamp = String(timestampMilliseconds);
+        headers.version = version;
+        headers.sign_str = signGongjiRequest({
+          path,
+          version,
+          timestampMilliseconds,
+          token: credentials.token,
+          body: serialized,
+          privateKeyPem: credentials.privateKeyPem,
+        });
+      }
       const response = await this.request(`${this.endpoint}${path}`, {
         method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-          token: credentials.token,
-          timestamp: String(timestampMilliseconds),
-          version,
-          sign_str: signature,
-        },
+        headers,
         body: serialized,
         signal: controller.signal,
       });

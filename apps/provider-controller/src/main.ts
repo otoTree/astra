@@ -2,6 +2,8 @@ import { loadProviderControllerConfig } from "@astra/config";
 import {
   createDatabase,
   DatabaseHealth,
+  ProviderCredentialRepository,
+  RequestCipher,
   ProviderOperationRepository,
   ProviderSnapshotRepository,
 } from "@astra/database";
@@ -24,6 +26,9 @@ const port = config.PROVIDER_CONTROLLER_METRICS_PORT;
 const database = createDatabase(config.DATABASE_URL);
 const databaseHealth = new DatabaseHealth(database.client);
 const repository = new ProviderSnapshotRepository(database.client);
+const credentialRepository = config.PROVIDER_CREDENTIAL_ENCRYPTION_KEY
+  ? new ProviderCredentialRepository(database.client, new RequestCipher(config.PROVIDER_CREDENTIAL_ENCRYPTION_KEY))
+  : undefined;
 const operationRepository = new ProviderOperationRepository(
   database.client,
   () => new Date(),
@@ -31,13 +36,34 @@ const operationRepository = new ProviderOperationRepository(
   config.PROVIDER_OPERATION_ENCRYPTION_KEY,
 );
 const provider = config.PROVIDER_DRIVER;
-const credentials = () => ({
-  token: process.env.GONGJI_TOKEN ?? (config.GONGJI_TOKEN as string),
-  privateKeyPem: (process.env.GONGJI_PRIVATE_KEY_PEM ?? (config.GONGJI_PRIVATE_KEY_PEM as string)).replace(
-    /\\n/g,
-    "\n",
-  ),
-});
+let credentialCache: Readonly<{ token: string; privateKeyPem?: string; loadedAt: number }> | undefined;
+let credentialLoad: Promise<Readonly<{ token: string; privateKeyPem?: string }>> | undefined;
+const credentials = async () => {
+  if (credentialCache && Date.now() - credentialCache.loadedAt < 60_000) return credentialCache;
+  credentialLoad ??= (async () => {
+    const privateKeyPem = (process.env.GONGJI_PRIVATE_KEY_PEM ?? config.GONGJI_PRIVATE_KEY_PEM)?.replace(/\\n/g, "\n");
+    if (!credentialRepository) throw new Error("provider_credential_encryption_key_missing");
+    let stored = await credentialRepository.active("gongji");
+    if (!stored && config.GONGJI_TOKEN && config.ASTRA_ENV !== "production") {
+      await credentialRepository.putActive({
+        provider: "gongji",
+        token: config.GONGJI_TOKEN,
+        createdBy: "local-bootstrap",
+      });
+      stored = await credentialRepository.active("gongji");
+    }
+    if (!stored) throw new Error("gongji_credential_unavailable");
+    const token = credentialRepository.openToken(stored);
+    const loaded = privateKeyPem ? { token, privateKeyPem } : { token };
+    credentialCache = { ...loaded, loadedAt: Date.now() };
+    return loaded;
+  })();
+  try {
+    return await credentialLoad;
+  } finally {
+    credentialLoad = undefined;
+  }
+};
 let reader: ProviderObservationReader;
 let operator: ProviderResourceOperator;
 if (provider === "reference") {

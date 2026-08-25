@@ -4,7 +4,8 @@ import { eventEnvelopeSchema, type EventEnvelope } from "@astra/contracts";
 
 type SqlClient = ReturnType<typeof postgres>;
 type TransactionClient = postgres.TransactionSql;
-export type EventSink = "kafka" | "redis";
+/** Durable domain-event destinations. `redis` is the rebuildable queue index. */
+export type EventSink = "redis_streams" | "redis";
 
 export type ClaimedEvent = Readonly<{
   envelope: EventEnvelope;
@@ -84,11 +85,11 @@ export class EventRepository {
             OR (d.status='leased' AND d.lease_expires_at<=${now.toISOString()})
           )
           AND (
-            d.sink <> 'kafka' OR NOT EXISTS (
+            d.sink <> 'redis_streams' OR NOT EXISTS (
               SELECT 1
               FROM outbox_events prior_o
               JOIN event_relay_deliveries prior_d
-                ON prior_d.event_id=prior_o.id AND prior_d.sink='kafka'
+                ON prior_d.event_id=prior_o.id AND prior_d.sink='redis_streams'
               WHERE prior_o.aggregate_id=o.aggregate_id
                 AND (prior_o.created_at, prior_o.id) < (o.created_at, o.id)
                 AND prior_d.status <> 'delivered'
@@ -124,7 +125,7 @@ export class EventRepository {
           AND status='leased' AND lease_owner=${claim.leaseOwner}
         RETURNING event_id`;
       if (!rows[0]) return false;
-      if (claim.sink === "kafka") {
+      if (claim.sink === "redis_streams") {
         await transaction`UPDATE outbox_events SET published_at=COALESCE(published_at, ${deliveredAt.toISOString()})
           WHERE id=${claim.envelope.event_id}`;
       }

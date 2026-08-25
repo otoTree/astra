@@ -7,7 +7,7 @@ Astra 将内部业务请求转化为可审计、可调度、可重试的异步 T
 ```mermaid
 flowchart LR
     Client["内部业务服务"] -->|"Bearer API Key / HTTPS"| API["API Service"]
-    Operator["运维与模型人员"] -->|"OIDC / HTTPS"| Admin["Admin Web"]
+    Operator["运维与模型人员"] -->|"平台账号 / HTTPS"| Admin["Admin Web"]
     Admin --> API
 
     subgraph CP["自有 Kubernetes 控制面"]
@@ -17,7 +17,7 @@ flowchart LR
       Scheduler --> Redis[("Redis Cluster")]
       ProviderCtl["Provider Controller"] --> PG
       Relay["Event Relay"] --> PG
-      Relay --> Kafka[("Kafka")]
+      Relay --> RedisStreams[("Redis Streams")]
       AgentAPI["Worker Control API"] --> PG
       AgentAPI --> Redis
     end
@@ -34,7 +34,7 @@ flowchart LR
 
 职责：
 
-- Bearer API Key、OIDC Session、RBAC 和项目上下文解析。
+- Bearer API Key、平台管理员 Session、RBAC 和项目上下文解析。
 - 文件上传、图片生成、视频生成、Task 查询与取消 API。
 - 请求 Schema、模型能力、配额、幂等键和素材状态校验。
 - 在单个数据库事务内创建 Task、初始状态事件和 Outbox 记录。
@@ -81,9 +81,9 @@ Worker 永远主动连接该服务；控制面不需要访问供应商提供的�
 
 职责：
 
-- 按 Outbox ID 顺序读取未发布事件并发送到 Kafka。
-- 使用确定性事件 ID，允许 Kafka 至少一次交付。
-- 发布成功后记录 Kafka topic、partition、offset 和时间。
+- 按 Outbox ID 顺序读取未发布事件并发送到 Redis Streams。
+- 使用确定性事件 ID，允许 Redis Streams 至少一次交付。
+- 发布成功后记录 stream、entry ID 和时间。
 - 单独处理 Redis 执行索引投递；Redis 投递失败不会回滚 Task。
 
 ### 2.6 Admin Web
@@ -245,15 +245,15 @@ Provider 返回规范化状态 `pending | provisioning | running | degraded | st
 | --- | --- |
 | PostgreSQL 不可用 | 停止创建、调度和状态变更；不以 Redis 状态继续执行。 |
 | Redis 不可用 | API 查询正常；暂停新租约，恢复后从 PostgreSQL 重建。 |
-| Kafka 不可用 | Outbox 积压，核心任务继续；超过阈值告警并限制非关键审计流量。 |
+| Redis Streams 不可用 | Outbox 积压，核心任务继续；超过阈值告警并限制非关键审计流量。 |
 | S3 不可用 | 拒绝新上传；运行任务延迟提交或失败重试，不宣告 completed。 |
 | 供应商 API 不可用 | 已运行 Worker 可继续；冻结容量变更，任务排队并展示原因。 |
 | 单区域故障 | 熔断该区域，新容量放置到次优允许区域。 |
 | Worker 失联 | 租约到期，Attempt abandoned；依据幂等与重试策略重新排队。 |
 | Model App 崩溃 | Agent 上报结构化失败并按退出策略重启；Task 决定是否重试。 |
 
-控制面目标为无单点：API、Scheduler、Provider Controller、Relay 和 Worker Control API 均至少两个副本；PostgreSQL、Redis Cluster、Kafka 和 S3 使用各自生产高可用方案。
+控制面目标为无单点：API、Scheduler、Provider Controller、Relay 和 Worker Control API 均至少两个副本；PostgreSQL、Redis Cluster（含 Streams）和 S3 使用各自生产高可用方案。
 
 ## 8. 容量与演进
 
-首期按 10-50 GPU、每分钟 1-20 个新任务设计。控制面服务必须无状态或以数据库租约分片；任务表分区、Redis key 哈希标签和 Kafka topic 分区均不得依赖单实例。扩展到数百 GPU 时优先增加 Scheduler 分片、Worker Control API 副本和区域级 Provider Controller，不改变公共 API 与 Worker Contract。
+首期按 10-50 GPU、每分钟 1-20 个新任务设计。控制面服务必须无状态或以数据库租约分片；任务表分区、Redis key 哈希标签和 Streams Consumer Group 均不得依赖单实例。扩展到数百 GPU 时优先增加 Scheduler 分片、Worker Control API 副本和区域级 Provider Controller，不改变公共 API 与 Worker Contract。

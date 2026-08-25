@@ -2,7 +2,7 @@ import { loadEventRelayConfig } from "@astra/config";
 import { createDatabase, DatabaseHealth, EventRepository, type EventSink } from "@astra/database";
 import { Counter, createLogger, createMetricRegistry, Gauge, Histogram, metricResponse } from "@astra/observability";
 import { RedisCandidateIndex } from "@astra/queue";
-import { KafkaEventPublisher, OutboxRelay, RedisEventPublisher, RedisRebuildCoordinator } from "./relay.ts";
+import { OutboxRelay, RedisEventPublisher, RedisRebuildCoordinator, RedisStreamsEventPublisher } from "./relay.ts";
 
 const config = loadEventRelayConfig();
 const logger = createLogger("event-relay");
@@ -11,21 +11,22 @@ const databaseHealth = new DatabaseHealth(database.client);
 const repository = new EventRepository(database.client);
 const candidateIndex = new RedisCandidateIndex(config.REDIS_URL);
 const instanceId = `relay_${Bun.randomUUIDv7()}`;
-const kafkaPublisher = new KafkaEventPublisher(
-  config.KAFKA_CLIENT_ID,
-  config.KAFKA_BROKERS.split(",").map((item) => item.trim()),
+const redisStreamsPublisher = new RedisStreamsEventPublisher(
+  config.REDIS_URL,
   {
-    task: config.KAFKA_TASK_TOPIC,
-    capacity: config.KAFKA_CAPACITY_TOPIC,
-    usage: config.KAFKA_USAGE_TOPIC,
-    audit: config.KAFKA_AUDIT_TOPIC,
-    control: config.KAFKA_CONTROL_TOPIC,
+    task: config.REDIS_EVENT_TASK_STREAM,
+    capacity: config.REDIS_EVENT_CAPACITY_STREAM,
+    usage: config.REDIS_EVENT_USAGE_STREAM,
+    audit: config.REDIS_EVENT_AUDIT_STREAM,
+    control: config.REDIS_EVENT_CONTROL_STREAM,
   },
+  config.REDIS_EVENT_STREAM_MAXLEN,
+  config.REDIS_EVENT_STREAM_RETENTION_SECONDS,
 );
 const redisPublisher = new RedisEventPublisher(repository, candidateIndex);
 const relay = new OutboxRelay(
   repository,
-  { kafka: kafkaPublisher, redis: redisPublisher },
+  { redis_streams: redisStreamsPublisher, redis: redisPublisher },
   instanceId,
   config.EVENT_RELAY_BATCH_SIZE,
   config.EVENT_RELAY_LEASE_SECONDS,
@@ -79,7 +80,7 @@ const rebuildTasks = new Gauge({
 });
 
 const abort = new AbortController();
-let kafkaLoopHealthy = true;
+let redisStreamsLoopHealthy = true;
 let redisLoopHealthy = true;
 let rebuildHealthy = true;
 let redisCountMismatchObservations = 0;
@@ -95,11 +96,11 @@ const runLoop = async (sink: EventSink): Promise<void> => {
       deliveryTotal.inc({ sink, outcome: "retry_wait" }, result.retrying);
       deliveryTotal.inc({ sink, outcome: "dead_letter" }, result.deadLettered);
       deliveryTotal.inc({ sink, outcome: "stale_lease" }, result.staleLeases);
-      if (sink === "kafka") kafkaLoopHealthy = true;
+      if (sink === "redis_streams") redisStreamsLoopHealthy = true;
       else redisLoopHealthy = true;
       if (result.claimed === 0) await pause(config.EVENT_RELAY_POLL_INTERVAL_MS);
     } catch (error) {
-      if (sink === "kafka") kafkaLoopHealthy = false;
+      if (sink === "redis_streams") redisStreamsLoopHealthy = false;
       else redisLoopHealthy = false;
       logger.error("event_delivery_loop_failed", {
         sink,
@@ -194,7 +195,7 @@ const monitorRedisIndex = async (): Promise<void> => {
   }
 };
 
-await kafkaPublisher.connect();
+await redisStreamsPublisher.connect();
 try {
   await ensureRedisIndex();
 } catch (error) {
@@ -204,7 +205,7 @@ try {
   });
 }
 
-void runLoop("kafka");
+void runLoop("redis_streams");
 void runLoop("redis");
 void refreshMetrics();
 void monitorRedisIndex();
@@ -215,19 +216,25 @@ const server = Bun.serve({
     const path = new URL(request.url).pathname;
     if (path === "/health/live") return Response.json({ status: "live", component: "event-relay" });
     if (path === "/health/ready") {
-      const [databaseReady, redisReady, kafkaReady] = await Promise.all([
+      const [databaseReady, redisReady, redisStreamsReady] = await Promise.all([
         databaseHealth.ready(),
         redisPublisher.ready(),
-        kafkaPublisher.ready(),
+        redisStreamsPublisher.ready(),
       ]);
-      const ready = databaseReady && redisReady && kafkaReady && kafkaLoopHealthy && redisLoopHealthy && rebuildHealthy;
+      const ready =
+        databaseReady &&
+        redisReady &&
+        redisStreamsReady &&
+        redisStreamsLoopHealthy &&
+        redisLoopHealthy &&
+        rebuildHealthy;
       return Response.json(
         {
           status: ready ? "ready" : "not_ready",
           database: databaseReady ? "ready" : "unavailable",
           redis: redisReady ? "ready" : "unavailable",
-          kafka: kafkaReady ? "ready" : "unavailable",
-          delivery_loops: kafkaLoopHealthy && redisLoopHealthy ? "ready" : "degraded",
+          redis_streams: redisStreamsReady ? "ready" : "unavailable",
+          delivery_loops: redisStreamsLoopHealthy && redisLoopHealthy ? "ready" : "degraded",
           redis_rebuild: rebuildHealthy ? "ready" : "failed",
         },
         { status: ready ? 200 : 503 },
@@ -242,7 +249,7 @@ const shutdown = async (): Promise<void> => {
   if (abort.signal.aborted) return;
   abort.abort();
   server.stop(false);
-  await Promise.allSettled([kafkaPublisher.close(), redisPublisher.close(), database.client.end()]);
+  await Promise.allSettled([redisStreamsPublisher.close(), redisPublisher.close(), database.client.end()]);
 };
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());

@@ -7,5 +7,6 @@ COPY packages ./packages
 COPY model-workers ./model-workers
 COPY scripts ./scripts
 RUN bun install --frozen-lockfile
-ENV ASTRA_ENV=local
+ENV ASTRA_ENV=production \
+    ASTRA_LOG_LEVEL=info
 USER bun

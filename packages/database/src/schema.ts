@@ -55,6 +55,26 @@ export const adminSessions = pgTable(
   (table) => [index("admin_sessions_subject_idx").on(table.issuer, table.subject, table.createdAt, table.id)],
 );
 
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    id: text("id").primaryKey(),
+    username: text("username").notNull().unique(),
+    passwordHash: text("password_hash").notNull(),
+    displayName: text("display_name"),
+    email: text("email"),
+    status: text("status").notNull(),
+    organizationId: text("organization_id").notNull(),
+    projectId: text("project_id").notNull(),
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("admin_users_status_idx").on(table.status, table.username)],
+);
+
 export const apiKeys = pgTable("api_keys", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id").notNull(),
@@ -391,6 +411,21 @@ export const eventConsumerReceipts = pgTable("event_consumer_receipts", {
   eventId: text("event_id").notNull(),
   payloadHash: text("payload_hash").notNull(),
   processedAt: timestamp("processed_at", { withTimezone: true }).notNull(),
+});
+
+export const providerCredentials = pgTable("provider_credentials", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  credentialName: text("credential_name").notNull(),
+  tokenCiphertext: text("token_ciphertext").notNull(),
+  tokenFingerprint: text("token_fingerprint").notNull(),
+  version: integer("version").notNull(),
+  status: text("status").notNull(),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
 export const redisIndexGenerations = pgTable("redis_index_generations", {

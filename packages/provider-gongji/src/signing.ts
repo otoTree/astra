@@ -2,7 +2,7 @@ import { constants, createSign } from "node:crypto";
 
 export type GongjiCredentials = Readonly<{
   token: string;
-  privateKeyPem: string;
+  privateKeyPem?: string;
 }>;
 
 export const gongjiSigningInput = (

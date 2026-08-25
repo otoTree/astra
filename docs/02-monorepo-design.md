@@ -21,14 +21,14 @@ astra/
 │   ├── api/                   # 公共 API、管理 API、Worker Control API
 │   ├── scheduler/             # 公平队列、任务租约、放置与扩缩容决策
 │   ├── provider-controller/   # Provider Reconcile、镜像 Rollout 与共绩 API
-│   ├── event-relay/           # PostgreSQL Outbox -> Kafka/Redis
+│   ├── event-relay/           # PostgreSQL Outbox -> Redis Streams/Redis
 │   ├── worker-agent/          # 部署到 GPU 实例的标准出站代理
 │   ├── admin-web/             # React 运维管理台
 │   └── registry-reference/    # 仅本地 OCI Distribution 合同参考服务
 ├── packages/
 │   ├── contracts/             # 公共、内部、Worker、Provider Schema
 │   ├── database/              # Drizzle schema、迁移和事务 helper
-│   ├── auth/                  # API Key、OIDC、RBAC、项目上下文
+│   ├── auth/                  # API Key、平台账号、RBAC、项目上下文
 │   ├── queue/                 # Redis 索引、WFQ、租约候选与重建
 │   ├── provider-core/         # 供应商无关接口与规范化类型
 │   ├── provider-gongji/       # 共绩签名、DTO、错误和 Adapter
@@ -58,7 +58,7 @@ astra/
 同一代码库生成三类独立 Deployment，按启动参数启用不同路由：
 
 - `public-api`：文件、图片、视频和 Task API。
-- `admin-api`：OIDC、策略、模型、发布、成本与审计。
+- `admin-api`：平台账号登录、策略、模型、发布、成本与审计。
 - `worker-control-api`：Worker 注册、领取、心跳、状态和结果。
 
 `apps/api` 还生成两个不对调用方开放的独立进程：`media-validator` 只读 S3，执行签名、哈希、完整解码和元数据探测，不访问 PostgreSQL；`file-sweeper` 从 PostgreSQL 领取到期记录，幂等删除 S3 对象并事务性完成 File/Task 状态。它们使用独立 ServiceAccount、资源限制和网络策略，不与三个 API 信任域合并部署。
@@ -81,14 +81,14 @@ astra/
 
 - 只依赖 `provider-core`，启动时加载显式 Adapter。
 - 共绩适配器是首期唯一生产 Adapter。
-- API 凭证只存在该服务的 Secret 中。
+- 共绩 Token 以密文保存在 PostgreSQL `provider_credentials`，该服务仅通过解密主密钥读取 active 版本。
 - 将供应商原始响应保存为加密诊断载荷，并生成规范化资源快照。
 - 执行逐 Replica 镜像滚动；可单独扩展为 Rollout Controller，但复用 Provider Operation 与 Reconcile 合同。
 - 共绩 67 个接口的本地协议快照、索引和适配边界见 [`docs/providers/gongji/`](./providers/gongji/)。共绩 DTO 不得从 `provider-gongji` 泄漏到核心调度器。
 
 ### `apps/event-relay`
 
-- `outbox-kafka` 模式发布 Kafka。
+- `outbox-redis-streams` 模式发布领域事件。
 - `outbox-redis` 模式维护 Redis 执行索引。
 - 两类 Relay 使用独立 consumer lease，互不阻塞。
 - 支持从事件 ID 断点继续和管理端重放。
@@ -103,7 +103,7 @@ astra/
 
 ### `apps/admin-web`
 
-- 只调用 `admin-api`，不连接数据库或 Kafka。
+- 只调用 `admin-api`，不连接数据库或 Redis Streams。
 - 所有策略编辑先调用验证/预估 API，再调用发布 API。
 - 容量策略编辑支持时长桶、服务时间分位点、并发上限、目标利用率、排队目标、成本收益阈值和预算，提交后展示 4-15 秒样本的预测与影响。
 - 模型发布表单以镜像地址为主要输入，展示平台解析后的 digest、Manifest、目标池和逐机进度。
@@ -140,15 +140,15 @@ flowchart TD
 - `provider-core` 不引用共绩 DTO；`provider-gongji` 负责完整转换。
 - `queue` 不拥有 Task 状态转换，只返回候选与排序结果。
 - `database` 不依赖应用层；事务函数接受明确命令对象。
-- 应用之间不以源码导入业务实现，只通过数据库真源、Kafka 事件或 HTTP 合同协作。
+- 应用之间不以源码导入业务实现，只通过数据库真源、Redis Streams 事件或 HTTP 合同协作。
 - 禁止跨包深层导入，只使用每个包的公开入口。
 
 ## 5. 配置
 
 所有应用使用 `packages/config` 在启动时校验环境变量。配置按三类管理：
 
-- 非敏感静态配置：ConfigMap/环境变量，如端口、日志级别、Kafka topic。
-- 敏感配置：Secret Manager 经 External Secrets 注入，如数据库、S3、OIDC、共绩密钥。
+- 非敏感静态配置：ConfigMap/环境变量，如端口、日志级别、Redis Stream key。
+- 敏感配置：Secret Manager 经 External Secrets 注入，如数据库、S3、管理员 bootstrap 密码和共绩密钥。
 - 动态业务策略：PostgreSQL 版本化记录，如池容量、区域权重、预算和灰度规则。
 
 动态业务策略不得放入环境变量；变更无需重启应用。启动时缺少必需配置必须 fail fast，不允许使用生产隐式默认值。
@@ -160,7 +160,7 @@ flowchart TD
 - 公共 API JSON Schema 与 OpenAPI 3.1。
 - 管理 API Schema。
 - Worker Control 与 localhost Model App Schema。
-- Kafka 事件 envelope Schema。
+- Redis Streams 事件 envelope Schema。
 - Provider Contract TypeScript 类型和测试夹具。
 
 Schema 是线协议真源。Hono 路由、客户端、管理台类型和合同测试由它派生。数据库模型不是线协议，不直接导出。
@@ -170,7 +170,7 @@ Schema 是线协议真源。Hono 路由、客户端、管理台类型和合同�
 - `/v1` 只允许增加可选字段或枚举能力协商后的新值。
 - 删除、重命名、改变默认值或收紧已接受输入需要 `/v2`。
 - Model App Contract 使用 `contract_version`；Agent 至少支持当前版和前一版。
-- Kafka 事件只增加字段；消费者必须忽略未知字段。
+- Redis Streams 事件只增加字段；消费者必须忽略未知字段。
 
 ## 7. 工程质量门
 
@@ -190,4 +190,4 @@ Schema 是线协议真源。Hono 路由、客户端、管理台类型和合同�
 - Bun 安装使用冻结 lockfile；CI 禁止隐式升级依赖。
 - Model App 使用各自构建系统，但发布 manifest 必须记录镜像 digest 与 Worker Contract 版本。
 - 数据库迁移由独立 Job 执行，应用启动时只校验版本，不自动迁移。
-- 本地 Compose 使用兼容生产协议的 PostgreSQL、Redis Cluster、Kafka 和 S3，不使用应用内对象替代基础组件。
+- 本地 Compose 使用兼容生产协议的 PostgreSQL、Redis Cluster/Streams 和 S3，不使用应用内对象替代基础组件。

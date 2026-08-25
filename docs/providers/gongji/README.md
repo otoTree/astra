@@ -23,6 +23,9 @@
 1. 先阅读 `adapter-notes.md`，了解哪些字段可以进入通用 Provider Contract。
 2. 再从 `api-index.md` 找到目标接口，阅读对应 `api/api-*.md` 的完整 OpenAPI Schema。
 3. 共绩 API 的 `token`、`timestamp`、`version`、`sign_str` 和加密/签名规则只在 Adapter 中实现。
+   生产 Provider Controller 不从环境变量读取长期 Token。先执行一次 `bun run provider-credential:set`，将
+   `GONGJI_TOKEN` 用 `PROVIDER_CREDENTIAL_ENCRYPTION_KEY` 加密写入 PostgreSQL `provider_credentials`；运行时只
+   注入解密主密钥。`GONGJI_PRIVATE_KEY_PEM` 为可选兼容配置，只有共绩账户启用 RSA 签名时才需要。
 4. 供应商原始 `code/message/data` 响应必须保存为受限诊断载荷，同时转换为平台内部标准错误；不能直接向公共 API 暴露。
 5. 本地开发使用 Provider Adapter 合同参考实现，不得因为存在这些文档而向共绩发送请求。
 

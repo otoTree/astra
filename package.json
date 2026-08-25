@@ -34,6 +34,7 @@
     "db:migrate:check": "bun run scripts/check-migrations.ts",
     "model-artifacts:check": "bun run scripts/check-no-model-artifacts.ts",
     "auth:bootstrap-local": "bun run scripts/bootstrap-local-identity.ts",
+    "provider-credential:set": "bun run scripts/store-provider-credential.ts",
     "worker:bootstrap-local": "bun run scripts/bootstrap-local-worker.ts",
     "contracts:check": "bun run scripts/check-contracts.ts",
     "dependencies:check": "bun run scripts/check-dependencies.ts",
@@ -63,8 +64,5 @@
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "yaml": "2.9.0"
-  },
-  "patchedDependencies": {
-    "kafkajs@2.2.4": "patches/kafkajs@2.2.4.patch"
   }
 }

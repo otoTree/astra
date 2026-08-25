@@ -2,8 +2,8 @@ import type {
   ProviderObservationBundle,
   ProviderObservationPage,
   ProviderObservationReader,
-  ProviderOperationContext,
   ProviderObservedObject,
+  ProviderOperationContext,
 } from "@astra/provider-core";
 import { ProviderError } from "@astra/provider-core";
 import { decodeBilling, decodeNodeList, decodeResources, decodeTaskList, decodeWarmupRegions } from "./dto.ts";
@@ -274,17 +274,9 @@ export class GongjiReadClient implements ProviderObservationReader {
 
   private async send(path: string, query: Readonly<Record<string, string>>, deadlineAt: Date): Promise<Response> {
     const credentials = await this.options.credentials();
-    if (!credentials.token || !credentials.privateKeyPem) throw new ProviderError("authentication_failed", false);
+    if (!credentials.token) throw new ProviderError("authentication_failed", false);
     const timestampMilliseconds = this.now().getTime();
     const version = "1.0.0";
-    const sign = signGongjiRequest({
-      path,
-      version,
-      timestampMilliseconds,
-      token: credentials.token,
-      body: "",
-      privateKeyPem: credentials.privateKeyPem,
-    });
     const url = new URL(`${this.endpoint}${path}`);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
     const controller = new AbortController();
@@ -294,15 +286,25 @@ export class GongjiReadClient implements ProviderObservationReader {
     );
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
+      const headers: Record<string, string> = {
+        accept: "application/json",
+        token: credentials.token,
+      };
+      if (credentials.privateKeyPem) {
+        headers.timestamp = String(timestampMilliseconds);
+        headers.version = version;
+        headers.sign_str = signGongjiRequest({
+          path,
+          version,
+          timestampMilliseconds,
+          token: credentials.token,
+          body: "",
+          privateKeyPem: credentials.privateKeyPem,
+        });
+      }
       return await this.request(url, {
         method: "GET",
-        headers: {
-          accept: "application/json",
-          token: credentials.token,
-          timestamp: String(timestampMilliseconds),
-          version,
-          sign_str: sign,
-        },
+        headers,
         signal: controller.signal,
       });
     } finally {

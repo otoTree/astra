@@ -7,5 +7,7 @@ COPY apps ./apps
 COPY packages ./packages
 COPY model-workers ./model-workers
 RUN bun install --frozen-lockfile
+ENV ASTRA_ENV=production \
+    ASTRA_LOG_LEVEL=info
 USER bun
 CMD ["bun", "run", "apps/api/src/media-validator.ts"]

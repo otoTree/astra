@@ -26,9 +26,9 @@ const event: EventEnvelope = {
   payload: { task_id: "task_001" },
 };
 
-const claim: ClaimedEvent = { envelope: event, sink: "kafka", attemptCount: 1, leaseOwner: "relay_001" };
+const claim: ClaimedEvent = { envelope: event, sink: "redis_streams", attemptCount: 1, leaseOwner: "relay_001" };
 
-const idlePublisher = (sink: "kafka" | "redis"): EventPublisher => ({
+const idlePublisher = (sink: "redis_streams" | "redis"): EventPublisher => ({
   sink,
   publish: async () => ({ accepted: true }),
   ready: async () => true,
@@ -50,14 +50,14 @@ describe("OutboxRelay", () => {
     };
     const relay = new OutboxRelay(
       repository,
-      { kafka: idlePublisher("kafka"), redis: idlePublisher("redis") },
+      { redis_streams: idlePublisher("redis_streams"), redis: idlePublisher("redis") },
       "relay_001",
       10,
       30,
       5,
     );
 
-    expect(await relay.runOnce("kafka")).toEqual({
+    expect(await relay.runOnce("redis_streams")).toEqual({
       claimed: 1,
       delivered: 1,
       retrying: 0,
@@ -80,22 +80,22 @@ describe("OutboxRelay", () => {
       },
     };
     const publisher: EventPublisher = {
-      ...idlePublisher("kafka"),
+      ...idlePublisher("redis_streams"),
       publish: async () => {
-        throw new RelayDeliveryError("kafka_publish_failed", true);
+        throw new RelayDeliveryError("redis_stream_publish_failed", true);
       },
     };
     const relay = new OutboxRelay(
       repository,
-      { kafka: publisher, redis: idlePublisher("redis") },
+      { redis_streams: publisher, redis: idlePublisher("redis") },
       "relay_001",
       10,
       30,
       5,
     );
 
-    expect((await relay.runOnce("kafka")).retrying).toBe(1);
-    expect(failure).toEqual({ code: "kafka_publish_failed", retryable: true });
+    expect((await relay.runOnce("redis_streams")).retrying).toBe(1);
+    expect(failure).toEqual({ code: "redis_stream_publish_failed", retryable: true });
   });
 });
 

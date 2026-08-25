@@ -9,6 +9,6 @@
     "@astra/database": "workspace:*",
     "@astra/observability": "workspace:*",
     "@astra/queue": "workspace:*",
-    "kafkajs": "^2.2.4"
+    "redis": "^5.8.2"
   }
 }

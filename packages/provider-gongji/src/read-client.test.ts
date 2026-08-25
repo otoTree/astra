@@ -134,4 +134,32 @@ describe("Gongji read transport", () => {
     });
     expect(calls).toBe(1);
   });
+
+  test("supports the documented token-only request mode", async () => {
+    let capturedHeaders: Headers | undefined;
+    const client = new GongjiReadClient({
+      endpoint: "https://provider.invalid",
+      credentials: () => ({ token: "contract-token" }),
+      timeoutMilliseconds: 1_000,
+      maximumRetries: 0,
+      breakerFailureThreshold: 2,
+      breakerCooldownMilliseconds: 10_000,
+      pageSize: 100,
+      maximumPages: 1,
+      now: () => observedAt,
+      fetch: async (_input, init) => {
+        capturedHeaders = new Headers(init?.headers);
+        return Response.json(await fixture("resources"));
+      },
+    });
+    await client.selectResource("region-a", "5090", {
+      operationId: "operation-token-only",
+      requestId: "request-token-only",
+      deadlineAt: new Date(observedAt.getTime() + 60_000),
+    });
+    expect(capturedHeaders?.get("token")).toBe("contract-token");
+    expect(capturedHeaders?.get("sign_str")).toBeNull();
+    expect(capturedHeaders?.get("timestamp")).toBeNull();
+    expect(capturedHeaders?.get("version")).toBeNull();
+  });
 });

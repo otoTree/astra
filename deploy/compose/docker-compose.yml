@@ -92,43 +92,6 @@ services:
     networks: [astra-local-network]
     restart: "no"
 
-  redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda@sha256:04baa40ed34edf86028396f762be802f3b6b0acaab65e9de696a3f15d54c550f
-    command:
-      - redpanda
-      - start
-      - --overprovisioned
-      - --smp=1
-      - --memory=512M
-      - --reserve-memory=0M
-      - --node-id=0
-      - --check=false
-      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:59092
-    ports: ["${ASTRA_LOCAL_KAFKA_PORT:?set in .env.local}:19092"]
-    volumes: ["astra-local-redpanda:/var/lib/redpanda/data"]
-    networks: [astra-local-network]
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health -X brokers=127.0.0.1:9092 --exit-when-healthy"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
-  kafka-topic-init:
-    image: docker.redpanda.com/redpandadata/redpanda@sha256:04baa40ed34edf86028396f762be802f3b6b0acaab65e9de696a3f15d54c550f
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - >-
-        for topic in astra.task-lifecycle.v1 astra.capacity.v1 astra.usage.v1
-        astra.audit.v1 astra.control.v1; do
-          rpk topic create "$$topic" -X brokers=redpanda:9092 >/dev/null 2>&1 ||
-          rpk topic describe "$$topic" -X brokers=redpanda:9092 >/dev/null;
-        done;
-        rpk topic list -X brokers=redpanda:9092
-    depends_on: { redpanda: { condition: service_healthy } }
-    networks: [astra-local-network]
-    restart: "no"
-
   minio:
     image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
     command: ["server", "/data", "--console-address", ":9001"]
@@ -153,24 +116,6 @@ services:
     depends_on: { minio: { condition: service_healthy } }
     networks: [astra-local-network]
     restart: "no"
-
-  identity-reference:
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile.control-plane
-    command: ["bun", "run", "apps/identity-reference/src/main.ts"]
-    environment:
-      ASTRA_ENV: local
-      IDENTITY_REFERENCE_PORT: 4180
-      IDENTITY_REFERENCE_ISSUER: http://identity-reference:4180
-      IDENTITY_REFERENCE_AUDIENCE: astra-admin
-    ports: ["${ASTRA_LOCAL_IDENTITY_PORT:-54180}:4180"]
-    networks: [astra-local-network]
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4180/health/ready"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
 
   registry-reference:
     build:
@@ -286,8 +231,13 @@ services:
       EVENT_RELAY_METRICS_PORT: 4112
       DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
       REDIS_URL: redis://redis-node-1:6379
-      KAFKA_BROKERS: redpanda:9092
-      KAFKA_CLIENT_ID: astra-local-event-relay
+      REDIS_EVENT_TASK_STREAM: astra:{events}:task:v1
+      REDIS_EVENT_CAPACITY_STREAM: astra:{events}:capacity:v1
+      REDIS_EVENT_USAGE_STREAM: astra:{events}:usage:v1
+      REDIS_EVENT_AUDIT_STREAM: astra:{events}:audit:v1
+      REDIS_EVENT_CONTROL_STREAM: astra:{events}:control:v1
+      REDIS_EVENT_STREAM_MAXLEN: 100000
+      REDIS_EVENT_STREAM_RETENTION_SECONDS: 604800
       EVENT_RELAY_BATCH_SIZE: 100
       EVENT_RELAY_LEASE_SECONDS: 30
       EVENT_RELAY_MAXIMUM_ATTEMPTS: 12
@@ -299,7 +249,6 @@ services:
     depends_on:
       database-migrate: { condition: service_completed_successfully }
       redis-cluster-init: { condition: service_completed_successfully }
-      kafka-topic-init: { condition: service_completed_successfully }
     networks: [astra-local-network]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4112/health/ready"]
@@ -316,12 +265,9 @@ services:
     environment:
       DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
       REDIS_URL: redis://redis-node-1:6379
-      KAFKA_BROKERS: redpanda:9092
-      KAFKA_TASK_TOPIC: astra.task-lifecycle.v1
     depends_on:
       database-migrate: { condition: service_completed_successfully }
       redis-cluster-init: { condition: service_completed_successfully }
-      kafka-topic-init: { condition: service_completed_successfully }
     networks: [astra-local-network]
     restart: "no"
 
@@ -371,6 +317,7 @@ services:
       PROVIDER_OPERATION_LEASE_SECONDS: 30
       PROVIDER_OPERATION_TIMEOUT_SECONDS: 20
       PROVIDER_OPERATION_ENCRYPTION_KEY: ${ASTRA_LOCAL_PROVIDER_OPERATION_ENCRYPTION_KEY:?set in .env.local}
+      PROVIDER_CREDENTIAL_ENCRYPTION_KEY: ${ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY:?set in .env.local}
       WORKER_TOKEN_PEPPER: ${ASTRA_LOCAL_WORKER_TOKEN_PEPPER:?set in .env.local}
       ROLLOUT_WORKER_CONTROL_URL: http://worker-control-api:4102
       ROLLOUT_RECONCILE_INTERVAL_MS: 1000
@@ -395,16 +342,18 @@ services:
       DATABASE_URL: postgres://${ASTRA_LOCAL_POSTGRES_USER:?set in .env.local}:${ASTRA_LOCAL_POSTGRES_PASSWORD:?set in .env.local}@postgres:5432/${ASTRA_LOCAL_POSTGRES_DB:?set in .env.local}
       ASTRA_REQUEST_ENCRYPTION_KEY: ${ASTRA_LOCAL_REQUEST_ENCRYPTION_KEY:?set in .env.local}
       ASTRA_AUDIT_SIGNING_KEY: ${ASTRA_LOCAL_AUDIT_SIGNING_KEY:?set in .env.local}
-      OIDC_ISSUER: http://identity-reference:4180
-      OIDC_AUDIENCE: astra-admin
-      OIDC_JWKS_URL: http://identity-reference:4180/jwks
-      OIDC_CLOCK_SKEW_SECONDS: 60
+      ADMIN_BOOTSTRAP_USERNAME: ${ASTRA_LOCAL_ADMIN_BOOTSTRAP_USERNAME:?set in .env.local}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ASTRA_LOCAL_ADMIN_BOOTSTRAP_PASSWORD:?set in .env.local}
+      ADMIN_BOOTSTRAP_ORGANIZATION_ID: ${ASTRA_LOCAL_ADMIN_BOOTSTRAP_ORGANIZATION_ID:?set in .env.local}
+      ADMIN_BOOTSTRAP_PROJECT_ID: ${ASTRA_LOCAL_ADMIN_BOOTSTRAP_PROJECT_ID:?set in .env.local}
+      ADMIN_BOOTSTRAP_DISPLAY_NAME: Administrator
+      ADMIN_LOGIN_MAX_FAILURES: 5
+      ADMIN_LOGIN_LOCK_SECONDS: 900
       ADMIN_SESSION_TTL_SECONDS: 28800
       OCI_REGISTRY_ALLOW_PLAIN_HTTP: "true"
     ports: ["${ASTRA_LOCAL_ADMIN_API_PORT:?set in .env.local}:4101"]
     depends_on:
       database-migrate: { condition: service_completed_successfully }
-      identity-reference: { condition: service_healthy }
       registry-reference: { condition: service_healthy }
     networks: [astra-local-network]
 
@@ -512,8 +461,6 @@ volumes:
     name: astra-local-redis-5
   astra-local-redis-6:
     name: astra-local-redis-6
-  astra-local-redpanda:
-    name: astra-local-redpanda
   astra-local-minio:
     name: astra-local-minio
   astra-local-worker-work:

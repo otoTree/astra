@@ -52,7 +52,7 @@ const removeEvents = async (eventIds: readonly string[]): Promise<void> => {
 };
 
 describe("EventRepository PostgreSQL integration", () => {
-  integrationTest("serializes Kafka delivery by aggregate while allowing concurrent relay claims", async () => {
+  integrationTest("serializes Redis Stream delivery by aggregate while allowing concurrent relay claims", async () => {
     if (!sql) throw new Error("test_database_unavailable");
     const eventIds = [`evt_order_a_${randomUUID()}`, `evt_order_b_${randomUUID()}`] as const;
     const aggregateId = `task_order_${randomUUID()}`;
@@ -61,8 +61,8 @@ describe("EventRepository PostgreSQL integration", () => {
     const repository = new EventRepository(sql, () => new Date("2020-01-01T00:01:00.000Z"));
 
     const [left, right] = await Promise.all([
-      repository.claim("kafka", "relay_left", 10, 30),
-      repository.claim("kafka", "relay_right", 10, 30),
+      repository.claim("redis_streams", "relay_left", 10, 30),
+      repository.claim("redis_streams", "relay_right", 10, 30),
     ]);
     const eventIdSet = new Set<string>(eventIds);
     const orderedClaims = [...left, ...right].filter((item) => eventIdSet.has(item.envelope.event_id));
@@ -72,7 +72,7 @@ describe("EventRepository PostgreSQL integration", () => {
     expect(firstClaim.envelope.event_id).toBe(eventIds[0]);
     expect(await repository.delivered(firstClaim, { partition: 0, offset: "1" })).toBe(true);
 
-    const next = await repository.claim("kafka", "relay_next", 10, 30);
+    const next = await repository.claim("redis_streams", "relay_next", 10, 30);
     expect(next.find((item) => item.envelope.event_id === eventIds[1])?.envelope.aggregate_version).toBe(2);
     await removeEvents(eventIds);
   });

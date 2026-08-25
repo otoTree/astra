@@ -7,11 +7,11 @@
 | Header | 类型 | 说明 |
 | --- | --- | --- |
 | `token` | string | 共绩平台 API 密钥；由 Secret 注入，不能写日志 |
-| `timestamp` | integer/string | 毫秒级 Unix 时间戳；必须使用注入 Clock |
-| `version` | string | 接口版本，当前详情页通常为 `1.0.0` |
-| `sign_str` | string | 签名模式必填；简易 token 模式的部分接口可不填 |
+| `timestamp` | integer/string | RSA 签名模式使用的毫秒级 Unix 时间戳 |
+| `version` | string | RSA 签名模式的接口版本，当前详情页通常为 `1.0.0` |
+| `sign_str` | string | 可选；启用 RSA 签名模式时发送，简易 Token 模式不发送 |
 
-供应商签名参考流程为 RSA-SHA256、PKCS#1 v1.5、Base64。待签名字符串的形式是：
+供应商签名参考流程为 RSA-SHA256、PKCS#1 v1.5、Base64。Astra 默认使用供应商文档中的简易 Token 模式；只有显式配置 `GONGJI_PRIVATE_KEY_PEM` 时才启用签名。待签名字符串的形式是：
 
 ```text
 {path}\n{version}\n{timestamp}\n{token}\n{body}
