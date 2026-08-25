@@ -104,11 +104,6 @@ networkPolicy:
       podSelector:
         matchLabels: { app.kubernetes.io/name: redis }
       ports: [{ protocol: TCP, port: 6379 }]
-    - name: kafka
-      namespaceSelector: {}
-      podSelector:
-        matchLabels: { app.kubernetes.io/name: kafka }
-      ports: [{ protocol: TCP, port: 9092 }]
     - name: https
       namespaceSelector: {}
       podSelector: {}

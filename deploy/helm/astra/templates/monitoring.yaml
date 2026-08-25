@@ -85,7 +85,7 @@ spec:
           annotations:
             summary: Astra event relay backlog is stale
             description: The oldest undelivered event has exceeded five minutes.
-            impact: Redis candidates or Kafka lifecycle consumers may lag behind PostgreSQL.
+            impact: Redis candidates or Redis Streams lifecycle consumers may lag behind PostgreSQL.
             action: Check sink connectivity, Outbox delivery leases and dead-letter backlog.
             recovery: Automatic retry and replay; rebuild Redis only after the authoritative count check remains mismatched.
         - alert: AstraProviderSnapshotStale
