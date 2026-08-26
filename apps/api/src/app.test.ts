@@ -3,9 +3,11 @@ import { capabilitiesSchema, taskSchema } from "@astra/contracts";
 import { z } from "zod";
 import { parse } from "yaml";
 import {
+  adminCookie,
   createPublicApi,
   createAdminApi,
   createWorkerControlApi,
+  type AdminApiSecurity,
   type PublicApiSecurity,
   type PublicFileUseCases,
   type PublicTaskUseCases,
@@ -432,5 +434,52 @@ describe("admin API", () => {
     const response = await app.request("http://localhost/metrics");
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("astra_process_");
+  });
+
+  test("allows credentialed preflight only for the configured Admin Web origin", async () => {
+    const security: AdminApiSecurity = {
+      sessions: {} as AdminApiSecurity["sessions"],
+      sessionCookieName: "astra_admin_session",
+      csrfCookieName: "astra_admin_csrf",
+      allowedOrigin: "https://admin.example.test",
+      cookieSameSite: "None",
+      secureCookies: true,
+      sessionTtlSeconds: 3600,
+      loginMaxFailures: 5,
+      loginLockSeconds: 900,
+    };
+    const app = withErrorHandling(createAdminApi({ ready: async () => true }, security));
+    const accepted = await app.request("http://localhost/admin/v1/sessions/login", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://admin.example.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    expect(accepted.status).toBe(204);
+    expect(accepted.headers.get("access-control-allow-origin")).toBe("https://admin.example.test");
+    expect(accepted.headers.get("access-control-allow-credentials")).toBe("true");
+
+    const denied = await app.request("http://localhost/admin/v1/sessions/login", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://attacker.example.test",
+        "access-control-request-method": "POST",
+      },
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  test("emits Secure SameSite=None cookies for a cross-site Admin Web", () => {
+    expect(
+      adminCookie("astra_admin_session", "secret", {
+        maxAge: 3600,
+        secure: true,
+        httpOnly: true,
+        sameSite: "None",
+      }),
+    ).toBe("astra_admin_session=secret; Path=/; Max-Age=3600; SameSite=None; HttpOnly; Secure");
   });
 });

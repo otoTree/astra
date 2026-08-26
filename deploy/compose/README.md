@@ -39,3 +39,24 @@ bun run test:integration:events
 
 该命令使用临时 PostgreSQL schema、独立 Redis namespace 和 Redis Stream consumer group，结束后精确清理
 临时资源；不会执行 `FLUSHALL`、复用其他项目网络或访问真实 Provider/模型。
+
+## 四镜像测试部署
+
+使用仓库外 PostgreSQL、Redis 和 S3 的集成测试环境可以把控制面收敛为四个长期运行的部署单元：
+
+1. `astra-control-plane` 使用 `bun run scripts/run-local-control-plane-bundle.ts`，在一个容器中监管 Public API、Admin API、Worker Control API、Scheduler、Provider Controller、Event Relay 和 File Sweeper；统一入口 `CONTROL_PLANE_PORT=8080` 按 `/v1`、`/admin/v1`、`/internal/v1` 转发到三个隔离 API 进程。
+2. `astra-media-validator` 只在内部网络监听 `4113`。
+3. `astra-admin-web` 在 `8080` 提供页面。同源模式通过 `ADMIN_API_URL=http://astra-control-plane:4101` 代理 `/admin/v1`；Web 与 API 分域时设置 `ADMIN_API_PUBLIC_URL=https://<admin-api-domain>`，浏览器直接访问 Admin API。
+4. `astra-h3-worker-bundle` 不开放入站端口，主动连接 Control Plane 的 Worker Control API。
+
+Bundle 只允许 `ASTRA_ENV=local` 或 `test`。数据库迁移、测试调用方身份和测试 Worker 预登记均为显式开关：
+
+```text
+ASTRA_BUNDLE_RUN_MIGRATIONS=true
+ASTRA_BUNDLE_BOOTSTRAP_IDENTITY=true
+ASTRA_BUNDLE_BOOTSTRAP_WORKER=true
+```
+
+分域测试部署还必须在 Control Plane 设置 `ADMIN_WEB_ORIGIN=https://<admin-web-domain>` 和 `ADMIN_COOKIE_SAME_SITE=none`。CORS 只返回该精确 Origin 并允许凭证，不能设置为 `*`；两个域名都必须使用 HTTPS。
+
+生产环境仍使用独立信任域 Deployment 和独立凭证；不得把测试 Bundle 作为生产控制面启动方式。

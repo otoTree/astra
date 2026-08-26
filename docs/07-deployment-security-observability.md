@@ -105,7 +105,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-minio
 
 - 管理台使用平台自管理的用户名/密码；密码只以 Argon2id 哈希保存，不接受 OIDC token 或外部身份交换。
 - `ADMIN_BOOTSTRAP_PASSWORD` 只在首次初始化不存在的管理员时使用，启动后不会覆盖已有密码，生产初始化完成后应从运行环境移除。
-- Session 使用短期 HttpOnly、Secure、SameSite Cookie；管理 API 校验 CSRF。
+- Session 使用短期 HttpOnly、Secure、SameSite Cookie；管理 API 校验 CSRF。Web 与 Admin API 分域部署时，Admin API 只允许 `ADMIN_WEB_ORIGIN` 指定的单一 Origin 携带凭证，不允许通配符，并使用 `ADMIN_COOKIE_SAME_SITE=none`。
 - 用户的组织、项目和角色均保存在 Astra，权限取组织角色与项目角色交集。
 - 登录失败按账号累计，达到阈值后短期锁定；成功登录清零失败计数。
 - 敏感 Task 请求、API Key、策略发布、模型批准和回滚均单独授权。

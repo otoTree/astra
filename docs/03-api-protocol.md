@@ -48,7 +48,7 @@ API Key 绑定组织和默认项目。调用方可以传 `X-Project-Id` 选择�
 
 管理台人员通过平台账号密码登录，角色至少包含 `viewer`、`operator`、`model_releaser`、`security_auditor` 和 `admin`。查看永久保存的原始请求需要单独的 `tasks:read_sensitive` 权限并写审计日志。
 
-管理员将用户名和密码提交到 `POST /admin/v1/sessions/login`。服务端使用 Argon2id 校验密码和本地成员关系，建立数据库会话并返回 `HttpOnly`、`SameSite=Strict` 的不透明 Session Cookie；生产 Cookie 使用 `Secure` 与 `__Host-` 前缀。写操作同时校验 `X-CSRF-Token` 与独立 CSRF Cookie。权限取组织角色和当前项目角色所授权限的交集，并在每次请求时重新求值，因此成员撤销即时生效。
+管理员将用户名和密码提交到 `POST /admin/v1/sessions/login`。服务端使用 Argon2id 校验密码和本地成员关系，建立数据库会话并返回 `HttpOnly` 的不透明 Session Cookie；同源部署默认 `SameSite=Strict`，管理台与 Admin API 使用不同站点时必须显式配置精确 Web Origin，并使用 `Secure; SameSite=None`。登录响应返回的 `csrf_token` 由管理台保存在当前标签页的 `sessionStorage`，写操作通过 `X-CSRF-Token` 回传，同时由浏览器携带 API 域名的独立 CSRF Cookie。生产 Cookie 使用 `Secure` 与 `__Host-` 前缀。权限取组织角色和当前项目角色所授权限的交集，并在每次请求时重新求值，因此成员撤销即时生效。
 
 敏感请求读取使用 `GET /admin/v1/tasks/{task_id}/sensitive-request`，要求 `tasks:read_sensitive` 与 8-500 字符的 `X-Access-Purpose`。响应禁止缓存，读取目的、人员、会话、Task 和结果必须写入不可变审计。
 

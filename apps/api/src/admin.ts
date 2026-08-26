@@ -31,6 +31,8 @@ await identityRepository.ensureLocalAdminUser({
 });
 const sessionCookieName = config.ASTRA_ENV === "production" ? "__Host-astra_admin_session" : "astra_admin_session";
 const csrfCookieName = config.ASTRA_ENV === "production" ? "__Host-astra_admin_csrf" : "astra_admin_csrf";
+const cookieSameSite =
+  config.ADMIN_COOKIE_SAME_SITE === "none" ? "None" : config.ADMIN_COOKIE_SAME_SITE === "lax" ? "Lax" : "Strict";
 const sessions = new AdminSessionManager(identityRepository, undefined, {
   auditSigningKey: config.ASTRA_AUDIT_SIGNING_KEY,
   cookieName: sessionCookieName,
@@ -58,7 +60,9 @@ serve(
         sessions,
         sessionCookieName,
         csrfCookieName,
-        secureCookies: config.ASTRA_ENV === "production",
+        ...(config.ADMIN_WEB_ORIGIN ? { allowedOrigin: config.ADMIN_WEB_ORIGIN } : {}),
+        cookieSameSite,
+        secureCookies: config.ASTRA_ENV === "production" || cookieSameSite === "None",
         sessionTtlSeconds: config.ADMIN_SESSION_TTL_SECONDS,
         loginMaxFailures: config.ADMIN_LOGIN_MAX_FAILURES,
         loginLockSeconds: config.ADMIN_LOGIN_LOCK_SECONDS,

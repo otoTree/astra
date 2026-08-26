@@ -9,4 +9,6 @@ COPY scripts ./scripts
 RUN bun install --frozen-lockfile
 ENV ASTRA_ENV=production \
     ASTRA_LOG_LEVEL=info
+EXPOSE 8080
 USER bun
+CMD ["bun", "run", "scripts/run-local-control-plane-bundle.ts"]

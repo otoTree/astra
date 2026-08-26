@@ -46,7 +46,7 @@ COPY patches ./patches
 COPY apps ./apps
 COPY packages ./packages
 COPY model-workers ./model-workers
-RUN bun install --frozen-lockfile && bun --version
+RUN bun install --frozen-lockfile --production --filter @astra/worker-agent && bun --version
 
 COPY --from=thirdparty ComfyUI /opt/comfyui
 COPY --from=thirdparty ComfyUI-H3-FaceRefine /opt/comfyui/custom_nodes/ComfyUI-H3-FaceRefine

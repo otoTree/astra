@@ -77,6 +77,8 @@ export type AdminApiSecurity = Readonly<{
   sessions: AdminSessionManager;
   sessionCookieName: string;
   csrfCookieName: string;
+  allowedOrigin?: string;
+  cookieSameSite: "Strict" | "Lax" | "None";
   secureCookies: boolean;
   sessionTtlSeconds: number;
   loginMaxFailures: number;
@@ -671,16 +673,16 @@ export function createPublicApi(
   return app;
 }
 
-const adminCookie = (
+export const adminCookie = (
   name: string,
   value: string,
-  options: Readonly<{ maxAge: number; secure: boolean; httpOnly: boolean }>,
+  options: Readonly<{ maxAge: number; secure: boolean; httpOnly: boolean; sameSite: "Strict" | "Lax" | "None" }>,
 ): string =>
   [
     `${name}=${encodeURIComponent(value)}`,
     "Path=/",
     `Max-Age=${options.maxAge}`,
-    "SameSite=Strict",
+    `SameSite=${options.sameSite}`,
     options.httpOnly ? "HttpOnly" : undefined,
     options.secure ? "Secure" : undefined,
   ]
@@ -703,6 +705,38 @@ export function createAdminApi(
     registers: [metrics],
   });
   attachRequestId(app);
+  if (security?.allowedOrigin) {
+    const allowedOrigin = security.allowedOrigin;
+    const allowedMethods = "GET, POST, PATCH, DELETE, OPTIONS";
+    const allowedHeaders =
+      "Accept, Content-Type, Idempotency-Key, If-Match, X-Access-Purpose, X-CSRF-Token, X-Request-Id";
+    app.use("/admin/v1/*", async (c, next) => {
+      const origin = c.req.header("Origin");
+      if (c.req.method === "OPTIONS") {
+        if (origin !== allowedOrigin) {
+          return errorResponse(requestId(c.req.raw), 403, "cors_origin_denied", "CORS origin denied");
+        }
+        const requestedMethod = c.req.header("Access-Control-Request-Method")?.toUpperCase();
+        if (!requestedMethod || !allowedMethods.split(", ").includes(requestedMethod)) {
+          return errorResponse(requestId(c.req.raw), 403, "cors_method_denied", "CORS method denied");
+        }
+        c.header("Access-Control-Allow-Origin", allowedOrigin);
+        c.header("Access-Control-Allow-Credentials", "true");
+        c.header("Access-Control-Allow-Methods", allowedMethods);
+        c.header("Access-Control-Allow-Headers", allowedHeaders);
+        c.header("Access-Control-Max-Age", "600");
+        c.header("Vary", "Origin");
+        return c.body(null, 204);
+      }
+      await next();
+      if (origin === allowedOrigin) {
+        c.header("Access-Control-Allow-Origin", allowedOrigin);
+        c.header("Access-Control-Allow-Credentials", "true");
+        c.header("Access-Control-Expose-Headers", "Idempotency-Replayed, X-Request-Id");
+        c.header("Vary", "Origin");
+      }
+    });
+  }
   app.use("/admin/v1/*", async (c, next) => {
     await next();
     requests.inc({
@@ -838,6 +872,7 @@ export function createAdminApi(
           maxAge: security.sessionTtlSeconds,
           secure: security.secureCookies,
           httpOnly: true,
+          sameSite: security.cookieSameSite,
         }),
         { append: true },
       );
@@ -847,6 +882,7 @@ export function createAdminApi(
           maxAge: security.sessionTtlSeconds,
           secure: security.secureCookies,
           httpOnly: false,
+          sameSite: security.cookieSameSite,
         }),
         { append: true },
       );
@@ -1267,6 +1303,7 @@ export function createAdminApi(
           maxAge: 0,
           secure: security.secureCookies,
           httpOnly: true,
+          sameSite: security.cookieSameSite,
         }),
         { append: true },
       );
@@ -1276,6 +1313,7 @@ export function createAdminApi(
           maxAge: 0,
           secure: security.secureCookies,
           httpOnly: false,
+          sameSite: security.cookieSameSite,
         }),
         { append: true },
       );

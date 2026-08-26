@@ -69,8 +69,25 @@ describe("service configuration", () => {
       ADMIN_BOOTSTRAP_PASSWORD: "p".repeat(16),
       ADMIN_BOOTSTRAP_ORGANIZATION_ID: "org_local",
       ADMIN_BOOTSTRAP_PROJECT_ID: "project_local",
+      ADMIN_WEB_ORIGIN: "https://admin.example.test",
+      ADMIN_COOKIE_SAME_SITE: "none",
     });
     expect(config.ADMIN_BOOTSTRAP_USERNAME).toBe("admin");
+    expect(config.ADMIN_WEB_ORIGIN).toBe("https://admin.example.test");
+    expect(config.ADMIN_COOKIE_SAME_SITE).toBe("none");
+    expect(() =>
+      loadAdminApiConfig({
+        DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",
+        ASTRA_REQUEST_ENCRYPTION_KEY: "e".repeat(32),
+        ASTRA_AUDIT_SIGNING_KEY: "a".repeat(32),
+        ADMIN_BOOTSTRAP_USERNAME: "admin",
+        ADMIN_BOOTSTRAP_PASSWORD: "p".repeat(16),
+        ADMIN_BOOTSTRAP_ORGANIZATION_ID: "org_local",
+        ADMIN_BOOTSTRAP_PROJECT_ID: "project_local",
+        ADMIN_WEB_ORIGIN: "http://admin.example.test",
+        ADMIN_COOKIE_SAME_SITE: "none",
+      }),
+    ).toThrow();
     expect(() =>
       loadAdminApiConfig({
         DATABASE_URL: "postgres://astra:astra@localhost:5432/astra",

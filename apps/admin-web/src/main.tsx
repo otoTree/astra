@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { adminApiRequestUrl, api, mutate, saveCsrfToken } from "./admin-api.ts";
 import "./styles.css";
 
 type Row = Record<string, unknown>;
@@ -7,42 +8,6 @@ type ListResponse = { data: Row[]; has_more: boolean; next_after: string | null 
 type Session = { display_name: string | null; email: string | null; project_id: string; permissions: string[] };
 type View = "overview" | "tasks" | "capacity" | "releases" | "audit";
 
-const api = async <T,>(path: string): Promise<T> => {
-  const response = await fetch(path, { credentials: "include", headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error(response.status === 401 ? "session_required" : `request_failed:${response.status}`);
-  return (await response.json()) as T;
-};
-const cookie = (name: string): string => {
-  const prefix = `${name}=`;
-  const value = document.cookie
-    .split(";")
-    .map((item) => item.trim())
-    .find((item) => item.startsWith(prefix));
-  return value ? decodeURIComponent(value.slice(prefix.length)) : "";
-};
-const mutate = async <T,>(
-  path: string,
-  method: "POST" | "PATCH",
-  body: unknown,
-  idempotencyKey: string,
-  version?: number,
-): Promise<T> => {
-  const response = await fetch(path, {
-    method,
-    credentials: "include",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "idempotency-key": idempotencyKey,
-      "x-csrf-token": cookie("astra_admin_csrf") || cookie("__Host-astra_admin_csrf"),
-      ...(version === undefined ? {} : { "if-match": `"${version}"` }),
-    },
-    body: JSON.stringify(body),
-  });
-  const payload = (await response.json().catch(() => ({}))) as T & { error?: { code?: string } };
-  if (!response.ok) throw new Error(payload.error?.code ?? `request_failed:${response.status}`);
-  return payload;
-};
 const text = (value: unknown, fallback = "-"): string =>
   value === null || value === undefined || value === "" ? fallback : String(value);
 const time = (value: unknown): string =>
@@ -983,7 +948,7 @@ function App() {
     event.preventDefault();
     setLoginBusy(true);
     setLoginError(null);
-    const response = await fetch("/admin/v1/sessions/login", {
+    const response = await fetch(adminApiRequestUrl("/admin/v1/sessions/login"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       credentials: "include",
@@ -995,7 +960,9 @@ function App() {
       setLoginBusy(false);
       return;
     }
-    setSession(await api<Session>("/admin/v1/sessions/current"));
+    const issued = (await response.json()) as Session & { csrf_token: string };
+    saveCsrfToken(issued.csrf_token);
+    setSession(issued);
     setAuthError(false);
     setLoginBusy(false);
   };

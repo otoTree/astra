@@ -7,6 +7,27 @@ const environmentSchema = z.object({
 
 const port = (defaultValue: number) => z.coerce.number().int().min(1).max(65535).default(defaultValue);
 const requiredUrl = z.string().url();
+const httpOrigin = z
+  .string()
+  .url()
+  .transform((value, context) => {
+    const url = new URL(value);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "must be an HTTP(S) origin without path or credentials",
+      });
+      return z.NEVER;
+    }
+    return url.origin;
+  });
 
 export const publicApiConfigSchema = environmentSchema.extend({
   PUBLIC_API_PORT: port(4100),
@@ -24,25 +45,37 @@ export const publicApiConfigSchema = environmentSchema.extend({
   MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(610),
 });
 
-export const adminApiConfigSchema = environmentSchema.extend({
-  ADMIN_API_PORT: port(4101),
-  DATABASE_URL: requiredUrl,
-  ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
-  ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
-  ADMIN_BOOTSTRAP_USERNAME: z.string().min(3).max(128),
-  ADMIN_BOOTSTRAP_PASSWORD: z.string().min(16).max(1024),
-  ADMIN_BOOTSTRAP_ORGANIZATION_ID: z.string().min(1).max(128),
-  ADMIN_BOOTSTRAP_PROJECT_ID: z.string().min(1).max(128),
-  ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().min(1).max(500).default("Administrator"),
-  ADMIN_LOGIN_MAX_FAILURES: z.coerce.number().int().min(3).max(20).default(5),
-  ADMIN_LOGIN_LOCK_SECONDS: z.coerce.number().int().min(60).max(86400).default(900),
-  ADMIN_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(28800),
-  OCI_REGISTRY_ALLOW_PLAIN_HTTP: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((value) => value === "true"),
-  OCI_REGISTRY_BEARER_TOKEN: z.string().min(16).optional(),
-});
+export const adminApiConfigSchema = environmentSchema
+  .extend({
+    ADMIN_API_PORT: port(4101),
+    DATABASE_URL: requiredUrl,
+    ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
+    ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
+    ADMIN_WEB_ORIGIN: httpOrigin.optional(),
+    ADMIN_COOKIE_SAME_SITE: z.enum(["strict", "lax", "none"]).default("strict"),
+    ADMIN_BOOTSTRAP_USERNAME: z.string().min(3).max(128),
+    ADMIN_BOOTSTRAP_PASSWORD: z.string().min(16).max(1024),
+    ADMIN_BOOTSTRAP_ORGANIZATION_ID: z.string().min(1).max(128),
+    ADMIN_BOOTSTRAP_PROJECT_ID: z.string().min(1).max(128),
+    ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().min(1).max(500).default("Administrator"),
+    ADMIN_LOGIN_MAX_FAILURES: z.coerce.number().int().min(3).max(20).default(5),
+    ADMIN_LOGIN_LOCK_SECONDS: z.coerce.number().int().min(60).max(86400).default(900),
+    ADMIN_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(28800),
+    OCI_REGISTRY_ALLOW_PLAIN_HTTP: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    OCI_REGISTRY_BEARER_TOKEN: z.string().min(16).optional(),
+  })
+  .superRefine((config, context) => {
+    if (config.ADMIN_COOKIE_SAME_SITE === "none" && !config.ADMIN_WEB_ORIGIN?.startsWith("https://")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ADMIN_WEB_ORIGIN"],
+        message: "ADMIN_WEB_ORIGIN must use HTTPS when ADMIN_COOKIE_SAME_SITE=none",
+      });
+    }
+  });
 
 export const workerControlApiConfigSchema = environmentSchema.extend({
   WORKER_CONTROL_API_PORT: port(4102),
