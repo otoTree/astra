@@ -7,7 +7,7 @@ import type {
   RedisQueueCandidate,
   RedisTaskQueueState,
 } from "@astra/database";
-import { createCluster, type RedisClusterType } from "redis";
+import { createRedisCommandClient, type RedisCommandClient, type RedisDeploymentMode } from "@astra/queue";
 
 export type EventPublishResult = Readonly<Record<string, string | number | boolean>>;
 
@@ -113,7 +113,7 @@ const streamFor = (eventType: string, streams: RedisStreamMap): string => {
  */
 export class RedisStreamsEventPublisher implements EventPublisher {
   readonly sink = "redis_streams" as const;
-  private readonly client: RedisClusterType;
+  private readonly client: RedisCommandClient;
   private connected = false;
   private connecting: Promise<void> | undefined;
 
@@ -122,11 +122,11 @@ export class RedisStreamsEventPublisher implements EventPublisher {
     private readonly streams: RedisStreamMap,
     private readonly maximumLength = 100_000,
     private readonly retentionSeconds = 604_800,
+    mode: RedisDeploymentMode = "cluster",
   ) {
     if (!Number.isInteger(maximumLength) || maximumLength < 1) throw new Error("invalid_redis_stream_max_length");
     if (!Number.isInteger(retentionSeconds) || retentionSeconds < 60) throw new Error("invalid_redis_stream_retention");
-    this.client = createCluster({ rootNodes: [{ url: rootUrl }] });
-    this.client.on("error", () => undefined);
+    this.client = createRedisCommandClient(rootUrl, mode);
   }
 
   async connect(): Promise<void> {

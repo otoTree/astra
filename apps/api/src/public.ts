@@ -37,7 +37,7 @@ serve(
         authenticator: new PublicApiAuthenticator(identityRepository, {
           auditSigningKey: config.ASTRA_AUDIT_SIGNING_KEY,
         }),
-        rateLimiter: new RedisPublicApiRateLimiter(config.REDIS_URL),
+        rateLimiter: new RedisPublicApiRateLimiter(config.REDIS_URL, config.REDIS_MODE),
       },
     ),
   ),

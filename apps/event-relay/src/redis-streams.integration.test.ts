@@ -1,13 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createCluster, type RedisClusterType } from "redis";
+import { createRedisCommandClient, type RedisCommandClient, type RedisDeploymentMode } from "@astra/queue";
 import { RedisStreamsEventPublisher } from "./relay.ts";
 
 const rootUrl = process.env.ASTRA_TEST_REDIS_URL;
+const redisMode: RedisDeploymentMode = process.env.ASTRA_TEST_REDIS_MODE === "standalone" ? "standalone" : "cluster";
 const integrationTest = rootUrl ? test : test.skip;
-let client: RedisClusterType | undefined;
+let client: RedisCommandClient | undefined;
 let publisher: RedisStreamsEventPublisher | undefined;
+let taskStream: string | undefined;
 
 afterAll(async () => {
+  if (client && taskStream) await client.del(taskStream);
   await Promise.allSettled([publisher?.close(), client?.close()]);
 });
 
@@ -15,8 +18,8 @@ describe("RedisStreamsEventPublisher integration", () => {
   integrationTest("appends an event to a Redis Stream", async () => {
     if (!rootUrl) throw new Error("test_redis_unavailable");
     const suffix = `integration_${Date.now()}`;
-    const taskStream = `astra:{events}:${suffix}:task:v1`;
-    client = createCluster({ rootNodes: [{ url: rootUrl }] });
+    taskStream = `astra:{events}:${suffix}:task:v1`;
+    client = createRedisCommandClient(rootUrl, redisMode);
     await client.connect();
     publisher = new RedisStreamsEventPublisher(
       rootUrl,
@@ -29,6 +32,7 @@ describe("RedisStreamsEventPublisher integration", () => {
       },
       1000,
       3600,
+      redisMode,
     );
     await publisher.connect();
     const streamId = await publisher.publish({

@@ -9,7 +9,7 @@ const logger = createLogger("event-relay");
 const database = createDatabase(config.DATABASE_URL);
 const databaseHealth = new DatabaseHealth(database.client);
 const repository = new EventRepository(database.client);
-const candidateIndex = new RedisCandidateIndex(config.REDIS_URL);
+const candidateIndex = new RedisCandidateIndex(config.REDIS_URL, "astra", config.REDIS_MODE);
 const instanceId = `relay_${Bun.randomUUIDv7()}`;
 const redisStreamsPublisher = new RedisStreamsEventPublisher(
   config.REDIS_URL,
@@ -22,6 +22,7 @@ const redisStreamsPublisher = new RedisStreamsEventPublisher(
   },
   config.REDIS_EVENT_STREAM_MAXLEN,
   config.REDIS_EVENT_STREAM_RETENTION_SECONDS,
+  config.REDIS_MODE,
 );
 const redisPublisher = new RedisEventPublisher(repository, candidateIndex);
 const relay = new OutboxRelay(

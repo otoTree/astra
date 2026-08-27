@@ -5,9 +5,10 @@ import { RedisCandidateIndex } from "@astra/queue";
 import { RedisRebuildCoordinator, type RedisRebuildRepository } from "./relay.ts";
 
 const redisUrl = process.env.ASTRA_TEST_REDIS_URL;
+const redisMode = process.env.ASTRA_TEST_REDIS_MODE === "standalone" ? "standalone" : "cluster";
 const integrationTest = redisUrl ? test : test.skip;
 const namespace = `astra:test:rebuild:${randomUUID()}`;
-const index = redisUrl ? new RedisCandidateIndex(redisUrl, namespace) : undefined;
+const index = redisUrl ? new RedisCandidateIndex(redisUrl, namespace, redisMode) : undefined;
 const generations = new Set<string>();
 
 afterAll(async () => {
@@ -16,7 +17,7 @@ afterAll(async () => {
   await index.close();
 });
 
-describe("RedisRebuildCoordinator Cluster recovery", () => {
+describe("RedisRebuildCoordinator recovery", () => {
   integrationTest("restores candidates into a new generation after complete namespace loss", async () => {
     if (!index) throw new Error("test_redis_unavailable");
     const candidate: RedisQueueCandidate = {

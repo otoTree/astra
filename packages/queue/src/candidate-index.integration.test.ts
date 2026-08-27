@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { RedisCandidateIndex } from "./index.ts";
 
 const redisUrl = process.env.ASTRA_TEST_REDIS_URL;
+const redisMode = process.env.ASTRA_TEST_REDIS_MODE === "standalone" ? "standalone" : "cluster";
 const integrationTest = redisUrl ? test : test.skip;
 const namespace = `astra:test:${randomUUID()}`;
-const index = redisUrl ? new RedisCandidateIndex(redisUrl, namespace) : undefined;
+const index = redisUrl ? new RedisCandidateIndex(redisUrl, namespace, redisMode) : undefined;
 const generations = new Set<string>();
 
 afterAll(async () => {
@@ -14,7 +15,7 @@ afterAll(async () => {
   await index.close();
 });
 
-describe("RedisCandidateIndex Cluster integration", () => {
+describe("RedisCandidateIndex integration", () => {
   integrationTest("keeps duplicate queue events idempotent and removes terminal tasks", async () => {
     if (!index) throw new Error("test_redis_unavailable");
     const generation = `generation_${randomUUID()}`;

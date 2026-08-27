@@ -1,7 +1,8 @@
 import type { TaskStatus } from "@astra/contracts";
 import type { ProjectContext } from "@astra/auth";
-import { createCluster, type RedisClusterType } from "redis";
+import { createRedisCommandClient, type RedisCommandClient, type RedisDeploymentMode } from "./redis-client.ts";
 export * from "./capacity.ts";
+export * from "./redis-client.ts";
 
 export type QueueClass = "online" | "batch";
 export type SlotState = "running" | "reserved" | "unknown" | "draining";
@@ -237,13 +238,12 @@ return {allowed, math.max(0, retry_after_ms)}
 `;
 
 export class RedisPublicApiRateLimiter implements PublicApiRateLimiter {
-  private readonly client: RedisClusterType;
+  private readonly client: RedisCommandClient;
   private connection: Promise<void> | undefined;
   private connectedState = false;
 
-  constructor(rootUrl: string) {
-    this.client = createCluster({ rootNodes: [{ url: rootUrl }] });
-    this.client.on("error", () => undefined);
+  constructor(rootUrl: string, mode: RedisDeploymentMode = "cluster") {
+    this.client = createRedisCommandClient(rootUrl, mode);
   }
 
   private async connected(): Promise<void> {
@@ -288,10 +288,7 @@ export class RedisPublicApiRateLimiter implements PublicApiRateLimiter {
   async ready(): Promise<boolean> {
     try {
       await this.connected();
-      const masters = await this.client.getMasters();
-      const master = masters[0];
-      if (!master?.client) return false;
-      await master.client.ping();
+      await this.client.ping();
       return true;
     } catch {
       return false;
@@ -315,17 +312,17 @@ export type RedisCandidate = Readonly<{
 }>;
 
 export class RedisCandidateIndex {
-  private readonly client: RedisClusterType;
+  private readonly client: RedisCommandClient;
   private connection: Promise<void> | undefined;
   private connectedState = false;
 
   constructor(
     rootUrl: string,
     private readonly namespace = "astra",
+    mode: RedisDeploymentMode = "cluster",
   ) {
     if (!/^[a-zA-Z0-9:_-]+$/.test(namespace)) throw new Error("invalid_redis_namespace");
-    this.client = createCluster({ rootNodes: [{ url: rootUrl }] });
-    this.client.on("error", () => undefined);
+    this.client = createRedisCommandClient(rootUrl, mode);
   }
 
   private async connected(): Promise<void> {
@@ -450,9 +447,7 @@ export class RedisCandidateIndex {
   async ready(): Promise<boolean> {
     try {
       await this.connected();
-      const masters = await this.client.getMasters();
-      if (!masters[0]?.client) return false;
-      await masters[0].client.ping();
+      await this.client.ping();
       return true;
     } catch {
       return false;
