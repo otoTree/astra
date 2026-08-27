@@ -221,6 +221,7 @@ const synchronize = async (
       quarantinedObjects.set({ provider: targetProvider }, reasonCount);
       syncTotal.inc({ provider: targetProvider, outcome: status.status });
       if (status.status === "quarantined") {
+        errorCode = "snapshot_quarantined";
         logger.error("provider_snapshot_quarantined", {
           provider: targetProvider,
           run_id: status.latestAttemptRunId,

@@ -573,8 +573,8 @@ function ModelPoolCreatePanel({ onCreated }: { onCreated: () => void }) {
         <span>调度配置</span>
       </div>
       <p className="section-note">
-        模型池是“一个模型 Release + 一种 GPU
-        供给”的调度单元。创建后默认为停用状态，还需要补齐容量、预算、区域和重试策略才能启用。
+        模型池是“一个模型 Release + 一种 GPU 供给”的调度单元。同步 GPU 只会更新可用库存，不会自动创建模型池；选择已批准
+        Release 和 GPU 供给后点击创建，再补齐容量、预算、区域和重试策略才能启用。
       </p>
       <form className="pool-create-form" onSubmit={submit}>
         <label>
@@ -1302,7 +1302,14 @@ function App() {
               title="GPU 库存"
               path="/admin/v1/inventory"
               key={`inventory-${providerSyncVersion}`}
-              columns={["region_name", "gpu_sku", "available_replicas", "price_per_gpu_hour_minor", "observed_at"]}
+              columns={[
+                "provider",
+                "region_name",
+                "gpu_sku",
+                "available_replicas",
+                "price_per_gpu_hour_minor",
+                "observed_at",
+              ]}
             />
             <ResourceTable
               title="容量计划"
