@@ -1,6 +1,6 @@
 import { ProviderError, type ProviderErrorCode } from "@astra/provider-core";
 
-const authenticationCodes = new Set(["C001", "C002", "C004", "C005", "C006", "C007"]);
+const authenticationCodes = new Set(["A003", "C001", "C002", "C004", "C005", "C006", "C007"]);
 const rateLimitCodes = new Set(["C008", "C009"]);
 
 export const mapGongjiError = (providerCode: string, httpStatus: number, retryAfterSeconds?: number): ProviderError => {

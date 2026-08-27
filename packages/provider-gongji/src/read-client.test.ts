@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, verify } from "node:crypto";
 import { decodeResources, decodeTaskList } from "./dto.ts";
+import { mapGongjiError } from "./errors.ts";
 import { GongjiReadClient } from "./read-client.ts";
 import { redactProviderPayload } from "./redaction.ts";
 import { gongjiSigningInput, signGongjiRequest } from "./signing.ts";
@@ -13,6 +14,10 @@ const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 20
 const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
 describe("Gongji read transport", () => {
+  test("maps the provider token expiry response to an authentication failure", () => {
+    expect(mapGongjiError("A003", 200)).toMatchObject({ code: "authentication_failed", retryable: false });
+  });
+
   test("signs the documented canonical request using RSA-SHA256 PKCS1 v1.5", () => {
     const input = {
       path: "/api/deployment/resource/search",
@@ -159,7 +164,7 @@ describe("Gongji read transport", () => {
     });
     expect(capturedHeaders?.get("token")).toBe("contract-token");
     expect(capturedHeaders?.get("sign_str")).toBeNull();
-    expect(capturedHeaders?.get("timestamp")).toBeNull();
-    expect(capturedHeaders?.get("version")).toBeNull();
+    expect(capturedHeaders?.get("timestamp")).toBe(String(observedAt.getTime()));
+    expect(capturedHeaders?.get("version")).toBe("1.0.0");
   });
 });

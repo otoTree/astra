@@ -289,10 +289,10 @@ export class GongjiReadClient implements ProviderObservationReader {
       const headers: Record<string, string> = {
         accept: "application/json",
         token: credentials.token,
+        timestamp: String(timestampMilliseconds),
+        version,
       };
       if (credentials.privateKeyPem) {
-        headers.timestamp = String(timestampMilliseconds);
-        headers.version = version;
         headers.sign_str = signGongjiRequest({
           path,
           version,
