@@ -169,7 +169,9 @@ function ResourceTable({ title, path, columns }: { title: string; path: string; 
                 <tr key={text(row.id)}>
                   {columns.map((column) => (
                     <td key={column}>
-                      {column.includes("status") || column.includes("state") ? (
+                      {column === "gpu_targets" ? (
+                        poolGpuSummary(row)
+                      ) : column.includes("status") || column.includes("state") ? (
                         <Status value={row[column]} />
                       ) : column.endsWith("_at") ? (
                         time(row[column])
@@ -187,6 +189,79 @@ function ResourceTable({ title, path, columns }: { title: string; path: string; 
     </section>
   );
 }
+
+function GpuInventoryPanel({ refreshVersion }: { refreshVersion: number }) {
+  const [rows, setRows] = useState<Row[]>([]);
+  useEffect(() => {
+    void api<ListResponse>(`/admin/v1/inventory?limit=200&refresh=${refreshVersion}`).then((value) =>
+      setRows(value.data),
+    );
+  }, [refreshVersion]);
+  const groups = useMemo(() => {
+    const grouped = new Map<string, Row[]>();
+    for (const row of rows) {
+      const key = `${text(row.provider)}|${text(row.gpu_sku)}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    return [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right));
+  }, [rows]);
+  return (
+    <section className="band">
+      <div className="section-title">
+        <h2>GPU 库存（按类型）</h2>
+        <span>{groups.length} 种</span>
+      </div>
+      {groups.length === 0 ? (
+        <Empty label="暂无 GPU 库存" />
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>provider</th>
+                <th>GPU 类型</th>
+                <th>总可用颗数</th>
+                <th>区域分布</th>
+                <th>显存</th>
+                <th>更新时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map(([key, items]) => {
+                const first = items[0] ?? {};
+                const total = items.reduce((sum, row) => sum + Number(row.available_replicas ?? 0), 0);
+                return (
+                  <tr key={key}>
+                    <td>{text(first.provider)}</td>
+                    <td className="mono">{text(first.gpu_sku)}</td>
+                    <td>{total}</td>
+                    <td>
+                      {items
+                        .map(
+                          (row) => `${text(row.region_name, text(row.region_id))}: ${text(row.available_replicas)} 颗`,
+                        )
+                        .join("；")}
+                    </td>
+                    <td>{Math.round(Number(first.gpu_memory_bytes ?? 0) / 1024 / 1024 / 1024)} GB</td>
+                    <td>{time(first.observed_at)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const poolGpuSummary = (pool: Row): string => {
+  const targets = Array.isArray(pool.gpu_targets) ? (pool.gpu_targets as Row[]) : [];
+  if (targets.length === 0) return `${text(pool.provider)} · ${text(pool.region_id)} · ${text(pool.gpu_sku)}`;
+  const skus = [...new Set(targets.map((target) => text(target.gpu_sku)))];
+  const regions = [...new Set(targets.map((target) => text(target.region_id)))];
+  return `${skus.join(" + ")} · ${regions.length} 个区域 · ${targets.length} 个供给目标`;
+};
 
 function Overview() {
   const [counts, setCounts] = useState({ queued: 0, replicas: 0, workers: 0, releases: 0 });
@@ -521,6 +596,14 @@ function ModelPoolCreatePanel({ onCreated }: { onCreated: () => void }) {
   const [inventory, setInventory] = useState<Row[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inventoryGroups = useMemo(() => {
+    const groups = new Map<string, Row[]>();
+    for (const row of inventory) {
+      const sku = text(row.gpu_sku);
+      groups.set(sku, [...(groups.get(sku) ?? []), row]);
+    }
+    return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right));
+  }, [inventory]);
   useEffect(() => {
     void Promise.all([
       api<ListResponse>("/admin/v1/releases?limit=200"),
@@ -536,12 +619,13 @@ function ModelPoolCreatePanel({ onCreated }: { onCreated: () => void }) {
     event.preventDefault();
     const form = event.currentTarget;
     const values = new FormData(form);
-    const selected = inventory.find(
-      (row) => `${row.provider}|${row.region_id}|${row.gpu_sku}` === values.get("inventory"),
-    );
     const release = releases.find((row) => row.id === values.get("release_id"));
-    if (!selected || !release) {
-      setError("请选择已批准 Release 和有效的 GPU 供给");
+    const targets = values.getAll("gpu_target").flatMap((value) => {
+      const [provider, region_id, gpu_sku] = String(value).split("|");
+      return provider && region_id && gpu_sku ? [{ provider, region_id, gpu_sku }] : [];
+    });
+    if (targets.length === 0 || !release) {
+      setError("请选择已批准 Release 和至少一种 GPU 类型/区域供给");
       return;
     }
     setBusy(true);
@@ -551,9 +635,7 @@ function ModelPoolCreatePanel({ onCreated }: { onCreated: () => void }) {
       "POST",
       {
         release_id: release.id,
-        provider: selected.provider,
-        region_id: selected.region_id,
-        gpu_sku: selected.gpu_sku,
+        gpu_targets: targets,
         execution_mode: values.get("execution_mode"),
         reason: values.get("reason"),
       },
@@ -573,8 +655,8 @@ function ModelPoolCreatePanel({ onCreated }: { onCreated: () => void }) {
         <span>调度配置</span>
       </div>
       <p className="section-note">
-        模型池是“一个模型 Release + 一种 GPU 供给”的调度单元。同步 GPU 只会更新可用库存，不会自动创建模型池；选择已批准
-        Release 和 GPU 供给后点击创建，再补齐容量、预算、区域和重试策略才能启用。
+        模型池是“一个模型 Release + 一组可调度 GPU 供给”的调度单元。同步只更新库存，不会自动创建池；你可以按 GPU
+        类型和区域多选供给，组成混合 GPU 池，再补齐容量、预算、区域和重试策略后启用。
       </p>
       <form className="pool-create-form" onSubmit={submit}>
         <label>
@@ -590,23 +672,28 @@ function ModelPoolCreatePanel({ onCreated }: { onCreated: () => void }) {
             ))}
           </select>
         </label>
-        <label>
-          GPU 供给
-          <select required name="inventory" defaultValue="">
-            <option value="" disabled>
-              选择同步到的 GPU 设备
-            </option>
-            {inventory.map((row) => {
-              const value = `${row.provider}|${row.region_id}|${row.gpu_sku}`;
-              return (
-                <option key={value} value={value}>
-                  {text(row.provider)} · {text(row.region_name, text(row.region_id))} · {text(row.gpu_sku)} · 可用{" "}
-                  {text(row.available_replicas)}
-                </option>
-              );
-            })}
+        <fieldset className="wide">
+          <legend>GPU 供给（按 GPU 类型分组，可多选）</legend>
+          <select required multiple name="gpu_target" size={Math.min(12, Math.max(4, inventory.length))}>
+            {inventoryGroups.map(([sku, rows]) => (
+              <optgroup
+                key={sku}
+                label={`${sku} · ${rows.reduce((total, row) => total + Number(row.available_replicas ?? 0), 0)} 颗`}
+              >
+                {rows.map((row) => {
+                  const value = `${row.provider}|${row.region_id}|${row.gpu_sku}`;
+                  return (
+                    <option key={value} value={value}>
+                      {text(row.provider)} · {text(row.region_name, text(row.region_id))} · 可用{" "}
+                      {text(row.available_replicas)}
+                    </option>
+                  );
+                })}
+              </optgroup>
+            ))}
           </select>
-        </label>
+          <small>按住 Command/Ctrl 可多选；同一池可以混合多个 GPU 类型和区域。</small>
+        </fieldset>
         <label>
           执行模式
           <select name="execution_mode" defaultValue="deployment">
@@ -1036,7 +1123,7 @@ function ReleaseWorkbench() {
             </option>
             {eligiblePools.map((pool) => (
               <option key={text(pool.id)} value={text(pool.id)}>
-                {text(pool.provider)} · {text(pool.region_id)} · {text(pool.gpu_sku)}
+                {poolGpuSummary(pool)}
               </option>
             ))}
           </select>
@@ -1296,21 +1383,9 @@ function App() {
               title="模型池"
               path="/admin/v1/pools"
               key={`pools-${poolVersion}`}
-              columns={["id", "release_id", "provider", "region_id", "gpu_sku", "status"]}
+              columns={["id", "release_id", "gpu_targets", "status"]}
             />
-            <ResourceTable
-              title="GPU 库存"
-              path="/admin/v1/inventory"
-              key={`inventory-${providerSyncVersion}`}
-              columns={[
-                "provider",
-                "region_name",
-                "gpu_sku",
-                "available_replicas",
-                "price_per_gpu_hour_minor",
-                "observed_at",
-              ]}
-            />
+            <GpuInventoryPanel refreshVersion={providerSyncVersion} />
             <ResourceTable
               title="容量计划"
               path="/admin/v1/capacity-plans"
