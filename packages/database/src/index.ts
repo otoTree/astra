@@ -18,6 +18,7 @@ export * from "./provider-operation-repository.ts";
 export * from "./retry-policy.ts";
 export * from "./capacity-plan-repository.ts";
 export * from "./provider-credential-repository.ts";
+export * from "./provider-sync-request-repository.ts";
 
 export function createDatabase(databaseUrl: string) {
   const client = postgres(databaseUrl, { prepare: false });

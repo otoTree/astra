@@ -53,6 +53,14 @@ const pinnedReference = (source: string, digest: string): string => {
 };
 
 const id = (prefix: string): string => `${prefix}_${Bun.randomUUIDv7()}`;
+const runtimeEnvironment = (manifest: unknown): Readonly<Record<string, string>> => {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return {};
+  const environment = (manifest as Record<string, unknown>).runtime_environment;
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) return {};
+  return Object.fromEntries(
+    Object.entries(environment).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+};
 
 export class RolloutController {
   private readonly controllerId = `rollout_controller_${Bun.randomUUIDv7()}`;
@@ -103,6 +111,7 @@ export class RolloutController {
     sourceImageDigest: string;
     sourceImage: string;
     gpuMemoryBytes: number;
+    runtimeEnvironment: Readonly<Record<string, string>>;
   }> {
     return row.direction === "forward"
       ? {
@@ -115,6 +124,7 @@ export class RolloutController {
             ((row.target_manifest as Record<string, unknown>)?.resource_requirements as Record<string, unknown>)
               ?.gpu_memory_bytes ?? 1,
           ),
+          runtimeEnvironment: runtimeEnvironment(row.target_manifest),
         }
       : {
           releaseId: String(row.source_release_id),
@@ -126,6 +136,7 @@ export class RolloutController {
             ((row.source_manifest as Record<string, unknown>)?.resource_requirements as Record<string, unknown>)
               ?.gpu_memory_bytes ?? 1,
           ),
+          runtimeEnvironment: runtimeEnvironment(row.source_manifest),
         };
   }
 
@@ -313,6 +324,7 @@ export class RolloutController {
       tokenHash: createHmac("sha256", this.workerTokenPepper).update(token).digest("hex"),
       expiresAt,
       environment: {
+        ...desired.runtimeEnvironment,
         WORKER_BOOTSTRAP_TOKEN: token,
         WORKER_CONTROL_URL: this.workerControlUrl,
         WORKER_PROVIDER: row.provider,

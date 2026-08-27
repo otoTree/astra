@@ -1,4 +1,4 @@
-import { pgTable, text, integer, timestamp, jsonb, boolean, index, uniqueIndex, bigint } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const organizations = pgTable("organizations", {
   id: text("id").primaryKey(),
@@ -590,6 +590,27 @@ export const providerSnapshotState = pgTable("provider_snapshot_state", {
   version: integer("version").notNull(),
   lastErrorCode: text("last_error_code"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const providerSyncRequests = pgTable("provider_sync_requests", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  projectId: text("project_id").notNull(),
+  provider: text("provider").notNull(),
+  status: text("status").notNull(),
+  reason: text("reason").notNull(),
+  requestedBy: text("requested_by").notNull(),
+  attemptCount: integer("attempt_count").notNull(),
+  snapshotRunId: text("snapshot_run_id"),
+  errorCode: text("error_code"),
+  leaseOwner: text("lease_owner"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  version: integer("version").notNull(),
 });
 
 export const modelPools = pgTable("model_pools", {

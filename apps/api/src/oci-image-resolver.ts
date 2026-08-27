@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { releaseManifestSchema } from "@astra/contracts";
 import { AdminManagementError, type OciImageResolver, type ResolvedOciImage } from "@astra/database";
 
 const manifestAccept = [
@@ -6,6 +7,9 @@ const manifestAccept = [
   "application/vnd.docker.distribution.manifest.v2+json",
 ].join(", ");
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
+const sha256Pattern = /^[0-9a-f]{64}$/;
+const releaseManifestAnnotation = "io.astra.release-manifest.v1";
+const workflowHashAnnotation = "io.astra.workflow-sha256";
 
 type ParsedReference = Readonly<{ registry: string; repository: string; reference: string; pinnedDigest?: string }>;
 type OciFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -78,7 +82,11 @@ export class DistributionOciImageResolver implements OciImageResolver {
     if (parsed.pinnedDigest && parsed.pinnedDigest !== digest) {
       throw new AdminManagementError("oci_pinned_digest_mismatch", 409);
     }
-    let manifest: { mediaType?: unknown; config?: { digest?: unknown } };
+    let manifest: {
+      mediaType?: unknown;
+      config?: { digest?: unknown };
+      annotations?: Record<string, unknown>;
+    };
     try {
       manifest = JSON.parse(Buffer.from(bytes).toString("utf8")) as typeof manifest;
     } catch {
@@ -95,12 +103,40 @@ export class DistributionOciImageResolver implements OciImageResolver {
     ) {
       throw new AdminManagementError("invalid_oci_manifest", 422);
     }
+    let releaseMetadata: ResolvedOciImage["releaseMetadata"];
+    const encodedReleaseManifest = manifest.annotations?.[releaseManifestAnnotation];
+    const workflowHash = manifest.annotations?.[workflowHashAnnotation];
+    if (encodedReleaseManifest !== undefined || workflowHash !== undefined) {
+      if (
+        typeof encodedReleaseManifest !== "string" ||
+        encodedReleaseManifest.length > 256 * 1024 ||
+        typeof workflowHash !== "string" ||
+        !sha256Pattern.test(workflowHash)
+      ) {
+        throw new AdminManagementError("invalid_astra_image_metadata", 422);
+      }
+      let releaseManifest: unknown;
+      try {
+        releaseManifest = JSON.parse(encodedReleaseManifest);
+      } catch {
+        throw new AdminManagementError("invalid_astra_image_metadata", 422);
+      }
+      const parsedReleaseManifest = releaseManifestSchema.safeParse(releaseManifest);
+      if (!parsedReleaseManifest.success) {
+        throw new AdminManagementError("invalid_astra_image_metadata", 422);
+      }
+      releaseMetadata = {
+        workflowHash,
+        manifest: parsedReleaseManifest.data,
+      };
+    }
     return {
       sourceImage,
       digest,
       mediaType,
       configDigest,
       manifestSizeBytes: bytes.byteLength,
+      ...(releaseMetadata ? { releaseMetadata } : {}),
     };
   }
 }

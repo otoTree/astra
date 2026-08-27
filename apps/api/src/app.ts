@@ -1,5 +1,3 @@
-import { Hono } from "hono";
-import { z } from "zod";
 import {
   AdminAuthenticationError,
   type AdminContext,
@@ -11,17 +9,23 @@ import {
   type PublicRequestAuthenticator,
 } from "@astra/auth";
 import {
-  errorResponse,
-  adminSessionLoginSchema,
   adminListQuerySchema,
+  adminSessionLoginSchema,
   aliasSwitchSchema,
+  apiKeyCreateSchema,
+  apiKeyRevokeSchema,
   budgetPolicyConfigurationSchema,
   capacityPolicyConfigurationSchema,
+  completeAttemptSchema,
+  completeOutputsSchema,
+  drainedWorkerSchema,
+  errorResponse,
+  failAttemptSchema,
   fileUploadRequestSchema,
   imageEditSchema,
   imageGenerationSchema,
-  modelListQuerySchema,
   modelCreateSchema,
+  modelListQuerySchema,
   modelUpdateSchema,
   policyImpactPreviewSchema,
   policyPublishSchema,
@@ -29,21 +33,20 @@ import {
   policyValidationSchema,
   poolCreateSchema,
   poolUpdateSchema,
+  prepareOutputsSchema,
+  providerCredentialRevokeSchema,
+  providerCredentialUpdateSchema,
+  providerSyncRequestSchema,
   regionPolicyConfigurationSchema,
   releaseApprovalSchema,
   releaseCreateSchema,
-  rolloutValidationReportSchema,
+  retryPolicyConfigurationSchema,
   rolloutControlSchema,
   rolloutCreateSchema,
   rolloutPreviewSchema,
-  retryPolicyConfigurationSchema,
+  rolloutValidationReportSchema,
   taskListQuerySchema,
   taskStatusSchema,
-  completeAttemptSchema,
-  completeOutputsSchema,
-  drainedWorkerSchema,
-  failAttemptSchema,
-  prepareOutputsSchema,
   videoEditSchema,
   videoGenerationSchema,
   workerHeartbeatSchema,
@@ -57,9 +60,11 @@ import {
   type TaskService,
   WorkerControlError,
 } from "@astra/database";
-import { Counter, Histogram, createMetricRegistry, metricResponse } from "@astra/observability";
-import { RateLimiterUnavailableError, type PublicApiRateLimiter, type RateLimitCategory } from "@astra/queue";
+import { Counter, createMetricRegistry, Histogram, metricResponse } from "@astra/observability";
+import { type PublicApiRateLimiter, type RateLimitCategory, RateLimiterUnavailableError } from "@astra/queue";
+import { Hono } from "hono";
 import { matchedRoutes } from "hono/route";
+import { z } from "zod";
 import type { FileService } from "./file-service.ts";
 import { MediaValidatorError } from "./media-validator-client.ts";
 import type { WorkerControlService } from "./worker-control-service.ts";
@@ -848,7 +853,11 @@ export function createAdminApi(
   ): Response =>
     new Response(JSON.stringify(result.body), {
       status: result.status,
-      headers: { "content-type": "application/json; charset=UTF-8", "Idempotency-Replayed": String(result.replayed) },
+      headers: {
+        "content-type": "application/json; charset=UTF-8",
+        "cache-control": "no-store",
+        "Idempotency-Replayed": String(result.replayed),
+      },
     });
   const management = (): AdminManagementService => {
     if (!managementService) throw new AdminManagementError("admin_management_service_unavailable", 503, true);
@@ -982,11 +991,98 @@ export function createAdminApi(
   listRoute("/admin/v1/audit-events", "audit_events", "audit:read");
   listRoute("/admin/v1/regions", "regions");
   listRoute("/admin/v1/inventory", "inventory");
+  listRoute("/admin/v1/provider-syncs", "provider_syncs");
   listRoute("/admin/v1/aliases", "aliases");
   listRoute("/admin/v1/policies", "policies");
   listRoute("/admin/v1/policy-previews", "policy_previews");
   listRoute("/admin/v1/release-approvals", "release_approvals");
   listRoute("/admin/v1/capacity-plans", "capacity_plans");
+  listRoute("/admin/v1/api-keys", "api_keys", "identity:admin");
+
+  app.post("/admin/v1/api-keys", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "identity:admin");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(apiKeyCreateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      const result = await management().createApiKey(mutation.actor, mutation.metadata, mutation.key, parsed.value);
+      c.header("Cache-Control", "no-store");
+      return managementResponse(result);
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  app.post("/admin/v1/api-keys/:id/revoke", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "identity:admin");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(apiKeyRevokeSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return managementResponse(
+        await management().revokeApiKey(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          c.req.param("id"),
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+
+  app.get("/admin/v1/provider-credentials/gongji", async (c) => {
+    const context = await authorize(c.req.raw, "provider_credentials:write");
+    if (context instanceof Response) return context;
+    try {
+      c.header("Cache-Control", "no-store");
+      return c.json(await management().providerCredential("gongji"));
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/provider-credentials/gongji", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "provider_credentials:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(providerCredentialUpdateSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return managementResponse(
+        await management().rotateProviderCredential(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          "gongji",
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/provider-credentials/gongji/revoke", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "provider_credentials:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(providerCredentialRevokeSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    const precondition = requireVersion(c.req.raw, parsed.value.expected_version);
+    if (precondition) return precondition;
+    try {
+      return managementResponse(
+        await management().revokeProviderCredential(
+          mutation.actor,
+          mutation.metadata,
+          mutation.key,
+          "gongji",
+          parsed.value,
+        ),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
 
   app.post("/admin/v1/models", async (c) => {
     const mutation = await mutationContext(c.req.raw, "releases:write");
@@ -1064,6 +1160,19 @@ export function createAdminApi(
     try {
       return managementResponse(
         await management().createPool(mutation.actor, mutation.metadata, mutation.key, parsed.value),
+      );
+    } catch (error) {
+      return serviceError(c.req.raw, error);
+    }
+  });
+  app.post("/admin/v1/provider-syncs/gongji", async (c) => {
+    const mutation = await mutationContext(c.req.raw, "provider_credentials:write");
+    if (mutation instanceof Response) return mutation;
+    const parsed = await parseJson(providerSyncRequestSchema, c.req.raw);
+    if (parsed.response) return parsed.response;
+    try {
+      return managementResponse(
+        await management().requestProviderSync(mutation.actor, mutation.metadata, mutation.key, "gongji", parsed.value),
       );
     } catch (error) {
       return serviceError(c.req.raw, error);

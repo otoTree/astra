@@ -17,6 +17,7 @@ export const adminPermissions = [
   "releases:write",
   "rollouts:write",
   "policies:write",
+  "provider_credentials:write",
   "audit:read",
   "identity:admin",
 ] as const;

@@ -6,6 +6,7 @@ import {
   createDatabase,
   DatabaseHealth,
   IdentityRepository,
+  RequestCipher,
   TaskService,
 } from "@astra/database";
 import { createAdminApi, withErrorHandling } from "./app.ts";
@@ -51,6 +52,8 @@ const managementService = new AdminManagementService(
     ...(config.OCI_REGISTRY_BEARER_TOKEN ? { bearerToken: config.OCI_REGISTRY_BEARER_TOKEN } : {}),
   }),
   config.ASTRA_AUDIT_SIGNING_KEY,
+  undefined,
+  new RequestCipher(config.PROVIDER_CREDENTIAL_ENCRYPTION_KEY),
 );
 serve(
   withErrorHandling(

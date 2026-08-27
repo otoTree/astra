@@ -10,6 +10,17 @@ const config = Buffer.from(
   JSON.stringify({ architecture: "amd64", os: "linux", config: {}, rootfs: { type: "layers", diff_ids: [] } }),
 );
 const configDigest = `sha256:${createHash("sha256").update(config).digest("hex")}`;
+const releaseManifest = {
+  worker_contract_version: "v1",
+  modalities: ["video"],
+  operations: ["generation"],
+  capabilities: { durations: [5] },
+  parameter_schema: { type: "object", additionalProperties: false },
+  output_contract: { media_types: ["video/mp4"], preserve_original_bytes: true },
+  resource_requirements: { gpu_skus: ["reference-gpu"], gpu_memory_bytes: 34359738368, concurrency: 1 },
+  components: [],
+  weights: [],
+};
 const manifest = Buffer.from(
   JSON.stringify({
     schemaVersion: 2,
@@ -19,6 +30,8 @@ const manifest = Buffer.from(
     annotations: {
       "org.opencontainers.image.title": "Astra contract reference model app",
       "org.opencontainers.image.description": "Protocol-only manifest; contains no model weights or inference runtime",
+      "io.astra.release-manifest.v1": JSON.stringify(releaseManifest),
+      "io.astra.workflow-sha256": "0".repeat(64),
     },
   }),
 );

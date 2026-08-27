@@ -3,9 +3,10 @@ import {
   createDatabase,
   DatabaseHealth,
   ProviderCredentialRepository,
-  RequestCipher,
   ProviderOperationRepository,
   ProviderSnapshotRepository,
+  ProviderSyncRequestRepository,
+  RequestCipher,
 } from "@astra/database";
 import { Counter, createLogger, createMetricRegistry, Gauge, Histogram, metricResponse } from "@astra/observability";
 import type { ProviderObservationReader, ProviderResourceOperator } from "@astra/provider-core";
@@ -26,6 +27,7 @@ const port = config.PROVIDER_CONTROLLER_METRICS_PORT;
 const database = createDatabase(config.DATABASE_URL);
 const databaseHealth = new DatabaseHealth(database.client);
 const repository = new ProviderSnapshotRepository(database.client);
+const syncRequests = new ProviderSyncRequestRepository(database.client);
 const credentialRepository = config.PROVIDER_CREDENTIAL_ENCRYPTION_KEY
   ? new ProviderCredentialRepository(database.client, new RequestCipher(config.PROVIDER_CREDENTIAL_ENCRYPTION_KEY))
   : undefined;
@@ -36,6 +38,8 @@ const operationRepository = new ProviderOperationRepository(
   config.PROVIDER_OPERATION_ENCRYPTION_KEY,
 );
 const provider = config.PROVIDER_DRIVER;
+const controllerId = `provider_controller_${Bun.randomUUIDv7()}`;
+const gongjiEndpoint = config.GONGJI_ENDPOINT ?? "https://openapi.suanli.cn";
 let credentialCache: Readonly<{ token: string; privateKeyPem?: string; loadedAt: number }> | undefined;
 let credentialLoad: Promise<Readonly<{ token: string; privateKeyPem?: string }>> | undefined;
 const credentials = async () => {
@@ -66,25 +70,29 @@ const credentials = async () => {
 };
 let reader: ProviderObservationReader;
 let operator: ProviderResourceOperator;
+const gongjiReads =
+  config.ASTRA_ENV === "local" || !credentialRepository
+    ? undefined
+    : new GongjiReadClient({
+        endpoint: gongjiEndpoint,
+        credentials,
+        timeoutMilliseconds: config.PROVIDER_REQUEST_TIMEOUT_SECONDS * 1000,
+        maximumRetries: config.PROVIDER_MAXIMUM_RETRIES,
+        breakerFailureThreshold: config.PROVIDER_BREAKER_FAILURE_THRESHOLD,
+        breakerCooldownMilliseconds: config.PROVIDER_BREAKER_COOLDOWN_SECONDS * 1000,
+        pageSize: config.PROVIDER_PAGE_SIZE,
+        maximumPages: config.PROVIDER_MAXIMUM_PAGES,
+      });
 if (provider === "reference") {
   reader = new ReferenceProviderObservationReader();
   operator = new ReferenceProviderOperator();
 } else {
-  const reads = new GongjiReadClient({
-    endpoint: config.GONGJI_ENDPOINT as string,
-    credentials,
-    timeoutMilliseconds: config.PROVIDER_REQUEST_TIMEOUT_SECONDS * 1000,
-    maximumRetries: config.PROVIDER_MAXIMUM_RETRIES,
-    breakerFailureThreshold: config.PROVIDER_BREAKER_FAILURE_THRESHOLD,
-    breakerCooldownMilliseconds: config.PROVIDER_BREAKER_COOLDOWN_SECONDS * 1000,
-    pageSize: config.PROVIDER_PAGE_SIZE,
-    maximumPages: config.PROVIDER_MAXIMUM_PAGES,
-  });
-  reader = reads;
+  if (!gongjiReads) throw new Error("gongji_reader_unavailable");
+  reader = gongjiReads;
   operator = new GongjiResourceOperator(
-    reads,
+    gongjiReads,
     new GongjiWriteTransport({
-      endpoint: config.GONGJI_ENDPOINT as string,
+      endpoint: gongjiEndpoint,
       credentials,
       timeoutMilliseconds: config.PROVIDER_OPERATION_TIMEOUT_SECONDS * 1000,
       breakerFailureThreshold: config.PROVIDER_BREAKER_FAILURE_THRESHOLD,
@@ -92,7 +100,6 @@ if (provider === "reference") {
     }),
   );
 }
-const controllerId = `provider_controller_${Bun.randomUUIDv7()}`;
 const operationReconciler = new ProviderOperationReconciler(
   operationRepository,
   { [provider]: operator },
@@ -180,66 +187,123 @@ const rolloutAge = new Gauge({
 
 const abort = new AbortController();
 let latestStatus: Awaited<ReturnType<ProviderSnapshotRepository["freshness"]>> | undefined;
-let syncing = false;
+const syncingProviders = new Set<string>();
 let operationLoopHealthy = true;
 let rolloutLoopHealthy = true;
 
-const synchronize = async (): Promise<void> => {
-  if (syncing) return;
-  syncing = true;
-  const stopTimer = syncDuration.startTimer({ provider });
+const synchronize = async (
+  targetProvider: string,
+  targetReader: ProviderObservationReader,
+  onlyIfRequested = false,
+): Promise<void> => {
+  if (syncingProviders.has(targetProvider)) return;
+  syncingProviders.add(targetProvider);
+  let syncRequest: Awaited<ReturnType<ProviderSyncRequestRepository["claim"]>>;
+  let stopTimer: (() => void) | undefined;
   try {
-    const startedAt = new Date();
-    const bundle = await reader.observe({
-      operationId: `observe_${Bun.randomUUIDv7()}`,
-      requestId: `provider_sync_${Bun.randomUUIDv7()}`,
-      deadlineAt: new Date(
-        startedAt.getTime() +
-          Math.max(config.PROVIDER_REQUEST_TIMEOUT_SECONDS * 1000, config.PROVIDER_SYNC_INTERVAL_SECONDS * 1000),
-      ),
-    });
-    latestStatus = await repository.publish(bundle, config.PROVIDER_SNAPSHOT_STALE_SECONDS);
-    const reasonCount = bundle.pages.reduce((total, page) => total + page.quarantineReasons.length, 0);
-    quarantinedObjects.set({ provider }, reasonCount);
-    syncTotal.inc({ provider, outcome: latestStatus.status });
-    if (latestStatus.status === "quarantined") {
-      logger.error("provider_snapshot_quarantined", {
-        provider,
-        run_id: latestStatus.latestAttemptRunId,
-        quarantine_reasons: reasonCount,
+    syncRequest = await syncRequests.claim(targetProvider, controllerId, 120);
+    if (onlyIfRequested && !syncRequest) return;
+    stopTimer = syncDuration.startTimer({ provider: targetProvider });
+    let status: Awaited<ReturnType<ProviderSnapshotRepository["publish"]>>;
+    let errorCode: string | undefined;
+    try {
+      const startedAt = new Date();
+      const bundle = await targetReader.observe({
+        operationId: `observe_${Bun.randomUUIDv7()}`,
+        requestId: `provider_sync_${Bun.randomUUIDv7()}`,
+        deadlineAt: new Date(
+          startedAt.getTime() +
+            Math.max(config.PROVIDER_REQUEST_TIMEOUT_SECONDS * 1000, config.PROVIDER_SYNC_INTERVAL_SECONDS * 1000),
+        ),
       });
-    } else {
-      logger.info("provider_snapshot_published", {
-        provider,
-        run_id: latestStatus.latestAttemptRunId,
-        object_count: bundle.pages.reduce((total, page) => total + page.objects.length, 0),
+      status = await repository.publish(bundle, config.PROVIDER_SNAPSHOT_STALE_SECONDS);
+      const reasonCount = bundle.pages.reduce((total, page) => total + page.quarantineReasons.length, 0);
+      quarantinedObjects.set({ provider: targetProvider }, reasonCount);
+      syncTotal.inc({ provider: targetProvider, outcome: status.status });
+      if (status.status === "quarantined") {
+        logger.error("provider_snapshot_quarantined", {
+          provider: targetProvider,
+          run_id: status.latestAttemptRunId,
+          quarantine_reasons: reasonCount,
+        });
+      } else {
+        logger.info("provider_snapshot_published", {
+          provider: targetProvider,
+          run_id: status.latestAttemptRunId,
+          object_count: bundle.pages.reduce((total, page) => total + page.objects.length, 0),
+        });
+      }
+    } catch (error) {
+      errorCode = error instanceof ProviderError ? error.code : error instanceof Error ? error.message : "sync_failed";
+      status = await repository.recordFailure(
+        targetProvider,
+        targetProvider === "gongji" ? "gongji-openapi-2026-08-19" : "reference-provider-contract-v1",
+        errorCode,
+        config.PROVIDER_SNAPSHOT_STALE_SECONDS,
+      );
+      syncTotal.inc({ provider: targetProvider, outcome: "failed" });
+      logger.error("provider_snapshot_sync_failed", { provider: targetProvider, error_code: errorCode });
+    }
+    if (targetProvider === provider) latestStatus = status;
+    if (syncRequest) {
+      await syncRequests.complete(syncRequest, controllerId, {
+        snapshotRunId: status.latestAttemptRunId,
+        ...(errorCode ? { errorCode } : {}),
       });
     }
-  } catch (error) {
-    const errorCode =
-      error instanceof ProviderError ? error.code : error instanceof Error ? error.message : "sync_failed";
-    latestStatus = await repository.recordFailure(
-      provider,
-      provider === "gongji" ? "gongji-openapi-2026-08-19" : "reference-provider-contract-v1",
-      errorCode,
-      config.PROVIDER_SNAPSHOT_STALE_SECONDS,
-    );
-    syncTotal.inc({ provider, outcome: "failed" });
-    logger.error("provider_snapshot_sync_failed", { provider, error_code: errorCode });
   } finally {
-    stopTimer();
-    syncing = false;
+    stopTimer?.();
+    syncingProviders.delete(targetProvider);
   }
 };
 
 const loop = async (): Promise<void> => {
   while (!abort.signal.aborted) {
-    await synchronize();
+    try {
+      await synchronize(provider, reader);
+    } catch (error) {
+      logger.error("provider_periodic_sync_failed", {
+        provider,
+        error_code: error instanceof Error ? error.message : "periodic_sync_failed",
+      });
+    }
     if (abort.signal.aborted) break;
     await Bun.sleep(config.PROVIDER_SYNC_INTERVAL_SECONDS * 1000);
   }
 };
 void loop();
+
+const manualSyncLoop = async (): Promise<void> => {
+  while (!abort.signal.aborted) {
+    try {
+      await synchronize(provider, reader, true);
+      if (provider !== "gongji" && gongjiReads) {
+        await synchronize("gongji", gongjiReads, true);
+      } else if (provider !== "gongji") {
+        const claim = await syncRequests.claim("gongji", controllerId, 120);
+        if (claim) {
+          const status = await repository.recordFailure(
+            "gongji",
+            "gongji-openapi-2026-08-19",
+            config.ASTRA_ENV === "local" ? "real_provider_disabled_in_local" : "gongji_reader_unavailable",
+            config.PROVIDER_SNAPSHOT_STALE_SECONDS,
+          );
+          await syncRequests.complete(claim, controllerId, {
+            snapshotRunId: status.latestAttemptRunId,
+            errorCode: config.ASTRA_ENV === "local" ? "real_provider_disabled_in_local" : "gongji_reader_unavailable",
+          });
+        }
+      }
+    } catch (error) {
+      logger.error("provider_manual_sync_failed", {
+        provider,
+        error_code: error instanceof Error ? error.message : "manual_sync_failed",
+      });
+    }
+    await Bun.sleep(500);
+  }
+};
+void manualSyncLoop();
 
 const operationLoop = async (): Promise<void> => {
   while (!abort.signal.aborted) {

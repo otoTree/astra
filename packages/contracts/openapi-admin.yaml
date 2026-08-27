@@ -47,6 +47,100 @@ paths:
       responses:
         '204': { description: Session revoked }
         default: { $ref: '#/components/responses/Error' }
+  /api-keys:
+    get:
+      operationId: listApiKeys
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { description: API Key metadata list; never includes secrets }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: createApiKey
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiKeyCreate' }
+      responses:
+        '201':
+          description: API Key created; api_key is present only in the initial non-replayed response
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        default: { $ref: '#/components/responses/Error' }
+  /api-keys/{api_key_id}/revoke:
+    post:
+      operationId: revokeApiKey
+      parameters:
+        - name: api_key_id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiKeyRevoke' }
+      responses:
+        '200':
+          description: API Key revoked immediately
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        default: { $ref: '#/components/responses/Error' }
+  /provider-credentials/gongji:
+    get:
+      operationId: getGongjiCredential
+      responses:
+        '200':
+          description: Active credential metadata; never includes the token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderCredential' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: rotateGongjiCredential
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderCredentialUpdate' }
+      responses:
+        '201':
+          description: Credential encrypted and activated; previous version revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderCredential' }
+        default: { $ref: '#/components/responses/Error' }
+  /provider-credentials/gongji/revoke:
+    post:
+      operationId: revokeGongjiCredential
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderCredentialRevoke' }
+      responses:
+        '200':
+          description: Active credential revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderCredential' }
+        default: { $ref: '#/components/responses/Error' }
   /tasks:
     get:
       operationId: listAdminTasks
@@ -387,6 +481,29 @@ paths:
       responses:
         '200': { description: Current normalized provider inventory snapshots }
         default: { $ref: '#/components/responses/Error' }
+  /provider-syncs:
+    get:
+      operationId: listProviderSyncs
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { description: Provider resource synchronization requests }
+        default: { $ref: '#/components/responses/Error' }
+  /provider-syncs/gongji:
+    post:
+      operationId: requestGongjiProviderSync
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderSyncRequest' }
+      responses:
+        '202': { description: Gongji resource synchronization queued }
+        default: { $ref: '#/components/responses/Error' }
   /cost-summary:
     get:
       operationId: getCostSummary
@@ -549,6 +666,52 @@ components:
         task_id: { type: string }
         request: { type: object, additionalProperties: true }
         accessed_at: { type: integer, minimum: 0 }
+    ApiKeyCreate:
+      type: object
+      additionalProperties: false
+      required: [name, scopes, reason]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items:
+            type: string
+            enum: [generations:create, tasks:read, tasks:cancel, tasks:read_sensitive, files:write, files:read, models:read]
+        expires_at: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ApiKeyRevoke:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ApiKey:
+      type: object
+      additionalProperties: false
+      required: [id, object, name, key_prefix, key_last_four, scopes, status, expires_at, revoked_at, last_used_at, created_at, updated_at]
+      properties:
+        id: { type: string }
+        object: { type: string, const: api_key }
+        name: { type: string }
+        key_prefix: { type: string, pattern: '^[0-9a-f]{12}$' }
+        key_last_four: { type: string, minLength: 4, maxLength: 4 }
+        scopes:
+          type: array
+          items: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        expires_at: { type: [integer, 'null'], minimum: 0 }
+        revoked_at: { type: [integer, 'null'], minimum: 0 }
+        last_used_at: { type: [integer, 'null'], minimum: 0 }
+        created_at: { type: integer, minimum: 0 }
+        updated_at: { type: integer, minimum: 0 }
+        api_key:
+          type: string
+          readOnly: true
+          pattern: '^astra_sk_[0-9a-f]{12}_[A-Za-z0-9_-]{43}$'
+          description: Present only once in the initial successful creation response.
     ModelCreate:
       type: object
       additionalProperties: false
@@ -570,13 +733,19 @@ components:
     ReleaseCreate:
       type: object
       additionalProperties: false
-      required: [model_id, source_image, workflow_hash, manifest, reason]
+      required: [model_id, source_image, reason]
       properties:
         model_id: { type: string }
         source_image: { type: string, minLength: 3, maxLength: 2048 }
         workflow_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
         maturity: { type: string, enum: [candidate, stable, deprecated], default: candidate }
         manifest: { $ref: '#/components/schemas/ReleaseManifest' }
+        environment:
+          type: object
+          maxProperties: 64
+          default: {}
+          propertyNames: { pattern: '^[A-Z_][A-Z0-9_]*$' }
+          additionalProperties: { type: string, maxLength: 8192 }
         reason: { type: string, minLength: 8, maxLength: 1000 }
     ReleaseManifest:
       type: object
@@ -631,6 +800,48 @@ components:
               sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
               size_bytes: { type: integer, minimum: 1 }
               source_uri: { type: string, format: uri }
+        runtime_environment:
+          type: object
+          maxProperties: 64
+          propertyNames: { pattern: '^[A-Z_][A-Z0-9_]*$' }
+          additionalProperties: { type: string, maxLength: 8192 }
+    ProviderCredential:
+      type: object
+      additionalProperties: false
+      required: [object, provider, configured]
+      properties:
+        id: { type: string }
+        object: { type: string, const: provider.credential }
+        provider: { type: string, const: gongji }
+        credential_name: { type: string }
+        configured: { type: boolean }
+        token_fingerprint: { type: string, pattern: '^[0-9a-f]{64}$' }
+        version: { type: integer, minimum: 1 }
+        status: { type: string, enum: [active, revoked] }
+        created_at: { type: integer, minimum: 0 }
+        updated_at: { type: integer, minimum: 0 }
+        rotated_at: { type: [integer, 'null'], minimum: 0 }
+        revoked_at: { type: [integer, 'null'], minimum: 0 }
+    ProviderCredentialUpdate:
+      type: object
+      additionalProperties: false
+      required: [token, reason]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ProviderCredentialRevoke:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    ProviderSyncRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 8, maxLength: 1000 }
     ReleaseApproval:
       type: object
       additionalProperties: false

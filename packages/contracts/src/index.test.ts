@@ -1,17 +1,88 @@
 import { describe, expect, test } from "bun:test";
 import {
+  apiKeyCreateSchema,
+  apiKeyRevokeSchema,
   capabilitiesSchema,
   executionInputSchema,
   imageEditSchema,
   imageGenerationSchema,
   inputMediaTypeForContentType,
   outputManifestSchema,
+  providerCredentialRevokeSchema,
+  providerCredentialUpdateSchema,
+  providerSyncRequestSchema,
+  releaseCreateSchema,
   resolveVideoGenerationRequest,
   videoEditSchema,
   videoGenerationSchema,
 } from "./index.ts";
 
 describe("contracts", () => {
+  test("validates API Key management without accepting unknown scopes", () => {
+    expect(
+      apiKeyCreateSchema.parse({
+        name: "production-client",
+        scopes: ["generations:create", "tasks:read", "tasks:read"],
+        expires_at: 1_800_000_000,
+        reason: "Create production client key",
+      }).scopes,
+    ).toEqual(["generations:create", "tasks:read"]);
+    expect(() =>
+      apiKeyCreateSchema.parse({
+        name: "invalid",
+        scopes: ["admin:write"],
+        reason: "Create invalid client key",
+      }),
+    ).toThrow();
+    expect(() => apiKeyRevokeSchema.parse({ reason: "short" })).toThrow();
+  });
+
+  test("accepts image-driven release creation and validates environment variables", () => {
+    expect(
+      releaseCreateSchema.parse({
+        model_id: "model_h3",
+        source_image: "registry.example.test/team/h3:v1",
+        environment: { H3_WEIGHT_ROOT: "/weights" },
+        reason: "Register the H3 model image",
+      }),
+    ).toMatchObject({ environment: { H3_WEIGHT_ROOT: "/weights" }, maturity: "candidate" });
+    expect(() =>
+      releaseCreateSchema.parse({
+        model_id: "model_h3",
+        source_image: "registry.example.test/team/h3:v1",
+        environment: { WORKER_RELEASE_ID: "release_override" },
+        reason: "Register the H3 model image",
+      }),
+    ).toThrow();
+    expect(() =>
+      releaseCreateSchema.parse({
+        model_id: "model_h3",
+        source_image: "registry.example.test/team/h3:v1",
+        environment: { HF_TOKEN: "secret" },
+        reason: "Register the H3 model image",
+      }),
+    ).toThrow();
+  });
+
+  test("validates provider credential mutations without exposing response shapes", () => {
+    expect(
+      providerCredentialUpdateSchema.parse({ token: "gongji-token", reason: "Rotate Gongji access token" }),
+    ).toEqual({
+      token: "gongji-token",
+      reason: "Rotate Gongji access token",
+    });
+    expect(
+      providerCredentialRevokeSchema.parse({ expected_version: 2, reason: "Revoke compromised access token" }),
+    ).toEqual({
+      expected_version: 2,
+      reason: "Revoke compromised access token",
+    });
+    expect(providerSyncRequestSchema.parse({ reason: "Refresh Gongji GPU inventory" })).toEqual({
+      reason: "Refresh Gongji GPU inventory",
+    });
+    expect(() => providerSyncRequestSchema.parse({ reason: "sync", provider: "gongji" })).toThrow();
+  });
+
   test("accepts a valid video generation request", () => {
     const result = videoGenerationSchema.parse({
       model: "minimax-h3-10eros",

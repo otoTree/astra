@@ -42,6 +42,35 @@ export const adminListQuerySchema = z
   })
   .strict();
 
+export const publicApiScopeSchema = z.enum([
+  "generations:create",
+  "tasks:read",
+  "tasks:cancel",
+  "tasks:read_sensitive",
+  "files:write",
+  "files:read",
+  "models:read",
+]);
+
+export const apiKeyCreateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(128),
+    scopes: z
+      .array(publicApiScopeSchema)
+      .min(1)
+      .max(7)
+      .transform((scopes) => [...new Set(scopes)]),
+    expires_at: z.number().int().nonnegative().optional(),
+    reason: z.string().min(8).max(1000),
+  })
+  .strict();
+
+export const apiKeyRevokeSchema = z
+  .object({
+    reason: z.string().min(8).max(1000),
+  })
+  .strict();
+
 export const versionedMutationSchema = z
   .object({
     expected_version: z.number().int().nonnegative(),
@@ -56,6 +85,33 @@ const resourceIdSchema = z
   .regex(/^[a-z0-9][a-z0-9_.-]*$/);
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const reasonSchema = z.string().min(8).max(1000);
+const environmentNameSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Z_][A-Z0-9_]*$/);
+const reservedEnvironmentName = /^(?:WORKER_|MODEL_APP_RELEASE$)/;
+const sensitiveEnvironmentName = /(?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|CREDENTIAL)/;
+
+export const releaseEnvironmentSchema = z
+  .record(environmentNameSchema, z.string().max(8192))
+  .superRefine((environment, context) => {
+    if (Object.keys(environment).length > 64) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "at most 64 environment variables are allowed" });
+    }
+    for (const name of Object.keys(environment)) {
+      if (reservedEnvironmentName.test(name)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: [name], message: "reserved by Astra" });
+      }
+      if (sensitiveEnvironmentName.test(name)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: "secret values must use a platform-managed credential",
+        });
+      }
+    }
+  });
 
 export const modelCreateSchema = z
   .object({
@@ -115,6 +171,7 @@ export const releaseManifestSchema = z
       .optional(),
     components: z.array(z.object({ name: resourceIdSchema, commit: z.string().min(7).max(128) }).strict()).max(128),
     weights: z.array(weightReferenceSchema).max(256),
+    runtime_environment: releaseEnvironmentSchema.optional(),
   })
   .strict();
 
@@ -122,9 +179,38 @@ export const releaseCreateSchema = z
   .object({
     model_id: resourceIdSchema,
     source_image: z.string().min(3).max(2048),
-    workflow_hash: sha256Schema,
+    workflow_hash: sha256Schema.optional(),
     maturity: z.enum(["candidate", "stable", "deprecated"]).default("candidate"),
-    manifest: releaseManifestSchema,
+    manifest: releaseManifestSchema.optional(),
+    environment: releaseEnvironmentSchema.default({}),
+    reason: reasonSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.workflow_hash === undefined) !== (value.manifest === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "workflow_hash and manifest must be supplied together for legacy release creation",
+      });
+    }
+  });
+
+export const providerCredentialUpdateSchema = z
+  .object({
+    token: z.string().min(1).max(4096),
+    reason: reasonSchema,
+  })
+  .strict();
+
+export const providerCredentialRevokeSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    reason: reasonSchema,
+  })
+  .strict();
+
+export const providerSyncRequestSchema = z
+  .object({
     reason: reasonSchema,
   })
   .strict();

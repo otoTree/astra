@@ -1,5 +1,6 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type postgres from "postgres";
+import type { RequestCipher } from "./request-cipher.ts";
 
 type SqlClient = ReturnType<typeof postgres>;
 type TransactionClient = postgres.TransactionSql;
@@ -25,6 +26,10 @@ export type ResolvedOciImage = Readonly<{
   mediaType: string;
   configDigest: string;
   manifestSizeBytes: number;
+  releaseMetadata?: Readonly<{
+    workflowHash: string;
+    manifest: Record<string, unknown>;
+  }>;
 }>;
 
 export interface OciImageResolver {
@@ -70,6 +75,30 @@ const canonical = (value: unknown): string => {
 const hash = (value: unknown): string => createHash("sha256").update(canonical(value)).digest("hex");
 const id = (prefix: string): string => `${prefix}_${Bun.randomUUIDv7()}`;
 const unix = (value: Date | string): number => Math.floor(new Date(value).getTime() / 1000);
+const publicApiScopes = new Set([
+  "generations:create",
+  "tasks:read",
+  "tasks:cancel",
+  "tasks:read_sensitive",
+  "files:write",
+  "files:read",
+  "models:read",
+]);
+
+const apiKeyView = (row: Record<string, unknown>): Record<string, unknown> => ({
+  id: String(row.id),
+  object: "api_key",
+  name: String(row.name),
+  key_prefix: String(row.key_prefix),
+  key_last_four: String(row.key_last_four),
+  scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [],
+  status: String(row.status),
+  expires_at: row.expires_at ? unix(row.expires_at as Date | string) : null,
+  revoked_at: row.revoked_at ? unix(row.revoked_at as Date | string) : null,
+  last_used_at: row.last_used_at ? unix(row.last_used_at as Date | string) : null,
+  created_at: unix(row.created_at as Date | string),
+  updated_at: unix(row.updated_at as Date | string),
+});
 
 export class AdminManagementService {
   private readonly auditKey: Buffer;
@@ -79,8 +108,185 @@ export class AdminManagementService {
     private readonly imageResolver: OciImageResolver,
     auditSigningKey: string,
     private readonly now: () => Date = () => new Date(),
+    private readonly credentialCipher?: RequestCipher,
   ) {
     this.auditKey = createHash("sha256").update(`astra-admin-audit-v1:${auditSigningKey}`).digest();
+  }
+
+  async providerCredential(provider: string): Promise<Record<string, unknown>> {
+    const rows = await this.sql`SELECT id, provider, credential_name, token_fingerprint, version, status,
+        created_at, updated_at, rotated_at, revoked_at
+      FROM provider_credentials WHERE provider=${provider} AND credential_name='default'
+      ORDER BY version DESC LIMIT 1`;
+    const row = rows[0];
+    if (!row) {
+      return { object: "provider.credential", provider, configured: false };
+    }
+    return {
+      id: String(row.id),
+      object: "provider.credential",
+      provider: String(row.provider),
+      credential_name: String(row.credential_name),
+      configured: row.status === "active",
+      token_fingerprint: String(row.token_fingerprint),
+      version: Number(row.version),
+      status: String(row.status),
+      created_at: unix(row.created_at as string),
+      updated_at: unix(row.updated_at as string),
+      rotated_at: row.rotated_at ? unix(row.rotated_at as string) : null,
+      revoked_at: row.revoked_at ? unix(row.revoked_at as string) : null,
+    };
+  }
+
+  async rotateProviderCredential(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    provider: string,
+    input: Readonly<{ token: string; reason: string }>,
+  ) {
+    const credentialCipher = this.credentialCipher;
+    if (!credentialCipher) throw new AdminManagementError("provider_credential_service_unavailable", 503, true);
+    return this.mutate(actor, `provider-credentials:rotate:${provider}`, idempotencyKey, input, async (transaction) => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtext(${`provider-credential:${provider}:default`}))`;
+      const current = await transaction`SELECT version FROM provider_credentials
+        WHERE provider=${provider} AND credential_name='default' AND status='active' FOR UPDATE`;
+      const version = Number(current[0]?.version ?? 0) + 1;
+      const timestamp = this.now();
+      const credentialId = id("provider_credential");
+      const fingerprint = createHash("sha256").update(input.token).digest("hex");
+      await transaction`UPDATE provider_credentials SET status='revoked', revoked_at=${timestamp.toISOString()},
+          updated_at=${timestamp.toISOString()}
+        WHERE provider=${provider} AND credential_name='default' AND status='active'`;
+      await transaction`INSERT INTO provider_credentials (
+          id, provider, credential_name, token_ciphertext, token_fingerprint, version, status,
+          created_by, created_at, updated_at, rotated_at
+        ) VALUES (
+          ${credentialId}, ${provider}, 'default', ${credentialCipher.seal(input.token)}, ${fingerprint},
+          ${version}, 'active', ${actor.actorId}, ${timestamp.toISOString()}, ${timestamp.toISOString()},
+          ${version > 1 ? timestamp.toISOString() : null}
+        )`;
+      await this.audit(
+        transaction,
+        actor,
+        request,
+        version > 1 ? "provider_credential.rotate" : "provider_credential.configure",
+        "provider_credential",
+        credentialId,
+        input.reason,
+        { provider, credential_name: "default", token_fingerprint: fingerprint, version },
+      );
+      return {
+        status: 201,
+        body: {
+          id: credentialId,
+          object: "provider.credential",
+          provider,
+          credential_name: "default",
+          configured: true,
+          token_fingerprint: fingerprint,
+          version,
+          status: "active",
+          created_at: unix(timestamp),
+          updated_at: unix(timestamp),
+          rotated_at: version > 1 ? unix(timestamp) : null,
+          revoked_at: null,
+        },
+      };
+    });
+  }
+
+  async revokeProviderCredential(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    provider: string,
+    input: Readonly<{ expected_version: number; reason: string }>,
+  ) {
+    return this.mutate(actor, `provider-credentials:revoke:${provider}`, idempotencyKey, input, async (transaction) => {
+      const timestamp = this.now();
+      const rows = await transaction`UPDATE provider_credentials SET status='revoked',
+          revoked_at=${timestamp.toISOString()}, updated_at=${timestamp.toISOString()}
+        WHERE provider=${provider} AND credential_name='default' AND status='active'
+          AND version=${input.expected_version}
+        RETURNING id, token_fingerprint, version`;
+      if (!rows[0]) {
+        const found = await transaction`SELECT version FROM provider_credentials
+          WHERE provider=${provider} AND credential_name='default' ORDER BY version DESC LIMIT 1`;
+        throw new AdminManagementError(
+          found[0] ? "version_conflict" : "provider_credential_not_found",
+          found[0] ? 409 : 404,
+        );
+      }
+      const credentialId = String(rows[0].id);
+      await this.audit(
+        transaction,
+        actor,
+        request,
+        "provider_credential.revoke",
+        "provider_credential",
+        credentialId,
+        input.reason,
+        {
+          provider,
+          credential_name: "default",
+          token_fingerprint: String(rows[0].token_fingerprint),
+          version: Number(rows[0].version),
+        },
+      );
+      return {
+        status: 200,
+        body: {
+          id: credentialId,
+          object: "provider.credential",
+          provider,
+          credential_name: "default",
+          configured: false,
+          token_fingerprint: String(rows[0].token_fingerprint),
+          version: Number(rows[0].version),
+          status: "revoked",
+          updated_at: unix(timestamp),
+          revoked_at: unix(timestamp),
+        },
+      };
+    });
+  }
+
+  async requestProviderSync(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    provider: string,
+    input: Readonly<{ reason: string }>,
+  ) {
+    return this.mutate(actor, `provider-syncs:create:${provider}`, idempotencyKey, input, async (transaction) => {
+      const credentials = await transaction`SELECT id FROM provider_credentials
+        WHERE provider=${provider} AND credential_name='default' AND status='active' LIMIT 1`;
+      if (!credentials[0]) throw new AdminManagementError("provider_credential_not_configured", 422);
+      const timestamp = this.now();
+      const syncId = id("provider_sync");
+      await transaction`INSERT INTO provider_sync_requests (
+          id, organization_id, project_id, provider, status, reason, requested_by,
+          requested_at, created_at, updated_at, version
+        ) VALUES (
+          ${syncId}, ${actor.organizationId}, ${actor.projectId}, ${provider}, 'pending', ${input.reason},
+          ${actor.actorId}, ${timestamp.toISOString()}, ${timestamp.toISOString()}, ${timestamp.toISOString()}, 1
+        )`;
+      await this.audit(transaction, actor, request, "provider.sync_requested", "provider_sync", syncId, input.reason, {
+        provider,
+      });
+      return {
+        status: 202,
+        body: {
+          id: syncId,
+          object: "provider.sync",
+          provider,
+          status: "pending",
+          requested_at: unix(timestamp),
+          version: 1,
+        },
+      };
+    });
   }
 
   private async audit(
@@ -133,6 +339,7 @@ export class AdminManagementService {
     idempotencyKey: string,
     input: unknown,
     operation: (transaction: TransactionClient) => Promise<MutationResult>,
+    storedBody: (body: Record<string, unknown>) => Record<string, unknown> = (body) => body,
   ): Promise<MutationResult & { replayed: boolean }> {
     const requestHash = hash(input);
     return this.sql.begin(async (transaction) => {
@@ -159,9 +366,116 @@ export class AdminManagementService {
       ) VALUES (
         ${id("adminidem")}, ${actor.projectId}, ${actor.sessionId}, ${endpoint}, ${idempotencyKey},
         ${requestHash}, ${endpoint.split("/")[1] ?? "management"}, ${resourceId}, ${result.status},
-        ${JSON.stringify(result.body)}, ${this.now().toISOString()}
+        ${JSON.stringify(storedBody(result.body))}, ${this.now().toISOString()}
       )`;
       return { ...result, replayed: false };
+    });
+  }
+
+  async createApiKey(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    input: Readonly<{ name: string; scopes: readonly string[]; expires_at?: number | undefined; reason: string }>,
+  ) {
+    const scopes = [...new Set(input.scopes)];
+    if (scopes.length === 0 || scopes.some((scope) => !publicApiScopes.has(scope))) {
+      throw new AdminManagementError("invalid_api_key_scopes", 422);
+    }
+    const expiresAt = input.expires_at === undefined ? undefined : new Date(input.expires_at * 1000);
+    if (expiresAt && expiresAt <= this.now()) throw new AdminManagementError("invalid_api_key_expiry", 422);
+
+    const prefix = randomBytes(6).toString("hex");
+    const secret = randomBytes(32).toString("base64url");
+    const apiKey = `astra_sk_${prefix}_${secret}`;
+    const secretHash = await Bun.password.hash(apiKey, {
+      algorithm: "argon2id",
+      memoryCost: 65_536,
+      timeCost: 3,
+    });
+    return this.mutate(
+      actor,
+      "api-keys:create",
+      idempotencyKey,
+      input,
+      async (transaction) => {
+        const timestamp = this.now();
+        const apiKeyId = id("key");
+        await transaction`SELECT id FROM projects
+          WHERE id=${actor.projectId} AND organization_id=${actor.organizationId} AND status='active' FOR SHARE`;
+        try {
+          await transaction`INSERT INTO api_keys (
+              id, organization_id, default_project_id, name, key_prefix, key_last_four,
+              secret_hash, scopes, status, expires_at, created_at, updated_at
+            ) VALUES (
+              ${apiKeyId}, ${actor.organizationId}, ${actor.projectId}, ${input.name}, ${prefix},
+              ${secret.slice(-4)}, ${secretHash}, ${this.sql.array(scopes)}, 'active',
+              ${expiresAt?.toISOString() ?? null}, ${timestamp.toISOString()}, ${timestamp.toISOString()}
+            )`;
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "23505") {
+            throw new AdminManagementError("api_key_prefix_conflict", 409, true);
+          }
+          throw error;
+        }
+        await transaction`INSERT INTO api_key_project_grants (api_key_id, project_id, created_at)
+          VALUES (${apiKeyId}, ${actor.projectId}, ${timestamp.toISOString()})`;
+        await this.audit(transaction, actor, request, "api_key.create", "api_key", apiKeyId, input.reason, {
+          name: input.name,
+          key_prefix: prefix,
+          key_last_four: secret.slice(-4),
+          scopes,
+          expires_at: expiresAt?.toISOString() ?? null,
+        });
+        return {
+          status: 201,
+          body: {
+            ...apiKeyView({
+              id: apiKeyId,
+              name: input.name,
+              key_prefix: prefix,
+              key_last_four: secret.slice(-4),
+              scopes,
+              status: "active",
+              expires_at: expiresAt ?? null,
+              revoked_at: null,
+              last_used_at: null,
+              created_at: timestamp,
+              updated_at: timestamp,
+            }),
+            api_key: apiKey,
+          },
+        };
+      },
+      ({ api_key: _apiKey, ...metadata }) => metadata,
+    );
+  }
+
+  async revokeApiKey(
+    actor: ManagementActor,
+    request: ManagementRequest,
+    idempotencyKey: string,
+    apiKeyId: string,
+    input: Readonly<{ reason: string }>,
+  ) {
+    return this.mutate(actor, `api-keys:revoke:${apiKeyId}`, idempotencyKey, input, async (transaction) => {
+      const rows = await transaction`SELECT k.* FROM api_keys k
+        JOIN api_key_project_grants g ON g.api_key_id=k.id
+        WHERE k.id=${apiKeyId} AND k.organization_id=${actor.organizationId} AND g.project_id=${actor.projectId}
+        FOR UPDATE OF k`;
+      const key = rows[0] as Record<string, unknown> | undefined;
+      if (!key) throw new AdminManagementError("api_key_not_found", 404);
+      if (key.status !== "active") throw new AdminManagementError("api_key_not_active", 409);
+      const timestamp = this.now();
+      const updated = await transaction`UPDATE api_keys SET status='revoked', revoked_at=${timestamp.toISOString()},
+          updated_at=${timestamp.toISOString()} WHERE id=${apiKeyId} AND status='active' RETURNING *`;
+      if (!updated[0]) throw new AdminManagementError("api_key_not_active", 409);
+      await this.audit(transaction, actor, request, "api_key.revoke", "api_key", apiKeyId, input.reason, {
+        name: key.name,
+        key_prefix: key.key_prefix,
+        key_last_four: key.key_last_four,
+      });
+      return { status: 200, body: apiKeyView(updated[0] as Record<string, unknown>) };
     });
   }
 
@@ -258,21 +572,32 @@ export class AdminManagementService {
     input: Readonly<{
       model_id: string;
       source_image: string;
-      workflow_hash: string;
+      workflow_hash?: string | undefined;
       maturity: string;
-      manifest: Record<string, unknown>;
+      manifest?: Record<string, unknown> | undefined;
+      environment?: Record<string, string> | undefined;
       reason: string;
     }>,
   ) {
     const existing = await this.existingMutation(actor, "releases:create", idempotencyKey, input);
     if (existing) return existing;
     const resolved = await this.imageResolver.resolve(input.source_image);
+    const sourceManifest = input.manifest ?? resolved.releaseMetadata?.manifest;
+    const workflowHash = input.workflow_hash ?? resolved.releaseMetadata?.workflowHash;
+    if (!sourceManifest || !workflowHash) {
+      throw new AdminManagementError("astra_image_metadata_missing", 422);
+    }
+    const environment = input.environment ?? {};
+    const manifest: Record<string, unknown> = {
+      ...sourceManifest,
+      ...(Object.keys(environment).length > 0 ? { runtime_environment: environment } : {}),
+    };
     return this.mutate(actor, "releases:create", idempotencyKey, input, async (transaction) => {
       const models = await transaction`SELECT id, alias, modality FROM models
         WHERE id=${input.model_id} AND project_id=${actor.projectId} AND status='active' FOR SHARE`;
       const model = models[0];
       if (!model) throw new AdminManagementError("model_not_found", 404);
-      const modalities = Array.isArray(input.manifest.modalities) ? input.manifest.modalities : [];
+      const modalities = Array.isArray(manifest.modalities) ? manifest.modalities : [];
       if (!modalities.includes(String(model.modality)))
         throw new AdminManagementError("release_modality_mismatch", 422);
       const releaseId = id("release");
@@ -283,7 +608,7 @@ export class AdminManagementService {
         accept_new_tasks, created_by, created_at
       ) VALUES (
         ${releaseId}, ${actor.projectId}, ${input.model_id}, ${String(model.alias)}, ${input.maturity},
-        ${input.source_image}, ${resolved.digest}, ${input.workflow_hash}, ${JSON.stringify(input.manifest)},
+        ${input.source_image}, ${resolved.digest}, ${workflowHash}, ${JSON.stringify(manifest)},
         ${resolved.digest}, ${resolved.mediaType}, ${resolved.configDigest}, 'draft', 1, false,
         ${actor.actorId}, ${createdAt.toISOString()}
       )`;
@@ -300,7 +625,8 @@ export class AdminManagementService {
           model_id: input.model_id,
           source_image: input.source_image,
           image_digest: resolved.digest,
-          workflow_hash: input.workflow_hash,
+          workflow_hash: workflowHash,
+          environment_names: Object.keys(environment).sort(),
           maturity: input.maturity,
           status: "draft",
           version: 1,
@@ -364,6 +690,9 @@ export class AdminManagementService {
       const regions = await transaction`SELECT id FROM provider_regions
         WHERE id=${input.region_id} AND provider=${input.provider} AND status IN ('healthy', 'degraded') FOR SHARE`;
       if (!regions[0]) throw new AdminManagementError("provider_region_not_available", 422);
+      const inventory = await transaction`SELECT id FROM provider_inventory
+        WHERE provider=${input.provider} AND region_id=${input.region_id} AND gpu_sku=${input.gpu_sku} FOR SHARE`;
+      if (!inventory[0]) throw new AdminManagementError("provider_gpu_inventory_not_available", 422);
       const poolId = id("pool");
       const createdAt = this.now();
       await transaction`INSERT INTO model_pools (
@@ -820,6 +1149,8 @@ export class AdminManagementService {
           pool_id: input.pool_id,
           source_release_id: pool.release_id,
           target_release_id: input.release_id,
+          source_image_digest: String(pool.source_image_digest),
+          target_image_digest: String(pool.target_image_digest),
           pool_version: Number(pool.version),
           strategy: input.strategy,
           snapshot,

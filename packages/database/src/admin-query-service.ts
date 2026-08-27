@@ -15,11 +15,13 @@ export type AdminResource =
   | "audit_events"
   | "regions"
   | "inventory"
+  | "provider_syncs"
   | "aliases"
   | "policies"
   | "policy_previews"
   | "release_approvals"
-  | "capacity_plans";
+  | "capacity_plans"
+  | "api_keys";
 export type AdminListResource = Exclude<AdminResource, "tasks">;
 
 export type AdminListResult = Readonly<{
@@ -37,12 +39,14 @@ const tableByResource: Readonly<Record<Exclude<AdminResource, "tasks" | "regions
   workers: "workers",
   replicas: "replicas",
   provider_operations: "provider_operations",
+  provider_syncs: "provider_sync_requests",
   audit_events: "audit_events",
   aliases: "model_alias_versions",
   policies: "policy_versions",
   policy_previews: "policy_impact_previews",
   release_approvals: "release_approvals",
   capacity_plans: "capacity_plans",
+  api_keys: "api_keys",
 };
 
 const unix = (value: unknown): number | null =>
@@ -61,6 +65,9 @@ const jsonRecord = (row: Record<string, unknown>): Record<string, unknown> => {
     "started_at",
     "paused_at",
     "rollback_requested_at",
+    "revoked_at",
+    "last_used_at",
+    "requested_at",
   ]) {
     if (key in output) output[key] = output[key] === null ? null : unix(output[key]);
   }
@@ -120,7 +127,15 @@ export class AdminQueryService {
     const cursor = input.after ? this.decodeCursor(input.after, resource, context) : undefined;
     const limit = Math.min(Math.max(input.limit, 1), 200);
     let rows: readonly Record<string, unknown>[];
-    if (resource === "regions") {
+    if (resource === "api_keys") {
+      rows = await this.sql`SELECT k.id, k.name, k.key_prefix, k.key_last_four, k.scopes, k.status,
+          k.expires_at, k.revoked_at, k.last_used_at, k.created_at, k.updated_at
+        FROM api_keys k
+        JOIN api_key_project_grants g ON g.api_key_id=k.id
+        WHERE k.organization_id=${context.organizationId} AND g.project_id=${context.projectId}
+          AND (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (k.created_at, k.id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
+        ORDER BY k.created_at DESC, k.id DESC LIMIT ${limit + 1}`;
+    } else if (resource === "regions") {
       rows = await this.sql`SELECT * FROM provider_regions
         WHERE (${cursor?.createdAt ?? null}::timestamptz IS NULL OR (created_at, id) < (${cursor?.createdAt ?? null}::timestamptz, ${cursor?.id ?? ""}))
         ORDER BY created_at DESC, id DESC LIMIT ${limit + 1}`;
@@ -148,6 +163,7 @@ export class AdminQueryService {
         "policy_previews",
         "release_approvals",
         "capacity_plans",
+        "provider_syncs",
       ].includes(resource)
     ) {
       const table = tableByResource[resource];
