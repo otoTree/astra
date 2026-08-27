@@ -83,6 +83,11 @@ const resourceIdSchema = z
   .min(3)
   .max(128)
   .regex(/^[a-z0-9][a-z0-9_.-]*$/);
+const providerRegionIdSchema = z
+  .string()
+  .min(3)
+  .max(128)
+  .regex(/^[a-z0-9][a-z0-9_.:-]*$/);
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const reasonSchema = z.string().min(8).max(1000);
 const environmentNameSchema = z
@@ -226,13 +231,26 @@ export const releaseApprovalSchema = z
 export const poolCreateSchema = z
   .object({
     release_id: resourceIdSchema,
-    provider: resourceIdSchema,
-    region_id: resourceIdSchema,
-    gpu_sku: resourceIdSchema,
+    gpu_targets: z
+      .array(
+        z.object({ provider: resourceIdSchema, region_id: providerRegionIdSchema, gpu_sku: resourceIdSchema }).strict(),
+      )
+      .min(1)
+      .max(64)
+      .optional(),
+    provider: resourceIdSchema.optional(),
+    region_id: providerRegionIdSchema.optional(),
+    gpu_sku: resourceIdSchema.optional(),
     execution_mode: z.enum(["deployment", "batch"]),
     reason: reasonSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.gpu_targets?.length) return;
+    if (!value.provider || !value.region_id || !value.gpu_sku) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["gpu_targets"], message: "gpu_targets_required" });
+    }
+  });
 
 export const poolUpdateSchema = z
   .object({

@@ -853,9 +853,21 @@ components:
     PoolCreate:
       type: object
       additionalProperties: false
-      required: [release_id, provider, region_id, gpu_sku, execution_mode, reason]
+      required: [release_id, execution_mode, reason]
       properties:
         release_id: { type: string }
+        gpu_targets:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [provider, region_id, gpu_sku]
+            properties:
+              provider: { type: string }
+              region_id: { type: string }
+              gpu_sku: { type: string }
         provider: { type: string }
         region_id: { type: string }
         gpu_sku: { type: string }

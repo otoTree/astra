@@ -209,9 +209,10 @@ const placement = (
   policy: CapacityPolicy,
   replicas: number,
 ): PlacementDecision | undefined => {
+  // The repository supplies only offers belonging to this pool's GPU target set;
+  // a mixed pool may therefore place a new replica on any compatible GPU SKU.
   const candidates = snapshot.offers.filter(
     (offer) =>
-      offer.gpuSku === snapshot.replicaGpuSku &&
       offer.healthy &&
       offer.snapshotFresh &&
       offer.availableReplicas >= replicas &&

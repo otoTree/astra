@@ -56,7 +56,8 @@ export class CapacityPlanRepository {
 
   async activePoolSnapshots(limit = 100): Promise<readonly CapacityPoolSnapshot[]> {
     const timestamp = this.now();
-    const pools = await this.sql`SELECT p.id, p.project_id, p.release_id, p.provider, p.region_id, p.gpu_sku,
+    const pools = await this
+      .sql`SELECT p.id, p.project_id, p.release_id, p.provider, p.region_id, p.gpu_sku, p.gpu_targets,
         p.status, p.version, mr.manifest,
         pv.id AS policy_version_id, pv.configuration, rp.configuration AS region_configuration,
         (SELECT count(*)::int FROM replicas r WHERE r.pool_id=p.id AND r.observed_state IN ('ready','busy')) AS ready_replicas,
@@ -93,9 +94,17 @@ export class CapacityPlanRepository {
         ORDER BY t.created_at, t.id LIMIT 2000`;
       const running = await this.sql`SELECT a.id, a.expected_gpu_seconds, a.started_at
         FROM attempts a WHERE a.pool_id=${poolId} AND a.status IN ('leased','running') ORDER BY a.id LIMIT 2000`;
+      const targets = Array.isArray(pool.gpu_targets)
+        ? (pool.gpu_targets as ReadonlyArray<Record<string, unknown>>)
+        : [];
+      const providers = [...new Set(targets.map((target) => String(target.provider)).filter(Boolean))];
+      const regions = [...new Set(targets.map((target) => String(target.region_id)).filter(Boolean))];
+      const skus = [...new Set(targets.map((target) => String(target.gpu_sku)).filter(Boolean))];
       const offers = await this.sql`SELECT provider, region_id, gpu_sku, available_replicas,
           price_per_gpu_hour_minor, observed_at FROM provider_inventory
-        WHERE gpu_sku=${String(pool.gpu_sku)}
+        WHERE provider=ANY(${this.sql.array(providers.length ? providers : [String(pool.provider)])}::text[])
+          AND region_id=ANY(${this.sql.array(regions.length ? regions : [String(pool.region_id)])}::text[])
+          AND gpu_sku=ANY(${this.sql.array(skus.length ? skus : [String(pool.gpu_sku)])}::text[])
         ORDER BY provider, region_id`;
       const capacityPolicy = (pool.configuration ?? {}) as Record<string, unknown>;
       const regionPolicy = (pool.region_configuration ?? {}) as Record<string, unknown>;

@@ -65,7 +65,8 @@ Model Release 是不可变、可复现的推理单元，不等于一个可变模
 - 可选的模型环境变量；界面使用每行一个 `KEY=VALUE` 的文本编辑器，不暴露 JSON。`WORKER_*` 和 `MODEL_APP_RELEASE` 由平台注入，Token、密码和密钥必须使用平台凭证管理，不能写入 Release 环境变量。
 - 发布原因。
 
-镜像解析并批准后，发布人员选择目标 Model Pool。滚动参数使用普通输入控件，界面预填 `max_surge=1`、`max_unavailable=0`；低频的超时、失败率和回滚保留参数放在高级设置中，不要求编辑策略 JSON。
+镜像解析并批准后，发布人员选择目标 Model Pool。Pool 可以由多个 GPU 类型和区域目标组成；每个 Replica 在实际扩容时固定到其中一个具体目标。
+滚动参数使用普通输入控件，界面预填 `max_surge=1`、`max_unavailable=0`；低频的超时、失败率和回滚保留参数放在高级设置中，不要求编辑策略 JSON。
 
 Registry 凭证从平台已配置凭证中选择，不在发布表单输入明文密码。提交后后台展示 source image、resolved digest、镜像签名、Manifest 摘要、目标机器数、预计额外 GPU 成本和回滚 digest。
 

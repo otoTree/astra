@@ -676,31 +676,53 @@ export class AdminManagementService {
     idempotencyKey: string,
     input: Readonly<{
       release_id: string;
-      provider: string;
-      region_id: string;
-      gpu_sku: string;
+      gpu_targets?: readonly Readonly<{ provider: string; region_id: string; gpu_sku: string }>[] | undefined;
+      provider?: string | undefined;
+      region_id?: string | undefined;
+      gpu_sku?: string | undefined;
       execution_mode: "deployment" | "batch";
       reason: string;
     }>,
   ) {
     return this.mutate(actor, "pools:create", idempotencyKey, input, async (transaction) => {
-      const releases = await transaction`SELECT id FROM model_releases
+      const targets = input.gpu_targets?.length
+        ? [...input.gpu_targets]
+        : input.provider && input.region_id && input.gpu_sku
+          ? [{ provider: input.provider, region_id: input.region_id, gpu_sku: input.gpu_sku }]
+          : [];
+      if (targets.length === 0) throw new AdminManagementError("provider_gpu_inventory_not_available", 422);
+      const uniqueTargets = [
+        ...new Map(
+          targets.map((target) => [`${target.provider}|${target.region_id}|${target.gpu_sku}`, target]),
+        ).values(),
+      ];
+      const releases = await transaction`SELECT id, manifest FROM model_releases
         WHERE id=${input.release_id} AND project_id=${actor.projectId} AND status='approved' FOR SHARE`;
       if (!releases[0]) throw new AdminManagementError("approved_release_not_found", 422);
-      const regions = await transaction`SELECT id FROM provider_regions
-        WHERE id=${input.region_id} AND provider=${input.provider} AND status IN ('healthy', 'degraded') FOR SHARE`;
-      if (!regions[0]) throw new AdminManagementError("provider_region_not_available", 422);
-      const inventory = await transaction`SELECT id FROM provider_inventory
-        WHERE provider=${input.provider} AND region_id=${input.region_id} AND gpu_sku=${input.gpu_sku} FOR SHARE`;
-      if (!inventory[0]) throw new AdminManagementError("provider_gpu_inventory_not_available", 422);
+      const manifest = releases[0].manifest as Record<string, unknown> | null;
+      const requirements = manifest?.resource_requirements as Record<string, unknown> | undefined;
+      const supportedSkus = Array.isArray(requirements?.gpu_skus) ? requirements.gpu_skus.map(String) : [];
+      if (supportedSkus.length > 0 && uniqueTargets.some((target) => !supportedSkus.includes(target.gpu_sku))) {
+        throw new AdminManagementError("rollout_hardware_incompatible", 422);
+      }
+      for (const target of uniqueTargets) {
+        const regions = await transaction`SELECT id FROM provider_regions
+          WHERE id=${target.region_id} AND provider=${target.provider} AND status IN ('healthy', 'degraded') FOR SHARE`;
+        if (!regions[0]) throw new AdminManagementError("provider_region_not_available", 422);
+        const inventory = await transaction`SELECT id FROM provider_inventory
+          WHERE provider=${target.provider} AND region_id=${target.region_id} AND gpu_sku=${target.gpu_sku} FOR SHARE`;
+        if (!inventory[0]) throw new AdminManagementError("provider_gpu_inventory_not_available", 422);
+      }
+      const primary = uniqueTargets[0];
+      if (!primary) throw new AdminManagementError("provider_gpu_inventory_not_available", 422);
       const poolId = id("pool");
       const createdAt = this.now();
       await transaction`INSERT INTO model_pools (
-        id, project_id, release_id, provider, region_id, gpu_sku, execution_mode, status,
+        id, project_id, release_id, provider, region_id, gpu_sku, gpu_targets, execution_mode, status,
         version, created_by, created_at, updated_at
       ) VALUES (
-        ${poolId}, ${actor.projectId}, ${input.release_id}, ${input.provider}, ${input.region_id},
-        ${input.gpu_sku}, ${input.execution_mode}, 'disabled', 1, ${actor.actorId},
+        ${poolId}, ${actor.projectId}, ${input.release_id}, ${primary.provider}, ${primary.region_id},
+        ${primary.gpu_sku}, ${JSON.stringify(uniqueTargets)}, ${input.execution_mode}, 'disabled', 1, ${actor.actorId},
         ${createdAt.toISOString()}, ${createdAt.toISOString()}
       )`;
       await this.audit(transaction, actor, request, "pool.create", "model_pool", poolId, input.reason);
@@ -709,7 +731,12 @@ export class AdminManagementService {
         body: {
           id: poolId,
           object: "model.pool",
-          ...input,
+          release_id: input.release_id,
+          provider: primary.provider,
+          region_id: primary.region_id,
+          gpu_sku: primary.gpu_sku,
+          gpu_targets: uniqueTargets,
+          execution_mode: input.execution_mode,
           reason: undefined,
           status: "disabled",
           version: 1,

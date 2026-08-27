@@ -8,6 +8,7 @@ import {
   imageGenerationSchema,
   inputMediaTypeForContentType,
   outputManifestSchema,
+  poolCreateSchema,
   providerCredentialRevokeSchema,
   providerCredentialUpdateSchema,
   providerSyncRequestSchema,
@@ -81,6 +82,20 @@ describe("contracts", () => {
       reason: "Refresh Gongji GPU inventory",
     });
     expect(() => providerSyncRequestSchema.parse({ reason: "sync", provider: "gongji" })).toThrow();
+  });
+
+  test("accepts a mixed GPU pool grouped by provider regions", () => {
+    expect(
+      poolCreateSchema.parse({
+        release_id: "release_h3",
+        gpu_targets: [
+          { provider: "gongji", region_id: "gongji:beijing", gpu_sku: "h20" },
+          { provider: "gongji", region_id: "gongji:shanghai", gpu_sku: "5090" },
+        ],
+        execution_mode: "deployment",
+        reason: "Create a mixed GPU deployment pool",
+      }).gpu_targets,
+    ).toHaveLength(2);
   });
 
   test("accepts a valid video generation request", () => {

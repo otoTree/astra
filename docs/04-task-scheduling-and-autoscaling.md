@@ -21,11 +21,14 @@ Model Pool 的身份由以下不可变字段组成：
 
 - Model Release ID。
 - Provider 类型。
-- 硬件规格或允许的等价规格集合。
+- 一个或多个可调度 GPU 目标；每个目标由 GPU 类型和 Provider 区域组成。管理台以 GPU 类型为主维度展示总库存和区域分布，
+  Pool 可以选择最多 64 个目标组成混合 GPU 池。
 - 执行模式：`deployment | batch`。
 - Worker Contract 主版本。
 
 一个 Model Release 可以有多个 Pool，例如 4090 在线池、H20 在线池和 4090 批量池。Autoscaler 以 Pool 为单位计算容量；Placement Policy 决定新增副本落在哪个区域。
+混合 GPU Pool 中的每个 Replica 仍固定到一种具体 GPU 和一个具体区域；扩容时从 Pool 的目标集合中选择一个满足 Release
+硬件声明、库存、价格和区域策略的目标，不能让单个 Replica 同时占用多个 GPU 类型。
 
 ### 2.1.1 Worker 槽位与真实容量
 

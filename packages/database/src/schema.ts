@@ -620,6 +620,7 @@ export const modelPools = pgTable("model_pools", {
   provider: text("provider").notNull(),
   regionId: text("region_id").notNull(),
   gpuSku: text("gpu_sku").notNull(),
+  gpuTargets: jsonb("gpu_targets").notNull().default([]),
   executionMode: text("execution_mode").notNull(),
   status: text("status").notNull(),
   version: integer("version").notNull(),

@@ -135,7 +135,9 @@ export class SchedulingRepository {
       JOIN workers w ON w.replica_id=r.id AND w.release_id=r.release_id
       LEFT JOIN attempts a ON a.replica_id=r.id AND a.status IN ('reserved', 'leased', 'running', 'unknown')
       WHERE r.release_id=ANY(${this.sql.array(releaseIds)}::text[])
-        AND p.region_id=r.region_id AND p.gpu_sku=r.gpu_sku
+        AND ((p.gpu_targets='[]'::jsonb AND p.region_id=r.region_id AND p.gpu_sku=r.gpu_sku)
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(p.gpu_targets) target
+            WHERE target->>'region_id'=r.region_id AND target->>'gpu_sku'=r.gpu_sku))
         AND p.status='active' AND r.desired_state='ready' AND r.observed_state IN ('ready', 'busy')
         AND r.rollout_reserved=false AND w.status IN ('ready', 'busy')
         AND w.last_heartbeat_at IS NOT NULL AND w.last_heartbeat_at>=${freshAfter.toISOString()}
