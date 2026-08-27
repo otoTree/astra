@@ -32,6 +32,7 @@ export type GongjiResourceSelection = Readonly<{
 }>;
 
 type JsonObject = Record<string, unknown>;
+type RequestOptions = Readonly<{ suppressCircuitBreak?: boolean }>;
 
 const paths = {
   resources: "/api/deployment/resource/search",
@@ -109,8 +110,15 @@ export class GongjiReadClient implements ProviderObservationReader {
 
     const warmupRegionsRaw = await this.get(paths.warmupRegions, {}, context);
     pages.push(decodeWarmupRegions(paths.warmupRegions, warmupRegionsRaw, observedAt));
-    const warmupRaw = await this.list(paths.warmups, {}, context);
-    for (const raw of warmupRaw) pages.push(decodeTaskList("image_prewarm", paths.warmups, raw, observedAt));
+    try {
+      const warmupRaw = await this.list(paths.warmups, {}, context, { suppressCircuitBreak: true });
+      for (const raw of warmupRaw) pages.push(decodeTaskList("image_prewarm", paths.warmups, raw, observedAt));
+    } catch (error) {
+      // Some Gongji credentials can read inventory and deployment state but do not
+      // have the optional image-preheat permission/signature. Inventory sync must
+      // not be blocked by that unrelated read surface.
+      if (!(error instanceof ProviderError) || error.code !== "authentication_failed") throw error;
+    }
 
     const end = observedAt.toISOString();
     const start = new Date(observedAt.getTime() - 24 * 60 * 60 * 1000).toISOString();
@@ -209,6 +217,7 @@ export class GongjiReadClient implements ProviderObservationReader {
     path: string,
     query: Readonly<Record<string, string>>,
     context: ProviderOperationContext,
+    options: RequestOptions = {},
   ): Promise<unknown[]> {
     const responses: unknown[] = [];
     for (let page = 1; page <= this.options.maximumPages; page += 1) {
@@ -216,6 +225,7 @@ export class GongjiReadClient implements ProviderObservationReader {
         path,
         { ...query, page: String(page), page_size: String(this.options.pageSize) },
         context,
+        options,
       );
       responses.push(raw);
       const count = resultCount(raw);
@@ -228,6 +238,7 @@ export class GongjiReadClient implements ProviderObservationReader {
     path: string,
     query: Readonly<Record<string, string>>,
     context: ProviderOperationContext,
+    options: RequestOptions = {},
   ): Promise<unknown> {
     if (this.circuitState() === "open") throw new ProviderError("provider_unavailable", true);
     let lastError: ProviderError | undefined;
@@ -262,12 +273,14 @@ export class GongjiReadClient implements ProviderObservationReader {
         await this.pause(delay);
       }
     }
-    this.consecutiveFailures += 1;
-    if (
-      lastError?.code === "authentication_failed" ||
-      this.consecutiveFailures >= this.options.breakerFailureThreshold
-    ) {
-      this.circuitOpenUntil = this.now().getTime() + this.options.breakerCooldownMilliseconds;
+    if (!options.suppressCircuitBreak) {
+      this.consecutiveFailures += 1;
+      if (
+        lastError?.code === "authentication_failed" ||
+        this.consecutiveFailures >= this.options.breakerFailureThreshold
+      ) {
+        this.circuitOpenUntil = this.now().getTime() + this.options.breakerCooldownMilliseconds;
+      }
     }
     throw lastError ?? new ProviderError("provider_unavailable", true);
   }

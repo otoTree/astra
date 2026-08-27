@@ -108,6 +108,46 @@ describe("Gongji read transport", () => {
     expect(bundle.pages.every((page) => page.quarantineReasons.length === 0)).toBe(true);
   });
 
+  test("publishes GPU resources when optional image-preheat listing is not authorized", async () => {
+    const client = new GongjiReadClient({
+      endpoint: "https://provider.invalid",
+      credentials: () => ({ token: "contract-token" }),
+      timeoutMilliseconds: 1_000,
+      maximumRetries: 0,
+      breakerFailureThreshold: 2,
+      breakerCooldownMilliseconds: 10_000,
+      pageSize: 100,
+      maximumPages: 1,
+      now: () => observedAt,
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/task/image_preheat/search") {
+          return Response.json({ code: "C002", message: "verify error", data: null });
+        }
+        if (url.pathname === "/api/deployment/resource/search") return Response.json(await fixture("resources"));
+        if (url.pathname === "/api/task/image_preheat/get_regions")
+          return Response.json(await fixture("warmup-regions"));
+        if (
+          url.pathname === "/api/deployment/task/search" ||
+          url.pathname === "/api/task/job/search" ||
+          url.pathname === "/api/billing/get_billing_record"
+        ) {
+          return Response.json({ code: "0000", message: "success", data: { count: 0, results: [] } });
+        }
+        return Response.json({ code: "C999", message: "missing", data: null }, { status: 404 });
+      },
+    });
+    const bundle = await client.observe({
+      operationId: "operation-optional-preheat",
+      requestId: "request-optional-preheat",
+      deadlineAt: new Date(observedAt.getTime() + 60_000),
+    });
+    expect(bundle.resources.offers).toHaveLength(1);
+    expect(bundle.pages.some((page) => page.kind === "resource")).toBe(true);
+    expect(bundle.pages.some((page) => page.kind === "image_prewarm")).toBe(false);
+    expect(client.circuitState()).toBe("closed");
+  });
+
   test("opens the circuit immediately on authentication failures", async () => {
     let calls = 0;
     const client = new GongjiReadClient({
