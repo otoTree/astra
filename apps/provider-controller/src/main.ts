@@ -71,7 +71,7 @@ const credentials = async () => {
 let reader: ProviderObservationReader;
 let operator: ProviderResourceOperator;
 const gongjiReads =
-  config.ASTRA_ENV === "local" || !credentialRepository
+  (config.ASTRA_ENV === "local" && !config.ASTRA_LOCAL_ENABLE_REAL_PROVIDER) || !credentialRepository
     ? undefined
     : new GongjiReadClient({
         endpoint: gongjiEndpoint,
@@ -286,12 +286,17 @@ const manualSyncLoop = async (): Promise<void> => {
           const status = await repository.recordFailure(
             "gongji",
             "gongji-openapi-2026-08-19",
-            config.ASTRA_ENV === "local" ? "real_provider_disabled_in_local" : "gongji_reader_unavailable",
+            config.ASTRA_ENV === "local" && !config.ASTRA_LOCAL_ENABLE_REAL_PROVIDER
+              ? "real_provider_disabled_in_local"
+              : "gongji_reader_unavailable",
             config.PROVIDER_SNAPSHOT_STALE_SECONDS,
           );
           await syncRequests.complete(claim, controllerId, {
             snapshotRunId: status.latestAttemptRunId,
-            errorCode: config.ASTRA_ENV === "local" ? "real_provider_disabled_in_local" : "gongji_reader_unavailable",
+            errorCode:
+              config.ASTRA_ENV === "local" && !config.ASTRA_LOCAL_ENABLE_REAL_PROVIDER
+                ? "real_provider_disabled_in_local"
+                : "gongji_reader_unavailable",
           });
         }
       }

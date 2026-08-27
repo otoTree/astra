@@ -128,6 +128,10 @@ export const providerControllerConfigSchema = environmentSchema
     DATABASE_URL: requiredUrl,
     PROVIDER_DRIVER: z.enum(["reference", "gongji"]),
     GONGJI_ENDPOINT: requiredUrl.optional(),
+    ASTRA_LOCAL_ENABLE_REAL_PROVIDER: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     /** Deprecated local bootstrap input. Production reads the encrypted DB credential. */
     GONGJI_TOKEN: z.string().min(1).optional(),
     GONGJI_PRIVATE_KEY_PEM: z.string().min(64).optional(),

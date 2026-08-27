@@ -54,7 +54,8 @@ Adapter 负责资源查询、弹性 Deployment、镜像预热、Job、节点、�
 
 当前 Adapter 只启用七类读取：资源、Deployment、节点、Job、镜像预热区域、镜像预热任务和计费。合同夹具位于
 `packages/provider-gongji/fixtures/documented/`，由本目录 OpenAPI 示例裁剪并脱敏，不是对生产接口的实时请求。
-本地 `PROVIDER_DRIVER=reference`，不会读取共绩凭证或连接 `openapi.suanli.cn`。
+本地默认使用共绩 Driver，并通过 `ASTRA_LOCAL_ENABLE_REAL_PROVIDER=true` 显式允许真实只读同步；运行本地合同测试时可将
+`PROVIDER_DRIVER=reference` 且关闭该开关。真实共绩 Token 仍必须通过管理台写入加密凭证表，不能放入 Compose 或仓库。
 
 管理台“立即同步 GPU 设备”会向 PostgreSQL 写入 `provider_sync_requests`；`ASTRA_ENV=test|production` 的
 Provider Controller 领取后调用 `GET /api/deployment/resource/search?task_type=Deployment&device_type=GpuDevice`
