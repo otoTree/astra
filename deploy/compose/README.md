@@ -4,7 +4,7 @@
 
 启动前先确认端口和项目归属：
 
-`.env.local` 还必须提供 `ASTRA_LOCAL_ADMIN_BOOTSTRAP_USERNAME`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_PASSWORD`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_ORGANIZATION_ID` 和 `ASTRA_LOCAL_ADMIN_BOOTSTRAP_PROJECT_ID`。密码只在管理员不存在时初始化，数据库只保存 Argon2id 哈希。
+`.env.local` 还必须提供 `ASTRA_LOCAL_ADMIN_BOOTSTRAP_USERNAME`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_PASSWORD`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_ORGANIZATION_ID`、`ASTRA_LOCAL_ADMIN_BOOTSTRAP_PROJECT_ID` 和独立的 256-bit `ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY`。密码只在管理员不存在时初始化，数据库只保存 Argon2id 哈希。该凭证加密密钥必须跨重启保持不变；更换它之前必须先轮换或迁移已加密的 Provider Token。
 
 ```bash
 docker compose --env-file .env.local -p astra-local -f deploy/compose/docker-compose.yml ps
@@ -59,4 +59,9 @@ ASTRA_BUNDLE_BOOTSTRAP_WORKER=true
 
 分域测试部署还必须在 Control Plane 设置 `ADMIN_WEB_ORIGIN=https://<admin-web-domain>` 和 `ADMIN_COOKIE_SAME_SITE=none`。CORS 只返回该精确 Origin 并允许凭证，不能设置为 `*`；两个域名都必须使用 HTTPS。
 
+若外部测试 Redis 是单主/Sentinel 而非 Redis Cluster，Control Plane 必须显式设置
+`REDIS_MODE=standalone`。生产和仓库默认 Compose 保持 `REDIS_MODE=cluster`。
+
 生产环境仍使用独立信任域 Deployment 和独立凭证；不得把测试 Bundle 作为生产控制面启动方式。
+
+本地/测试 Bundle 可以提供 `ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY`，启动器会在拉起子进程前将它规范化为 `PROVIDER_CREDENTIAL_ENCRYPTION_KEY`；拆分部署和生产 External Secret 必须直接提供正式变量名。两者是同一用途的部署级 Secret，不得写入镜像、ConfigMap、日志或 Git。可以使用 `openssl rand -hex 32` 生成；部署后不能随 Pod 重建重新生成。

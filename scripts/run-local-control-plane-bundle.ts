@@ -1,3 +1,5 @@
+import { resolveLocalProviderCredentialEnvironment } from "@astra/config";
+
 type ManagedProcess = {
   name: string;
   process: Bun.Subprocess<"ignore", "inherit", "inherit">;
@@ -13,9 +15,31 @@ if (process.env.ASTRA_ENV !== "local" && process.env.ASTRA_ENV !== "test") {
   throw new Error("control_plane_bundle_is_local_or_test_only");
 }
 
+const bundleEnvironment = resolveLocalProviderCredentialEnvironment(process.env);
+const providerCredentialEncryptionKey = bundleEnvironment.PROVIDER_CREDENTIAL_ENCRYPTION_KEY;
+console.log(
+  JSON.stringify({
+    component: "local-control-plane-bundle",
+    event: "bundle_secret_preflight",
+    provider_credential_key_present: Boolean(process.env.PROVIDER_CREDENTIAL_ENCRYPTION_KEY),
+    local_provider_credential_key_present: Boolean(process.env.ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY),
+    resolved_source: process.env.PROVIDER_CREDENTIAL_ENCRYPTION_KEY
+      ? "provider_credential_encryption_key"
+      : process.env.ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY
+        ? "local_alias"
+        : "missing",
+    minimum_length_valid: Boolean(providerCredentialEncryptionKey && providerCredentialEncryptionKey.length >= 32),
+  }),
+);
+if (!providerCredentialEncryptionKey || providerCredentialEncryptionKey.length < 32) {
+  throw new Error(
+    "PROVIDER_CREDENTIAL_ENCRYPTION_KEY must contain at least 32 characters; local/test bundles may provide ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY instead",
+  );
+}
+
 const runOnce = async (name: string, command: string[]): Promise<void> => {
   const child = Bun.spawn(command, {
-    env: process.env,
+    env: bundleEnvironment,
     stdin: "ignore",
     stdout: "inherit",
     stderr: "inherit",
@@ -48,7 +72,7 @@ const commands: ReadonlyArray<readonly [name: string, command: string[]]> = [
 const children: ManagedProcess[] = commands.map(([name, command]) => ({
   name,
   process: Bun.spawn(command, {
-    env: process.env,
+    env: bundleEnvironment,
     stdin: "ignore",
     stdout: "inherit",
     stderr: "inherit",

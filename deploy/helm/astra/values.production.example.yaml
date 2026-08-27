@@ -1,7 +1,8 @@
 # Production example. Copy into an external deployment repository and replace
 # every placeholder through the deployment system; do not commit secrets here.
 # The referenced Secret must contain ADMIN_BOOTSTRAP_USERNAME, ADMIN_BOOTSTRAP_PASSWORD,
-# ADMIN_BOOTSTRAP_ORGANIZATION_ID and ADMIN_BOOTSTRAP_PROJECT_ID for the admin-api.
+# ADMIN_BOOTSTRAP_ORGANIZATION_ID, ADMIN_BOOTSTRAP_PROJECT_ID and the persistent
+# PROVIDER_CREDENTIAL_ENCRYPTION_KEY for the admin-api and provider-controller.
 image:
   repository: registry.example.internal/astra/control-plane
   tag: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

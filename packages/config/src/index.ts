@@ -7,6 +7,7 @@ const environmentSchema = z.object({
 
 const port = (defaultValue: number) => z.coerce.number().int().min(1).max(65535).default(defaultValue);
 const requiredUrl = z.string().url();
+const redisMode = z.enum(["cluster", "standalone"]).default("cluster");
 const httpOrigin = z
   .string()
   .url()
@@ -29,21 +30,32 @@ const httpOrigin = z
     return url.origin;
   });
 
-export const publicApiConfigSchema = environmentSchema.extend({
-  PUBLIC_API_PORT: port(4100),
-  DATABASE_URL: requiredUrl,
-  ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
-  ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
-  REDIS_URL: requiredUrl,
-  S3_ENDPOINT: requiredUrl,
-  S3_PUBLIC_ENDPOINT: requiredUrl.optional(),
-  S3_BUCKET: z.string().min(3),
-  S3_ACCESS_KEY: z.string().min(1),
-  S3_SECRET_KEY: z.string().min(8),
-  MEDIA_VALIDATOR_URL: requiredUrl,
-  MEDIA_VALIDATOR_TOKEN: z.string().min(32),
-  MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(610),
-});
+export const publicApiConfigSchema = environmentSchema
+  .extend({
+    PUBLIC_API_PORT: port(4100),
+    DATABASE_URL: requiredUrl,
+    ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
+    ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
+    REDIS_URL: requiredUrl,
+    REDIS_MODE: redisMode,
+    S3_ENDPOINT: requiredUrl,
+    S3_PUBLIC_ENDPOINT: requiredUrl.optional(),
+    S3_BUCKET: z.string().min(3),
+    S3_ACCESS_KEY: z.string().min(1),
+    S3_SECRET_KEY: z.string().min(8),
+    MEDIA_VALIDATOR_URL: requiredUrl,
+    MEDIA_VALIDATOR_TOKEN: z.string().min(32),
+    MEDIA_VALIDATOR_CLIENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(610),
+  })
+  .superRefine((config, context) => {
+    if (config.ASTRA_ENV === "production" && config.REDIS_MODE !== "cluster") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["REDIS_MODE"],
+        message: "REDIS_MODE must be cluster in production",
+      });
+    }
+  });
 
 export const adminApiConfigSchema = environmentSchema
   .extend({
@@ -51,6 +63,7 @@ export const adminApiConfigSchema = environmentSchema
     DATABASE_URL: requiredUrl,
     ASTRA_REQUEST_ENCRYPTION_KEY: z.string().min(32),
     ASTRA_AUDIT_SIGNING_KEY: z.string().min(32),
+    PROVIDER_CREDENTIAL_ENCRYPTION_KEY: z.string().min(32),
     ADMIN_WEB_ORIGIN: httpOrigin.optional(),
     ADMIN_COOKIE_SAME_SITE: z.enum(["strict", "lax", "none"]).default("strict"),
     ADMIN_BOOTSTRAP_USERNAME: z.string().min(3).max(128),
@@ -175,25 +188,36 @@ export const providerControllerConfigSchema = environmentSchema
     }
   });
 
-export const eventRelayConfigSchema = environmentSchema.extend({
-  EVENT_RELAY_METRICS_PORT: port(4112),
-  DATABASE_URL: requiredUrl,
-  REDIS_URL: requiredUrl,
-  REDIS_EVENT_TASK_STREAM: z.string().min(1).default("astra:{events}:task:v1"),
-  REDIS_EVENT_CAPACITY_STREAM: z.string().min(1).default("astra:{events}:capacity:v1"),
-  REDIS_EVENT_USAGE_STREAM: z.string().min(1).default("astra:{events}:usage:v1"),
-  REDIS_EVENT_AUDIT_STREAM: z.string().min(1).default("astra:{events}:audit:v1"),
-  REDIS_EVENT_CONTROL_STREAM: z.string().min(1).default("astra:{events}:control:v1"),
-  REDIS_EVENT_STREAM_MAXLEN: z.coerce.number().int().min(1000).max(10_000_000).default(100_000),
-  REDIS_EVENT_STREAM_RETENTION_SECONDS: z.coerce.number().int().min(3600).max(2_592_000).default(604_800),
-  EVENT_RELAY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
-  EVENT_RELAY_LEASE_SECONDS: z.coerce.number().int().min(5).max(300).default(30),
-  EVENT_RELAY_MAXIMUM_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(12),
-  EVENT_RELAY_POLL_INTERVAL_MS: z.coerce.number().int().min(50).max(60000).default(500),
-  REDIS_REBUILD_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(500),
-  REDIS_REBUILD_LEASE_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
-  REDIS_REBUILD_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(3600).default(30),
-});
+export const eventRelayConfigSchema = environmentSchema
+  .extend({
+    EVENT_RELAY_METRICS_PORT: port(4112),
+    DATABASE_URL: requiredUrl,
+    REDIS_URL: requiredUrl,
+    REDIS_MODE: redisMode,
+    REDIS_EVENT_TASK_STREAM: z.string().min(1).default("astra:{events}:task:v1"),
+    REDIS_EVENT_CAPACITY_STREAM: z.string().min(1).default("astra:{events}:capacity:v1"),
+    REDIS_EVENT_USAGE_STREAM: z.string().min(1).default("astra:{events}:usage:v1"),
+    REDIS_EVENT_AUDIT_STREAM: z.string().min(1).default("astra:{events}:audit:v1"),
+    REDIS_EVENT_CONTROL_STREAM: z.string().min(1).default("astra:{events}:control:v1"),
+    REDIS_EVENT_STREAM_MAXLEN: z.coerce.number().int().min(1000).max(10_000_000).default(100_000),
+    REDIS_EVENT_STREAM_RETENTION_SECONDS: z.coerce.number().int().min(3600).max(2_592_000).default(604_800),
+    EVENT_RELAY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+    EVENT_RELAY_LEASE_SECONDS: z.coerce.number().int().min(5).max(300).default(30),
+    EVENT_RELAY_MAXIMUM_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(12),
+    EVENT_RELAY_POLL_INTERVAL_MS: z.coerce.number().int().min(50).max(60000).default(500),
+    REDIS_REBUILD_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(500),
+    REDIS_REBUILD_LEASE_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
+    REDIS_REBUILD_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(3600).default(30),
+  })
+  .superRefine((config, context) => {
+    if (config.ASTRA_ENV === "production" && config.REDIS_MODE !== "cluster") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["REDIS_MODE"],
+        message: "REDIS_MODE must be cluster in production",
+      });
+    }
+  });
 
 export const workerAgentConfigSchema = environmentSchema.extend({
   MODEL_APP_URL: requiredUrl.default("http://127.0.0.1:9000"),
@@ -258,14 +282,32 @@ export const fileSweeperConfigSchema = environmentSchema.extend({
 type Environment = Record<string, string | undefined>;
 const parse = <Schema extends z.ZodTypeAny>(schema: Schema, env: Environment): z.output<Schema> => schema.parse(env);
 
+export const resolveLocalProviderCredentialEnvironment = (env: Environment): Environment => {
+  const astraEnvironment = env.ASTRA_ENV ?? "local";
+  if (
+    (astraEnvironment !== "local" && astraEnvironment !== "test") ||
+    env.PROVIDER_CREDENTIAL_ENCRYPTION_KEY ||
+    !env.ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY
+  ) {
+    return env;
+  }
+  return {
+    ...env,
+    PROVIDER_CREDENTIAL_ENCRYPTION_KEY: env.ASTRA_LOCAL_PROVIDER_CREDENTIAL_ENCRYPTION_KEY,
+  };
+};
+
 export const loadPublicApiConfig = (env: Environment = process.env) => parse(publicApiConfigSchema, env);
-export const loadAdminApiConfig = (env: Environment = process.env) => parse(adminApiConfigSchema, env);
+export const loadAdminApiConfig = (env: Environment = process.env) =>
+  parse(adminApiConfigSchema, resolveLocalProviderCredentialEnvironment(env));
 export const loadWorkerControlApiConfig = (env: Environment = process.env) => parse(workerControlApiConfigSchema, env);
 export const loadSchedulerConfig = (env: Environment = process.env) => parse(schedulerConfigSchema, env);
 export const loadProviderControllerConfig = (env: Environment = process.env) =>
   parse(
     providerControllerConfigSchema,
-    env.PROVIDER_DRIVER || env.ASTRA_ENV === "production" ? env : { ...env, PROVIDER_DRIVER: "reference" },
+    resolveLocalProviderCredentialEnvironment(
+      env.PROVIDER_DRIVER || env.ASTRA_ENV === "production" ? env : { ...env, PROVIDER_DRIVER: "reference" },
+    ),
   );
 export const loadEventRelayConfig = (env: Environment = process.env) => parse(eventRelayConfigSchema, env);
 export const loadWorkerAgentConfig = (env: Environment = process.env) => parse(workerAgentConfigSchema, env);
