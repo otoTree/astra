@@ -12,7 +12,7 @@
 
 ## 模型团队必须交付
 
-1. 真实镜像的 OCI digest，以及可审计的镜像 Manifest/签名。
+1. 真实镜像的 OCI digest，以及可审计的镜像 Manifest/签名；OCI manifest 必须携带 `io.astra.release-manifest.v1` 和 `io.astra.workflow-sha256` annotation，供管理台自动解析发布合同。
 2. ComfyUI、节点、工作流和运行时的固定 commit/hash。
 3. 每个权重、VAE、LoRA、文本编码器等资产的逻辑名、来源、许可证、大小和 SHA-256；权重只在模型团队受控 Artifact 存储和 GPU 环境出现。
 4. `capabilities`、`parameter_schema`、`output_contract` 与平台 Release Schema 的逐字段对应关系。

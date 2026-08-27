@@ -97,6 +97,8 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-minio
 ### 3.1 API Key
 
 - 创建时只显示一次明文，数据库保存 Argon2id 哈希、前缀、末四位、Scope、项目和过期时间。
+- 管理台“访问控制”页面负责创建、查看元数据和吊销；创建接口只在首次成功响应返回完整 Key，幂等重放不返回明文。
+- 外部调用统一使用 `Authorization: Bearer <api_key>`，禁止 query string 和请求体传递凭证。
 - 支持两个 Key 并行的无中断轮换窗口。
 - Key 可以立即吊销；Redis 认证缓存最长 60 秒并订阅吊销事件失效。
 - 禁止 URL query 传 Key，日志和 Trace 自动脱敏 Authorization。
@@ -122,6 +124,7 @@ volumes: astra-local-postgres, astra-local-redis-*, astra-local-minio
 
 - 生产通过 External Secrets 从公司 Secret Manager/KMS 注入。
 - 共绩 Token 密文位于 PostgreSQL，只有 Provider Controller 读取 `PROVIDER_CREDENTIAL_ENCRYPTION_KEY` 并解密 active 凭证。
+- 管理员手动刷新共绩库存时，Admin API 只写入 `provider_sync_requests`；Provider Controller 领取请求后调用供应商并更新 Provider Snapshot。请求状态、操作者、原因、快照 ID 和脱敏错误码持久化并可审计。
 - 数据库、Redis、S3 使用独立最小权限账户。
 - Secret 不进入镜像、Git、日志、异常详情或管理台前端。
 - 轮换和 break-glass 操作写不可篡改审计。

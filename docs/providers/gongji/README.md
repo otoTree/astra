@@ -56,6 +56,12 @@ Adapter 负责资源查询、弹性 Deployment、镜像预热、Job、节点、�
 `packages/provider-gongji/fixtures/documented/`，由本目录 OpenAPI 示例裁剪并脱敏，不是对生产接口的实时请求。
 本地 `PROVIDER_DRIVER=reference`，不会读取共绩凭证或连接 `openapi.suanli.cn`。
 
+管理台“立即同步 GPU 设备”会向 PostgreSQL 写入 `provider_sync_requests`；`ASTRA_ENV=test|production` 的
+Provider Controller 领取后调用 `GET /api/deployment/resource/search?task_type=Deployment&device_type=GpuDevice`
+并更新标准化库存。`ASTRA_ENV=local` 会把该请求标记为失败且不会发出真实网络请求。
+同步是只读动作；要根据模型池和容量计划创建、排空或回收真实共绩资源，负责该环境的 Provider Controller
+还必须配置 `PROVIDER_DRIVER=gongji`。
+
 阶段 9 已实现 Deployment 创建/暂停/停止与镜像预热创建 Transport，但只能由 Provider Controller 根据数据库
 Provider Operation 调用，不能绕过 Operation 与 Reconcile。模糊写入失败由确定性任务名查询收敛，不在 HTTP
 客户端内盲目重放。真实供应商合同验证只能在隔离环境显式启用，并必须设置成本上限和自动回收。

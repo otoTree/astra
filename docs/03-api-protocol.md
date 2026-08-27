@@ -648,15 +648,34 @@ PostgreSQL 在 Task/File 创建事务内执行权威 Admission Control。幂等�
 
 管理 API 位于 `/admin/v1`，使用平台管理员 Session，不与公共 API Key 混用：
 
-- `/models`、`/model-releases`、`/model-aliases`。
+- `/api-keys`：创建、列出和吊销调用方 API Key。创建响应中的 `api_key` 明文只出现一次；列表、重放响应、审计和日志只保留前缀、末四位、Scope、状态和时间。
+- `/models`：创建和查看 Model 基础记录。Model 只承载 API 路由 alias 与图片/视频类型；镜像、环境变量、能力和版本在 Release 中维护。
+- `/model-releases`、`/model-aliases`。
 - `/model-pools`、`/scaling-policies`、`/placement-policies`。
 - `/model-pools/{id}/capacity-policy`、`/model-pools/{id}/service-time-buckets`、`/model-pools/{id}/capacity-policy/impact-preview`。
 - `/providers`、`/regions`、`/resources`、`/replicas`。
+- `GET/POST /provider-credentials/gongji` 与 `POST /provider-credentials/gongji/revoke`：仅管理员可查询元数据、轮换和吊销共绩 Token；响应、审计和日志不得包含明文。
+- `POST /provider-syncs/gongji` 与 `GET /provider-syncs`：管理员可以显式请求立即同步共绩 GPU 资源。Admin API 只登记带审计的期望状态，Provider Controller 使用共绩 `GET /api/deployment/resource/search` 拉取地区、GPU 型号、可用数量和价格并原子发布库存快照；管理 API 不直接连接供应商。
 - `/tasks`、`/tasks/{id}/attempts`、`/tasks/{id}/audit`。
 - `/capacity-plans`、`/scheduling-decisions`、`/cost-reports`。
 - `/release-approvals`、`/rollouts`、`/rollbacks`。
 
 策略更新采用 `If-Match: <version>` 乐观锁。发布前必须先调用 `/validate` 与 `/impact-preview`；发布请求引用预览 ID，防止验证后内容被替换。
+
+### 13.0 平台 API Key 管理
+
+管理员在管理台的“访问控制”页面创建调用密钥。Key 自动绑定当前组织和项目，创建时选择允许的公共 API Scope，并可设置过期日期。平台只在创建成功的首次响应中返回完整 Key：
+
+`astra_sk_<12 位十六进制前缀>_<43 位 base64url secret>`
+
+外部系统调用平台时使用标准 Bearer 头，不要把 Key 放在 URL 或请求体中：
+
+```http
+Authorization: Bearer astra_sk_...
+X-Project-Id: project_optional
+```
+
+Key 只存 Argon2id 哈希。管理台不会再次显示完整 Key；丢失后应吊销旧 Key 并创建新 Key。吊销立即阻止后续请求，已有请求按正常生命周期完成。建议为不同外部系统分别创建 Key，并只授予所需 Scope；`tasks:read_sensitive` 默认关闭。
 
 ### 13.1 从镜像创建 Release
 
@@ -695,6 +714,8 @@ PostgreSQL 在 Task/File 创建事务内执行权威 Admission Control。幂等�
 ```
 
 同一次 Release 和 Rollout 只使用 `image_digest`，即使 tag 后续被覆盖也不重新解析。Registry 凭证由运维预先配置和选择，接口不接收明文用户名/密码。
+
+创建 Release 时管理台只提交已有 `model_id`、`source_image`、可选的非敏感 `environment` 和原因。Release Manifest 与工作流哈希必须由镜像 OCI annotation 提供；旧客户端仍可同时提交 `manifest` 与 `workflow_hash`，但管理台不提供 JSON 编辑入口。环境变量名称和值按 Release Schema 校验，平台保留变量和疑似密钥变量直接拒绝。
 
 ### 13.2 启动和管理滚动发布
 

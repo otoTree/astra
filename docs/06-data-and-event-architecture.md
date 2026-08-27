@@ -216,6 +216,9 @@ active generation 指针；指针丢失立即重建，候选数量在无 Redis d
 - 禁止生产使用 `KEYS`；重建基于数据库，不扫描 Redis 作为真源。
 - 大 key 告警：单项目队列超过阈值时分桶，但公平队首索引保持稳定。
 - 本地 Compose 使用真实 Cluster 模式验证 MOVED/ASK 和节点故障。
+- 生产和默认本地 Compose 固定使用 `REDIS_MODE=cluster`。仅外部集成测试环境可以显式设置
+  `REDIS_MODE=standalone`，连接由托管平台提供稳定主节点地址的单机或 Sentinel 服务；该模式不改变
+  PostgreSQL 真源、Outbox、幂等和全量重建合同，也不得用于生产。
 
 ## 5. Redis Streams 事件
 

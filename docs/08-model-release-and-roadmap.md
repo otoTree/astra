@@ -46,20 +46,30 @@ Model Release 是不可变、可复现的推理单元，不等于一个可变模
 
 `source_endpoint` 只记录 Weight Import Job 实际使用的传输入口，不能作为权重身份或运行时下载地址。镜像下载、官方回退、哈希和许可证核验规则见 [14-huggingface-mirror-and-weight-supply-chain.md](./14-huggingface-mirror-and-weight-supply-chain.md)。
 
-运维人员不需要手工填写上述 Manifest。后台以模型镜像地址为发布入口；平台从 OCI metadata 和镜像内 `/opt/astra/release-manifest.json` 读取 Manifest，并用探测 Replica 的 `/v1/capabilities` 交叉验证。镜像不包含有效 Manifest 或能力不一致时拒绝发布。
+运维人员不需要手工填写上述 Manifest。后台以模型和模型镜像地址为发布入口；平台从 OCI annotation `io.astra.release-manifest.v1` 读取 Manifest，从 `io.astra.workflow-sha256` 读取工作流哈希，并用探测 Replica 的 `/v1/capabilities` 交叉验证。镜像内可以同时保留 `/opt/astra/release-manifest.json` 供模型团队和探测 Replica 核对，但管理 API 不接收人工粘贴的 JSON。镜像不包含有效 Manifest、工作流哈希缺失或能力不一致时拒绝发布。
 
 容器 tag 可以作为运维输入，但不能成为最终发布身份。平台在创建 Release 时将它解析为 OCI digest 并冻结；Git branch、在线 URL、网盘路径或 ComfyUI 当前画布都不能成为生产身份。
 
+### 1.0 创建 Model
+
+管理台的“模型”页面用于创建 Model 基础记录。Model 只是公共 API 的模型路由和能力归属标识，不在这里配置价格、计费规则、GPU 参数或镜像内容。创建时只填写模型名称（API 使用的 alias）、图片/视频类型、可选描述和原因；创建完成后，在“模型发布”页面为它登记镜像和环境变量。
+
+一个 Model 可以拥有多个不可变 Release，用于版本发布、灰度和回滚。模型镜像、运行参数和模型特有能力属于 Release，不应直接写入 Model 基础记录。
+
 ### 1.1 后台发布表单
 
-必填项只有：
+常规发布表单只有：
 
-- 模型 Alias。
+- 已有模型；以下拉框选择，不要求复制 Model ID。
 - 模型镜像地址，例如 `registry.internal/h3:v4.2.0` 或完整 digest。
-- 目标 Model Pool。
-- 滚动参数；界面预填 `max_surge=1`、`max_unavailable=0`，运维必须确认。
+- 可选的模型环境变量；界面使用每行一个 `KEY=VALUE` 的文本编辑器，不暴露 JSON。`WORKER_*` 和 `MODEL_APP_RELEASE` 由平台注入，Token、密码和密钥必须使用平台凭证管理，不能写入 Release 环境变量。
+- 发布原因。
+
+镜像解析并批准后，发布人员选择目标 Model Pool。滚动参数使用普通输入控件，界面预填 `max_surge=1`、`max_unavailable=0`；低频的超时、失败率和回滚保留参数放在高级设置中，不要求编辑策略 JSON。
 
 Registry 凭证从平台已配置凭证中选择，不在发布表单输入明文密码。提交后后台展示 source image、resolved digest、镜像签名、Manifest 摘要、目标机器数、预计额外 GPU 成本和回滚 digest。
+
+运行时环境变量随 Release 固定，并在创建 Provider operation 时与短期 Worker bootstrap 变量一起加密；Provider operation、Outbox、审计和 API 响应只记录变量名，不记录变量值。环境变量变化会产生新的 Release，不能修改已存在 Release。
 
 ## 2. 成熟度
 
